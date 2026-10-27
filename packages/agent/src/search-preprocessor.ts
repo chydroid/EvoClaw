@@ -6,7 +6,7 @@
  * 2. Keyword-based fallback detection
  * 3. Multi-round search with sub-query generation
  * 4. Multi-round web_search execution
- * 5. Page fetching with fetch_node_page
+ * 5. Page fetching with web_fetch
  * 6. Enhanced message construction (URL priority hints, download task hints, news context injection)
  */
 
@@ -20,7 +20,7 @@ import { stripWebNoise } from "./text-processor";
 export interface SearchPreprocessorDeps {
   /** Service registry for resolving TaskClassifier */
   registry: ServiceRegistry;
-  /** Registered tools map (needs web_search and fetch_node_page) */
+  /** Registered tools map (needs web_search and web_fetch) */
   registeredTools: Map<string, {
     definition: ToolDefinition;
     handler: (params: Record<string, unknown>) => Promise<unknown>;
@@ -258,8 +258,8 @@ export async function preprocessSearch(
         const isDownloadTask = /(?:下载|download|爬取|scrape|抓取|批量|小说|novel|视频|video|mp3|mp4|文件|file)/i.test(userMessage);
         const shouldPrefetchPages = !isDownloadTask;
 
-        if (shouldPrefetchPages && registeredTools.has("fetch_node_page")) {
-          const fetchTool = registeredTools.get("fetch_node_page")!;
+        if (shouldPrefetchPages && registeredTools.has("web_fetch")) {
+          const fetchTool = registeredTools.get("web_fetch")!;
           const urlsToFetch = allSearchResults
             .filter(r => r.url && r.url.startsWith("http") && !r.url.includes("baidu.com/link"))
             .slice(0, 3);  // Reduced from 8 to 3 for faster response
@@ -272,13 +272,13 @@ export async function preprocessSearch(
                 phase: "tool_calling",
                 detail: `正在抓取网页内容: ${r.title.slice(0, 40)}`,
                 progress: 50 + fetchedCount * 10,
-                toolName: "fetch_node_page",
-                toolArgs: { url: r.url },
+                toolName: "web_fetch",
+                toolArgs: { action: "fetch", url: r.url },
               });
 
               let fetchTimer: ReturnType<typeof setTimeout> | undefined;
               const fetchResult = await Promise.race([
-                fetchTool.handler({ url: r.url, maxLength: 5000 }),
+                fetchTool.handler({ action: "fetch", url: r.url, maxLength: 5000 }),
                 new Promise<null>((_, reject) => {
                   fetchTimer = setTimeout(() => reject(new Error("fetch timeout")), 10000);
                 }),
@@ -336,7 +336,7 @@ export function buildEnhancedMessage(
     const urlMatch = userMessage.match(/https?:\/\/[^\s<>"']+/i);
     const userUrl = urlMatch ? urlMatch[0] : "";
     urlPriorityHint = `\n\n[⚠ 系统检测到用户提供了URL: ${userUrl}。你必须：
-1. 直接使用 web_fetch 或 scrapling_fetch 抓取该URL页面内容
+1. 直接使用 web_fetch 抓取该URL页面内容
 2. 分析页面HTML结构，找到章节列表或内容选择器
 3. 编写Python爬虫脚本，使用该URL作为起始页
 4. 用 shell_exec 运行脚本（timeout: '1200'）
@@ -352,7 +352,7 @@ export function buildEnhancedMessage(
 
 1. 分析搜索结果中的URL，找到包含章节列表的页面
 2. 使用 web_fetch 抓取章节列表页面，分析HTML结构
-3. 使用 file_create 创建Python爬虫脚本（requests/BeautifulSoup）
+3. 使用 file_write 创建Python爬虫脚本（requests/BeautifulSoup）
 4. 使用 shell_exec 运行脚本
 5. 使用 file_list 检查输出的txt文件是否存在
 6. 向用户报告文件路径

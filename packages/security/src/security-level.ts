@@ -48,7 +48,7 @@ export interface SecurityPolicy {
     /** 达到该风险等级即需人工审批；`null` 表示无需审批 */
     approveAtOrAbove: Extract<ShellRiskLevel, "caution" | "critical"> | null;
   };
-  /** 高危工具操作（file_delete / email_send / git_push 等）是否需要审批 */
+  /** 高危工具操作（file_delete / email / git 等）是否需要审批 */
   approveRiskyOperations: boolean;
 }
 

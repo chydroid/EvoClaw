@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { registerXlsxTools } from "../src/tools/xlsx-tools";
+import { registerDocumentTools } from "../src/tools/document-tools";
 
-describe("xlsx_create tool", () => {
+describe("document tool (action=create_xlsx)", () => {
   let tmpDir: string;
   let handler: (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -15,7 +15,7 @@ describe("xlsx_create tool", () => {
         handler = fn;
       },
     };
-    registerXlsxTools(executor as any, tmpDir);
+    registerDocumentTools(executor as any, tmpDir);
   });
 
   afterEach(() => {
@@ -24,6 +24,7 @@ describe("xlsx_create tool", () => {
 
   it("创建包含表头和数据行的 XLSX 文件", async () => {
     const result = (await handler({
+      action: "create_xlsx",
       path: "report.xlsx",
       sheets: [
         {
@@ -49,6 +50,7 @@ describe("xlsx_create tool", () => {
 
   it("拒绝路径穿越", async () => {
     const result = (await handler({
+      action: "create_xlsx",
       path: "../outside.xlsx",
     })) as { success: boolean; error?: string };
 
@@ -68,11 +70,12 @@ describe("xlsx_create tool", () => {
           wsHandler = fn;
         },
       };
-      registerXlsxTools(wsExecutor as any, tmpDir, wsDir);
+      registerDocumentTools(wsExecutor as any, tmpDir, wsDir);
     });
 
     it("相对路径落在 workspace 而非 fsBase 根", async () => {
       const result = (await wsHandler({
+        action: "create_xlsx",
         path: "inst_eval2/out.xlsx",
       })) as { success: boolean; absolutePath?: string };
 

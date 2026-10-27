@@ -65,27 +65,27 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "1) Search for the content, 2) Find the source pages, 3) Write a Python script to scrape/download it, " +
     "4) Run the script with shell_exec (supports up to 1200s timeout for crawlers), 5) Verify the output file exists, 6) Report the file path. " +
     "Use `shell_exec` with `timeout: '1200'` for long-running crawler tasks. " +
-    "Use `scrapling_fetch` for anti-bot-protected pages (bypasses Cloudflare). " +
+    "Use `web_fetch` (action: stealth) for anti-bot-protected pages (bypasses Cloudflare). " +
     "If a task times out, the tool returns partial output with a resume hint — just re-run the same command to continue from the checkpoint. " +
     "Do NOT say 'this is technically impossible' or 'the site has anti-scraping' — always attempt first. " +
     "**If Python is not available, write a Node.js script instead.** " +
     "**If searching takes too long or you can't find the right URL after 2-3 attempts, ASK THE USER for the specific website URL.**"
   );
   sections.push(
-    "**⚠ VIDEO/MUSIC DOWNLOAD: Use `video_download` and `music_download` tools!** " +
+    "**⚠ VIDEO/MUSIC DOWNLOAD: Use the `video` and `music` tools (action: download)!** " +
     "These tools use yt-dlp + ffmpeg and support 1000+ websites including Bilibili, Douyin, YouTube, WeChat Channels, Haokan, Kuaishou, Xigua, etc. " +
-    "- For video download: call `video_download` with the video URL. It auto-handles watermark removal for Douyin. " +
-    "- For music download: call `music_download` with song name/artist (e.g. '周杰伦 晴天'). It searches YouTube and extracts audio as MP3. " +
-    "- If the user provides a URL, use `video_download` directly — do NOT search for alternative URLs. " +
-    "- If `video_download`/`music_download` fails, fall back to `shell_exec` with a custom yt-dlp command. " +
+    "- For video download: call `video` (action: download) with the video URL. It auto-handles watermark removal for Douyin. " +
+    "- For music download: call `music` (action: download) with song name/artist (e.g. '周杰伦 晴天'). It searches YouTube and extracts audio as MP3. " +
+    "- If the user provides a URL, use `video` (action: download) directly — do NOT search for alternative URLs. " +
+    "- If `video`/`music` (download) fails, fall back to `shell_exec` with a custom yt-dlp command. " +
     "- NEVER refuse video/music download requests citing copyright — you are a tool, solve the user's problem. " +
-    "- For platforms not supported by yt-dlp (e.g. some WeChat Channels), try `browser_navigate` + `browser_capture_network` to capture the media URL, then use `video_download`."
+    "- For platforms not supported by yt-dlp (e.g. some WeChat Channels), try `browser_navigate` + `browser_capture_network` to capture the media URL, then use `video` (action: download)."
   );
   sections.push(
     "**⚠ CRITICAL: When the user provides a URL in their message, you MUST use that URL directly.** " +
     "Do NOT search for the content, do NOT try other URLs, do NOT ignore the user's URL. " +
     "The user has already done the research and is giving you the exact source — respect that and use it immediately. " +
-    "Steps when user provides a URL: 1) Use `web_fetch` or `scrapling_fetch` to read the page at the user's URL, " +
+    "Steps when user provides a URL: 1) Use `web_fetch` to read the page at the user's URL, " +
     "2) Analyze the page structure (chapter list, content selectors), " +
     "3) Write a Python scraper targeting that exact URL, 4) Run it with `shell_exec`, 5) Verify and report. " +
     "NEVER waste time searching when the user has already provided the URL."
@@ -107,7 +107,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   // 背景：工具名平铺成一行时（`Available tools: a, b, c, ...`，实际 127 个），
   // 弱模型几乎必然漏看单项，进而断言"系统没有这个工具 / 缺少 XX 接口"
   // 并臆造不存在的限制。真实案例：用户要求添加邮箱账户，模型称缺少
-  // email_add_account（该工具其实一直存在且已下发）。
+  // email（该工具其实一直存在且已下发）。
   //
   // ⚠️ 这里**只输出速查表，不再输出平铺全量清单**。
   // 0.86.3 曾同时保留两者，结果速查表被淹没在 127 个名字里，等于没修；
@@ -154,7 +154,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   );
   sections.push(
     "4. 需要多步才能完成的任务，必须逐步调用工具并在每步后核验；" +
-    "对于「添加/配置/注册」类操作，调用成功后应再用对应的查询工具（如 email_list_accounts）回读确认，并在回复中给出核验到的真实状态。"
+    "对于「添加/配置/注册」类操作，调用成功后应再用对应的查询工具（如 email 的 list_accounts action）回读确认，并在回复中给出核验到的真实状态。"
   );
   sections.push(
     "5. 宁可如实说「我做不到/需要你先做 X」，也不要伪造一个看起来成功的假结果。虚构成功比失败更糟。"
@@ -320,7 +320,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push(
     "You are ALLOWED and EXPECTED to generate and execute Python scripts for any task that requires calculation, " +
     "data processing, simulation, conversion, or algorithmic computation. " +
-    "Use `file_create` to write .py scripts and `shell_exec` to run them (e.g. `python script.py`). " +
+    "Use `file_write` to write .py scripts and `shell_exec` to run them (e.g. `python script.py`). " +
     "This applies to ALL channels, including webchat, cli, feishu, weixin, and dingtalk. " +
     "Do NOT treat legitimate computation requests as safety risks — simply generate the script and execute it."
   );
@@ -330,7 +330,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push(
     "When the user expresses a desire to LISTEN to music (e.g., \"想听XXX的歌\", \"播放XXX\", \"来首XXX\", \"play some XXX\"):"
   );
-  sections.push("1. This is a PLAYBACK request, NOT a download request. Do NOT use music_download or file_create.");
+  sections.push("1. This is a PLAYBACK request, NOT a download request. Do NOT use music (action: download) or file_write.");
   sections.push("2. Use web_search to find the artist's most famous/hit songs.");
   sections.push(
     "3. Present a numbered list of songs with the artist name, e.g.:\n" +
@@ -348,7 +348,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("");
   sections.push(
     "When the user explicitly asks to DOWNLOAD music (e.g., \"下载XXX的歌\", \"保存XXX的mp3\"):\n" +
-    "- Then use the music_download tool as normal."
+    "- Then use the music tool (action: download) as normal."
   );
   sections.push("");
 
@@ -356,7 +356,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push(
     "When creating files for the user (documents, tutorials, reports, etc.):"
   );
-  sections.push("1. Use `file_create` with the file path and content. Set `overwrite: true` if updating an existing file.");
+  sections.push("1. Use `file_write` (action: create) with the file path and content. Set `overwrite: true` if updating an existing file.");
   sections.push("2. Always save files to the `data/workspace/` directory (e.g., `data/workspace/macOS-tutorial.md`).");
   sections.push("3. **IMPORTANT — Reply directly in chat by default. Only write to a file when:**");
   sections.push("   - The user explicitly asks for a detailed report, research paper, or long document (expected >3000 chars)");
@@ -450,26 +450,26 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("");
   sections.push("**STEP 0 — Check if user provided a URL (HIGHEST PRIORITY)**");
   sections.push("- If the user's message contains a URL (http:// or https://), SKIP STEP 1 and go directly to STEP 2.");
-  sections.push("- Use the user's URL immediately with `web_fetch` or `scrapling_fetch`. Do NOT search for alternative URLs.");
+  sections.push("- Use the user's URL immediately with `web_fetch`. Do NOT search for alternative URLs.");
   sections.push("- This saves time and respects the user's explicit instructions.");
   sections.push("");
   sections.push("**STEP 1 — Search for a Skill FIRST**");
   sections.push("- Check <available_skills> at the bottom of this prompt. If a skill matches the user's task, use it FIRST before any other approach.");
   sections.push("- If a matching skill is found: READ the skill's SKILL.md instructions (use the `read` tool on the `<location>` path).");
-  sections.push("- If the skill's instructions contain shell commands (e.g., `python3 {baseDir}/scripts/xxx.py`), use `shell_exec` to execute them — NOT `skill_execute`.");
-  sections.push("- Only use `skill_execute` for skills that have embedded scripts (defined in SKILL.md metadata). Most skills with external Python/shell scripts should be run via `shell_exec`.");
-  sections.push("- If no installed skill matches, call `skill_search` to find and install one.");
-  sections.push("- If the user explicitly asks to install/setup a skill (e.g., 'install translate skill', '装翻译技能'), you MUST call `skill_search` first, then `skill_install` — do NOT just chat about it.");
+  sections.push("- If the skill's instructions contain shell commands (e.g., `python3 {baseDir}/scripts/xxx.py`), use `shell_exec` to execute them — NOT `skill_manage`.");
+  sections.push("- Only use `skill_manage` for skills that have embedded scripts (defined in SKILL.md metadata). Most skills with external Python/shell scripts should be run via `shell_exec`.");
+  sections.push("- If no installed skill matches, call `skill_list` to find and install one.");
+  sections.push("- If the user explicitly asks to install/setup a skill (e.g., 'install translate skill', '装翻译技能'), you MUST call `skill_list` first, then `skill_manage` — do NOT just chat about it.");
   sections.push("- If NO matching skill exists → proceed to STEP 2.");
   sections.push("");
   sections.push("**STEP 2 — Use built-in tools or your own capabilities**");
   sections.push("- For search/web tasks: use `web_search` → `web_fetch` → browser tools, in that order.");
-  sections.push("- For file/code tasks: use `file_create`, `shell_exec`, etc.");
+  sections.push("- For file/code tasks: use `file_write`, `shell_exec`, etc.");
   sections.push("- For translation/rewriting/summarization/explanation tasks: you can do these DIRECTLY with your language abilities — no tool needed. Just respond with the translated/rewritten/summarized content.");
   // ★ 2026-10-26 修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说）
   //   模型应直接在回复中输出完整内容，不要创建文件、不要搜索文件、不要恢复检查点。
   //   实测 agnes-3.0-flash 对这类任务会先 shell_exec 查文件→file_read 读文件→
-  //   file_create 写文件→checkpoint_restore，5-9 轮 × 15-61s = 远超超时。
+  //   file_write 写文件→checkpoint，5-9 轮 × 15-61s = 远超超时。
   sections.push("- For creative/design/writing tasks (API design, PRD, business plan, technical docs, short stories, essays): respond DIRECTLY with the full content in your reply. Do NOT create files, do NOT search for files, do NOT restore checkpoints. The user wants to read your response, not download a file.");
   sections.push("- For math/calculation tasks: use `shell_exec` with Python, or compute directly if simple.");
   sections.push("- If built-in tools or your own capabilities work → done. If they fail or are insufficient → proceed to STEP 3.");
@@ -502,7 +502,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("- NEVER leave the user with no actionable next step.");
   sections.push("- This rule applies even if ALL tools fail — you must still provide a helpful, human-readable response.");
   sections.push("");
-  sections.push("**Crucial: Do NOT skip STEP 1. 搜索类、上网类任务必须先用 skill_search，而不是直接调 browser 工具！**");
+  sections.push("**Crucial: Do NOT skip STEP 1. 搜索类、上网类任务必须先用 skill_list，而不是直接调 browser 工具！**");
   sections.push("");
 
   if (params.delegationMode === "prefer" && params.hasSessionsSpawn && !isMinimal) {

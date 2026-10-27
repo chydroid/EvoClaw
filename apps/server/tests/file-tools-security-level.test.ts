@@ -27,13 +27,14 @@ const IS_WIN = process.platform === "win32";
 interface Registered {
   name: string;
   handler: (params: Record<string, unknown>) => Promise<unknown>;
+  definition: Record<string, unknown>;
 }
 
 function mountTools(): Map<string, Registered> {
   const registry = new Map<string, Registered>();
   const executor = {
-    registerTool(name: string, _def: unknown, handler: Registered["handler"]) {
-      registry.set(name, { name, handler });
+    registerTool(name: string, def: Record<string, unknown>, handler: Registered["handler"]) {
+      registry.set(name, { name, handler, definition: def });
     },
   } as never;
 
@@ -72,10 +73,22 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
     return (await entry.handler(params)) as Record<string, unknown>;
   };
 
+  it("★ file_write 是复合工具：action 必填且只开放 create / modify", () => {
+    // 合并自 file_create + file_modify：判别字段缺失或拼错会让模型静默走错分支
+    const tools = mountTools();
+    const def = tools.get("file_write")!.definition;
+    const action = def.parameters as { action: { required?: boolean; enum?: string[] } };
+    expect(action.required).toBe(true);
+    expect(action.enum).toEqual(["create", "modify"]);
+    // 原 file_create / file_modify 两个独立工具已不再注册
+    expect(tools.has("file_create")).toBe(false);
+    expect(tools.has("file_modify")).toBe(false);
+  });
+
   it("★ 严格档：沙箱外创建文件被直接拒绝（不得静默放行）", async () => {
     setActiveSecurityLevel("strict");
     const target = path.join(OUTSIDE_DIR, "strict-probe.txt");
-    const r = await run("file_create", { path: target, content: "x" });
+    const r = await run("file_write", { action: "create", path: target, content: "x" });
     expect(r.success).toBe(false);
     expect(String(r.error)).toContain("安全策略");
     expect(String(r.error)).toContain("严格安全");
@@ -91,7 +104,7 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
 
   it("★ 严格档：沙箱内创建文件正常放行", async () => {
     setActiveSecurityLevel("strict");
-    const r = await run("file_create", { path: "inside-probe.txt", content: "hello" });
+    const r = await run("file_write", { action: "create", path: "inside-probe.txt", content: "hello" });
     expect(r.success).not.toBe(false);
   });
 
@@ -135,7 +148,7 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
     } as never;
     registerFileTools(executor, permissionManager, undefined, errRecovery, fsMgr, FS_BASE, WORKSPACE);
 
-    const r = (await registry.get("file_create")!.handler({ path: target, content: "x" })) as Record<string, unknown>;
+    const r = (await registry.get("file_write")!.handler({ action: "create", path: target, content: "x" })) as Record<string, unknown>;
     expect(r.success).toBe(false);
     expect(r.requiresPermission).toBe(true);
     expect(String(r.error)).toContain("沙箱外");
@@ -144,14 +157,15 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
   it("★ 一定风险档：沙箱外读写都放行，不产生审批", async () => {
     setActiveSecurityLevel("risky");
     const target = path.join(OUTSIDE_DIR, "risky-probe.txt");
-    const r = await run("file_create", { path: target, content: "x" });
+    const r = await run("file_write", { action: "create", path: target, content: "x" });
     expect(r.requiresPermission).toBeUndefined();
     expect(r.success).not.toBe(false);
   });
 
   it("★ 相对路径穿越在严格档被拦截（traversal 防护未被安全等级放松）", async () => {
     setActiveSecurityLevel("strict");
-    const r = await run("file_create", {
+    const r = await run("file_write", {
+      action: "create",
       path: "../../../../../../../../Windows/System32/drivers/etc/hosts",
       content: "x",
     });
@@ -188,7 +202,7 @@ describe.skipIf(!IS_WIN)("file-tools 路径归一 —— 重复拼接与返回�
   // 模型按 shell_exec 的 cwd 推断，传 `data/workspace/x.py`（以为相对项目根）。
   // 而相对路径已改为按 workspace 解析 → 拼成 <ws>/data/workspace/x.py，
   // 脚本写进嵌套目录；随后 `node x.py` 报 SyntaxError，模型误判为
-  // 「file_create 往内容里注入了 ## Code Analyzer Report」，白绕好几轮。
+  // 「file_write 往内容里注入了 ## Code Analyzer Report」，白绕好几轮。
   const mount = () => {
     const reg = new Map<string, { name: string; handler: (p: Record<string, unknown>) => Promise<unknown> }>();
     const executor = {
@@ -216,7 +230,8 @@ describe.skipIf(!IS_WIN)("file-tools 路径归一 —— 重复拼接与返回�
 
   it("★ 传 data/workspace/x.py 不得拼成 workspace/data/workspace/x.py", async () => {
     resetActiveSecurityLevel();
-    const r = (await mount().get("file_create")!.handler({
+    const r = (await mount().get("file_write")!.handler({
+      action: "create",
       path: "data/workspace/deep_probe.py",
       content: "x",
     })) as Record<string, unknown>;
@@ -227,7 +242,8 @@ describe.skipIf(!IS_WIN)("file-tools 路径归一 —— 重复拼接与返回�
 
   it("★ 多层重复前缀应被完全剥掉", async () => {
     resetActiveSecurityLevel();
-    const r = (await mount().get("file_create")!.handler({
+    const r = (await mount().get("file_write")!.handler({
+      action: "create",
       path: "data/workspace/data/workspace/deep2.py",
       content: "x",
     })) as Record<string, unknown>;
@@ -237,14 +253,14 @@ describe.skipIf(!IS_WIN)("file-tools 路径归一 —— 重复拼接与返回�
 
   it("★ 返回可直接复用的绝对路径（模型据此设 cwd 不会再拼错）", async () => {
     resetActiveSecurityLevel();
-    const r = (await mount().get("file_create")!.handler({ path: "probe_abs.py", content: "x" })) as Record<string, unknown>;
+    const r = (await mount().get("file_write")!.handler({ action: "create", path: "probe_abs.py", content: "x" })) as Record<string, unknown>;
     expect(String(r.path)).toMatch(/^[A-Za-z]:[\\/]/); // 绝对路径
     expect(typeof r.workspaceRelative).toBe("string");
   });
 
   it("普通相对路径行为不变", async () => {
     resetActiveSecurityLevel();
-    const r = (await mount().get("file_create")!.handler({ path: "plain.py", content: "x" })) as Record<string, unknown>;
+    const r = (await mount().get("file_write")!.handler({ action: "create", path: "plain.py", content: "x" })) as Record<string, unknown>;
     expect(String(r.path).replace(/\\/g, "/")).toContain("data/workspace/plain.py");
   });
 });

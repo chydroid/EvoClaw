@@ -70,9 +70,13 @@ export interface ToolAccessDecision {
 // ─── Pre-defined category rules ───────────────────────────────────────────────
 
 const SHELL_TOOLS = ["shell_exec", "exec", "bash", "process", "run"];
-const FILE_TOOLS = ["file_read", "file_write", "file_create", "file_modify", "file_delete", "file_list", "file_search"];
-const WEB_TOOLS = ["web_search", "web_fetch", "fetch_node_page", "http_request", "browser_fetch_json"];
-const BROWSER_TOOLS = ["browser_navigate", "browser_get_text", "browser_click", "browser_screenshot", "browser_fill", "browser_launch", "browser_tabs", "browser_get_html", "browser_evaluate"];
+const FILE_TOOLS = ["file_read", "file_write", "file_delete", "file_list", "file_search"];
+const WEB_TOOLS = ["web_search", "web_fetch", "http_request"];
+const BROWSER_TOOLS = [
+  "browser_navigate", "browser_get", "browser_act", "browser_screenshot",
+  "browser_launch", "browser_tabs", "browser_scroll",
+  "browser_extract_dom", "browser_login", "browser_wait", "browser_js_eval",
+];
 const SYSTEM_TOOLS = ["shell_exec", "process", "cron", "scheduler", "gateway"];
 
 function getToolCategory(toolName: string): string | null {
@@ -101,7 +105,6 @@ export const DEFAULT_SANDBOX_POLICY: ToolPolicyConfig = {
     { tool: "file_list", action: "allow" },
     { tool: "web_search", action: "allow" },
     { tool: "web_fetch", action: "allow" },
-    { tool: "fetch_node_page", action: "allow" },
   ],
   defaultAction: "deny",
 };

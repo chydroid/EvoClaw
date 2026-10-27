@@ -73,7 +73,7 @@ function summarizeToolResult(toolName: string, result: unknown): string {
     return `Search results: ${str.slice(0, 200)}...${urls ? ` URLs: ${urls}` : ""}`;
   }
 
-  if (toolName === "file_create" || toolName === "file_modify") {
+  if (toolName === "file_write") {
     const pathMatch = str.match(/(?:path|file)[:：]\s*"?([^"\n]+)/i);
     return pathMatch ? `File operation: ${pathMatch[1]}` : str.slice(0, MAX_TOOL_RESULT_SUMMARY);
   }
@@ -241,7 +241,7 @@ export function createMemoryEnhancerPlugin(): Plugin {
       priority: "normal",
       handler: async (hook) => {
         const h = hook as AfterToolCallHook;
-        const significantTools = ["file_create", "file_modify", "file_delete", "web_search", "web_fetch", "skill_execute", "markitdown_convert"];
+        const significantTools = ["file_write", "file_delete", "web_search", "web_fetch", "skill_manage", "markitdown_convert"];
 
         if (significantTools.includes(h.toolName) && !h.errored) {
           const sessionId = h.context?.sessionId;

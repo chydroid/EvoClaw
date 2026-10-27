@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { registerDocxTools } from "../src/tools/docx-tools";
+import { registerDocumentTools } from "../src/tools/document-tools";
 
-describe("docx_create tool", () => {
+describe("document tool (action=create_docx)", () => {
   let tmpDir: string;
   let handler: (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -15,7 +15,7 @@ describe("docx_create tool", () => {
         handler = fn;
       },
     };
-    registerDocxTools(executor as any, tmpDir);
+    registerDocumentTools(executor as any, tmpDir);
   });
 
   afterEach(() => {
@@ -24,6 +24,7 @@ describe("docx_create tool", () => {
 
   it("创建包含标题、段落和表格的 DOCX 文件", async () => {
     const result = (await handler({
+      action: "create_docx",
       path: "report.docx",
       title: "EvoClaw 介绍",
       paragraphs: [
@@ -55,6 +56,7 @@ describe("docx_create tool", () => {
 
   it("拒绝路径穿越", async () => {
     const result = (await handler({
+      action: "create_docx",
       path: "../outside.docx",
       title: "Bad",
     })) as { success: boolean; error?: string };
@@ -78,11 +80,12 @@ describe("docx_create tool", () => {
           wsHandler = fn;
         },
       };
-      registerDocxTools(wsExecutor as any, tmpDir, wsDir);
+      registerDocumentTools(wsExecutor as any, tmpDir, wsDir);
     });
 
     it("相对路径落在 workspace 而非 fsBase 根", async () => {
       const result = (await wsHandler({
+        action: "create_docx",
         path: "inst_eval2/out.docx",
         title: "t",
       })) as { success: boolean; absolutePath?: string };
@@ -96,6 +99,7 @@ describe("docx_create tool", () => {
 
     it("剥离模型习惯性带的 data/workspace/ 前缀", async () => {
       const result = (await wsHandler({
+        action: "create_docx",
         path: "data/workspace/strip.docx",
         title: "t",
       })) as { success: boolean; absolutePath?: string };

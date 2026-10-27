@@ -1076,16 +1076,16 @@ export async function generateChatResponse(
     const prefix = `${targetRoot}${folderName}`;
 
     if (msg.includes("文件夹") || msg.includes("directory") || msg.includes("mkdir")) {
-      if (deps.registeredTools.has("file_create")) {
+      if (deps.registeredTools.has("file_write")) {
         toolsToTry.push({
-          name: "file_create",
-          args: { path: `${prefix}/.gitkeep`, content: "" },
+          name: "file_write",
+          args: { action: "create", path: `${prefix}/.gitkeep`, content: "" },
         });
       }
     }
 
     if (msg.includes("html") || msg.includes("网页")) {
-      if (deps.registeredTools.has("file_create")) {
+      if (deps.registeredTools.has("file_write")) {
         const htmlContent = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1118,14 +1118,14 @@ export async function generateChatResponse(
 </body>
 </html>`;
         toolsToTry.push({
-          name: "file_create",
-          args: { path: `${prefix}/index.html`, content: htmlContent },
+          name: "file_write",
+          args: { action: "create", path: `${prefix}/index.html`, content: htmlContent },
         });
       }
     }
 
     if (msg.includes("css")) {
-      if (deps.registeredTools.has("file_create")) {
+      if (deps.registeredTools.has("file_write")) {
         const cssContent = `/* style.css */
 * {
   margin: 0;
@@ -1223,14 +1223,14 @@ footer {
   font-size: 0.9rem;
 }`;
         toolsToTry.push({
-          name: "file_create",
-          args: { path: `${prefix}/style.css`, content: cssContent },
+          name: "file_write",
+          args: { action: "create", path: `${prefix}/style.css`, content: cssContent },
         });
       }
     }
 
     if (msg.includes("js") || msg.includes("javascript")) {
-      if (deps.registeredTools.has("file_create")) {
+      if (deps.registeredTools.has("file_write")) {
         const jsContent = `// script.js
 document.addEventListener('DOMContentLoaded', () => {
   const greetBtn = document.getElementById('greetBtn');
@@ -1270,8 +1270,8 @@ style.textContent = \`
 document.head.appendChild(style);
 `;
         toolsToTry.push({
-          name: "file_create",
-          args: { path: `${prefix}/script.js`, content: jsContent },
+          name: "file_write",
+          args: { action: "create", path: `${prefix}/script.js`, content: jsContent },
         });
       }
     }
@@ -1368,11 +1368,11 @@ document.head.appendChild(style);
 
     // Proactive skill search for action-oriented tasks
     const isAction = hasActionIntent(message);
-    if (isAction && deps.registeredTools.has("skill_search")) {
+    if (isAction && deps.registeredTools.has("skill_list")) {
       addLine(`🔍 检测到操作意图，正在搜索匹配的Skill...`);
       try {
-        const searchTool = deps.registeredTools.get("skill_search")!;
-        const searchResult = await searchTool.handler({ task: message });
+        const searchTool = deps.registeredTools.get("skill_list")!;
+        const searchResult = await searchTool.handler({ action: "search", task: message });
         const searchObj = typeof searchResult === "object" && searchResult !== null ? (searchResult as Record<string, unknown>) : null;
         if (searchObj?.found) {
           const skillName = String(searchObj.skillName || "");
@@ -1380,9 +1380,9 @@ document.head.appendChild(style);
           addLine(`✅ 找到匹配Skill: "${skillName}" (路径: ${skillPath})`);
           addLine(`📦 正在安装...`);
 
-          if (deps.registeredTools.has("skill_install")) {
-            const installTool = deps.registeredTools.get("skill_install")!;
-            const installResult = await installTool.handler({ path: skillPath });
+          if (deps.registeredTools.has("skill_manage")) {
+            const installTool = deps.registeredTools.get("skill_manage")!;
+            const installResult = await installTool.handler({ action: "install", path: skillPath });
             const installObj = typeof installResult === "object" && installResult !== null ? (installResult as Record<string, unknown>) : null;
             if (installObj?.success) {
               addLine(`✅ Skill "${installObj.skillName || skillName}" 安装成功！`);
@@ -1404,7 +1404,7 @@ document.head.appendChild(style);
           }
         } else {
           addLine(`⚠ 未找到匹配的Skill。`);
-          if (deps.registeredTools.has("skill_create")) {
+          if (deps.registeredTools.has("skill_manage")) {
             addLine(`💡 您可以说"创建Skill"让我自动生成一个，或配置LLM API后重试。`);
           }
         }

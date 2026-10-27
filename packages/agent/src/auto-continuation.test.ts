@@ -33,7 +33,7 @@ describe("detectPrematureStop — 识别「该继续却停下来问人」", () =
 
   it("正常完成汇报不误判（含「已完成」「核实如下」等）", () => {
     for (const ok of [
-      "✅ 添加邮箱 chydroid@163.com 完成，email_list_accounts 已核验到该账户。",
+      "✅ 添加邮箱 chydroid@163.com 完成，email 的 list_accounts 已核验到该账户。",
       "已拉取到 12 封邮件，主题列表如下：…",
       "抱歉，163 邮箱未开启 IMAP，我无法连接。请在 163 网页端开启后再试。",
       "命令执行失败：python -c 在 Windows 下引号转义会报错。我已改用脚本文件重跑，结果如下：…",
@@ -73,9 +73,10 @@ describe("buildContinuationDirective — 续跑指令", () => {
   it("★ 空结果时要求先排查原因，不得凭空补数据", () => {
     const d = buildContinuationDirective({
       kind: "needs_correction",
-      emptyResultTools: [{ name: "email_analyze", field: "totalEmails=0" }],
+      // 原 email_analyze 已合并为 email 的 analyze action
+      emptyResultTools: [{ name: "email", field: "totalEmails=0（email action=analyze）" }],
     });
-    expect(d).toContain("email_analyze");
+    expect(d).toContain("email");
     expect(d).toContain("空/零结果");
     expect(d).toContain("不要凭空补数据");
   });
@@ -101,7 +102,7 @@ describe("buildContinuationDirective — 续跑指令", () => {
 });
 
 describe("detectPrematureStop — 2026-10-07 12:16 会话新增话术（回归）", () => {
-  // 真实事故：模型在 file_create 被拦、node -e 报错后收尾时说了这些话，
+  // 真实事故：模型在 file_write(action=create) 被拦、node -e 报错后收尾时说了这些话，
   // 上一版规则全部漏掉，于是它"轻易停止"了任务。
   it("★「告诉我一声就动手」应判定为停顿", () => {
     expect(detectPrematureStop("你告诉我一声我就动手 🧬")).toBe("ask_user_to_continue");

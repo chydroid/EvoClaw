@@ -2,6 +2,7 @@ import path from "path";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { AutoSkillManager, SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
+import type { SkillOrchestrator } from "@evoclaw/intelligence";
 
 /**
  * 判断任务描述是否已被**内置工具**覆盖。
@@ -60,6 +61,16 @@ function resolveBuiltinToolName(executor: AgentModelExecutor, rawName: string): 
   return null;
 }
 
+/**
+ * Skill Tools — 技能管理复合工具
+ *
+ * 原六个细粒度工具合并为单一复合工具 `skill_manage`，通过 `action` 判别字段分发：
+ *   create / install / uninstall / execute / find_and_install / orchestrate
+ *
+ * 注：`orchestrate` 的实现原位于 apps/server/src/index.ts（注册名 orchestrate_skills），
+ * 依赖的 SkillOrchestrator 实例在 index.ts 构造时注册为 registry 服务
+ * "skillOrchestrator"，此处通过 registry 惰性解析，行为与原实现一致。
+ */
 export function registerAutoSkillTools(
   executor: AgentModelExecutor,
   autoSkillManager: AutoSkillManager,
@@ -68,444 +79,420 @@ export function registerAutoSkillTools(
 ): void {
   const autoSkill = autoSkillManager;
 
-  executor.registerTool(
-    "skill_find_and_install",
-    {
-      name: "skill_find_and_install",
-      description: "Automatically find a suitable skill for a task and install it",
-      parameters: {
-        task: { type: "string", description: "Description of the task to find a skill for" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const task = String(params.task || "");
-      if (!task.trim()) {
-        return { success: false, error: "task is required" };
-      }
-
-      // ── 先查内置工具，再考虑安装外部技能 ──
-      // 事故：用户只是说「添加邮箱」，模型第一轮就去 skill_find_and_install
-      // 找外部技能（最佳匹配度仅 5%，纯属噪音），而 email_add_account 一直是
-      // 内置工具。既浪费一轮，又引入不必要的供应链风险。
-      const builtin = findBuiltinToolsForTask(executor, task);
-      if (builtin.length > 0) {
-        return {
-          success: false,
-          error:
-            "内置工具已具备该能力，请先直接使用内置工具，不要安装外部技能：" +
-            builtin.join(", "),
-          builtinTools: builtin,
-          hint: "只有确认内置工具都无法满足时，才应安装技能。",
-        };
-      }
-
-      return await autoSkill.autoInstallForTask(task);
+  // ── action=find_and_install（原 skill_find_and_install）───────
+  const handleFindAndInstall = async (params: Record<string, unknown>) => {
+    const task = String(params.task || "");
+    if (!task.trim()) {
+      return { success: false, error: "task is required" };
     }
-  );
 
-  // ---- Skill lifecycle tools ----
+    // ── 先查内置工具，再考虑安装外部技能 ──
+    // 事故：用户只是说「添加邮箱」，模型第一轮就去 skill_find_and_install
+    // 找外部技能（最佳匹配度仅 5%，纯属噪音），而 email_add_account 一直是
+    // 内置工具。既浪费一轮，又引入不必要的供应链风险。
+    const builtin = findBuiltinToolsForTask(executor, task);
+    if (builtin.length > 0) {
+      return {
+        success: false,
+        error:
+          "内置工具已具备该能力，请先直接使用内置工具，不要安装外部技能：" +
+          builtin.join(", "),
+        builtinTools: builtin,
+        hint: "只有确认内置工具都无法满足时，才应安装技能。",
+      };
+    }
 
-  executor.registerTool(
-    "skill_install",
-    {
-      name: "skill_install",
-      description: "Install a skill from its SKILL.md file path or skills directory. Use after skill_search finds a match.",
-      parameters: {
-        path: { type: "string", description: "Path to the SKILL.md file or skill folder" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const skillPath = String(params.path || "");
-      try {
-        const installed = await skillManager.installSkill(skillPath);
-        return { success: true, skillId: installed.id, skillName: installed.name, description: installed.description };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+    return await autoSkill.autoInstallForTask(task);
+  };
+
+  // ── action=install（原 skill_install）────────────────────────
+  const handleInstall = async (params: Record<string, unknown>) => {
+    const skillPath = String(params.path || "");
+    try {
+      const installed = await skillManager.installSkill(skillPath);
+      return { success: true, skillId: installed.id, skillName: installed.name, description: installed.description };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  // ── action=execute（原 skill_execute）────────────────────────
+  const handleExecute = async (params: Record<string, unknown>) => {
+    const skillName = String(params.skill || "");
+    let execParams: Record<string, unknown> = {};
+    try {
+      const rawParams = params.params;
+      if (rawParams && typeof rawParams === "object") {
+        execParams = rawParams as Record<string, unknown>;
+      } else if (rawParams && typeof rawParams === "string") {
+        const parsed = JSON.parse(rawParams);
+        if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+          return { success: false, error: "params must be a JSON object, not array or primitive" };
+        }
+        execParams = parsed as Record<string, unknown>;
+      }
+    } catch {
+      return { success: false, error: "Invalid JSON in params parameter" };
+    }
+    // ── 容错：模型把「内置工具」误当成「技能」调用 ──
+    // 真实事故：要求添加邮箱时，模型调用 skill_execute(skill="email_add_account")，
+    // 返回 "Skill not found"，导致任务直接失败（而 email_add_account 其实是可用的内置工具）。
+    //
+    // ⚠️ 这里**只做指引、不自动转发**。
+    // 审批门禁（humanApprovalManager.requiresApproval）位于 llm-caller 的
+    // executeSingleToolCall 中、entry.handler 之前；直接调 handler 会**绕过审批**，
+    // 使 git_push / shell_exec 等高危工具可以借 skill_execute 名字逃掉人工确认。
+    // （这是该修复第一版的真实缺陷：为了"少一轮往返"把安全边界拆了。）
+    // 正确做法是明确告知模型改调真正的工具——模型下一次调用就会走完整审批链路，
+    // 配合自动续跑（auto-continuation）不会造成额外停顿。
+    const redirected = resolveBuiltinToolName(executor, skillName);
+    if (redirected) {
+      return {
+        success: false,
+        error:
+          `「${skillName}」不是技能，而是**内置工具**。请不要通过 skill_execute 调用它，` +
+          `请直接调用工具 \`${redirected}\`（同样的参数即可）。`,
+        builtinTool: redirected,
+        hint: `直接调用 \`${redirected}\` 即可；该调用会经过正常的权限/审批流程。`,
+      };
+    }
+    try {
+      const result = await skillManager.executeSkill(skillName, execParams);
+      return { success: true, result };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  // ── action=create（原 skill_create）──────────────────────────
+  const handleCreate = async (params: Record<string, unknown>) => {
+    const name = String(params.name || "").trim();
+    const desc = String(params.description || "").trim();
+    const instructions = String(params.instructions || "").trim();
+
+    // --- Quality Gates (aligned with skill-creator/quick_validate.py) ---
+
+    const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
+    const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-skill", "temp-"];
+    const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
+
+    // Anti-pattern: names that look like auto-generated task-extraction skills
+    const AUTOGEN_PATTERNS = [
+      /-for-(?:data-)?analysis$/,
+      /-test-(?:case|for)-/,
+      /-verification$/,
+      /-for-tracking-(?:changes|history)$/,
+      /-pipeline-for-/,
+      /-for-large-records$/,
+      /-from-(?:user-)?input/,
+      /-from-task-solution/,
+      /^(?:stats|task)-task-/,
+      /^version-(?:history|management|tracking)-/,
+    ];
+
+    const PLACEHOLDER_DESC_PATTERNS: RegExp[] = [
+      /^执行操作(?:。)?$/,
+      /^方案\d*$/,
+      /^解决[方方]案[ABCDEFG]?(?:方案)?$/,
+      /^任务[ABCDEFG]?(?:描述)?$/,
+      /^auto-generated/i,
+      /^placeholder/i,
+      /^te?mp$/i,
+      /^从任务解决方案中提取的技能/i,
+    ];
+    const PLACEHOLDER_INSTR_PATTERNS: RegExp[] = [
+      /^执行操作(?:。)?$/,
+      /^execut(?:e|ing)\s+(?:the\s+)?task/i,
+      /^方案\d*$/,
+      /^follow\s+the\s+steps$/i,
+    ];
+
+    const errors: string[] = [];
+
+    // 1. Name validation (aligned with skill-creator quick_validate.py)
+    if (!name) {
+      errors.push("Skill name is required");
+    } else if (!NAME_REGEX.test(name)) {
+      errors.push(`Skill name "${name}" must be lowercase, start with a letter, and contain only letters, numbers, and hyphens (e.g. 'news-search')`);
+    } else if (name.length < 3) {
+      errors.push("Skill name must be at least 3 characters");
+    } else if (name.length > 64) {
+      errors.push("Skill name must not exceed 64 characters");
+    } else if (name.includes("--")) {
+      errors.push("Skill name cannot contain consecutive hyphens");
+    } else if (name.endsWith("-")) {
+      errors.push("Skill name cannot end with a hyphen");
+    } else {
+      for (const prefix of RESERVED_PREFIXES) {
+        if (name.startsWith(prefix)) {
+          errors.push(`Skill name cannot start with reserved prefix "${prefix}"`);
+          break;
+        }
+      }
+      if (GENERIC_NAMES.includes(name)) {
+        errors.push(`"${name}" is too generic as a skill name. Use a more specific name describing the actual workflow.`);
+      }
+      // Check auto-generated patterns
+      for (const pattern of AUTOGEN_PATTERNS) {
+        if (pattern.test(name)) {
+          errors.push(`Skill name "${name}" matches an auto-generated task-extraction pattern. Use a concise, reusable name instead (e.g. 'csv-to-json' not 'data-conversion-tool-for-csv-to-json-format').`);
+          break;
+        }
+      }
+      // Reject names with too many hyphen-separated segments (>6 = likely auto-generated)
+      const segments = name.split("-").filter(s => s.length > 0);
+      if (segments.length > 6) {
+        errors.push(`Skill name has too many segments (${segments.length}). Use a concise name with at most 6 hyphen-separated parts.`);
       }
     }
-  );
 
-  executor.registerTool(
-    "skill_execute",
-    {
-      name: "skill_execute",
-      description: "Execute an installed skill by name or ID with parameters",
-      parameters: {
-        skill: { type: "string", description: "Skill name or ID to execute", required: true },
-        params: { type: "object", description: "Parameters to pass to the skill as a JSON object (optional). Can also be a JSON string.", required: false },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const skillName = String(params.skill || "");
-      let execParams: Record<string, unknown> = {};
+    // 2. Description quality (aligned with skill-creator: max 1024 chars, no angle brackets)
+    const isPlaceholder = (text: string, patterns: RegExp[]): boolean => {
+      for (const p of patterns) {
+        if (p.test(text)) return true;
+      }
+      return false;
+    };
+
+    if (!desc) {
+      errors.push("Skill description is required");
+    } else if (desc.length < 30) {
+      errors.push(`Skill description is too short (${desc.length} chars, minimum 30). Provide a meaningful description of what problem this solves and when to use it.`);
+    } else if (desc.length > 1024) {
+      errors.push(`Skill description is too long (${desc.length} chars, maximum 1024). Keep it concise — put details in instructions.`);
+    } else if (/[<>]/.test(desc)) {
+      errors.push("Skill description cannot contain angle brackets (< or >)");
+    } else if (isPlaceholder(desc, PLACEHOLDER_DESC_PATTERNS)) {
+      errors.push(`Skill description "${desc}" appears to be a placeholder. Please provide a meaningful description.`);
+    } else if (desc === name || desc.replace(/[-_\s]/g, "") === name.replace(/[-_\s]/g, "")) {
+      errors.push("Skill description should not be identical to the skill name. Describe what the skill does.");
+    }
+
+    // 3. Instructions quality
+    if (!instructions) {
+      errors.push("Skill instructions are required");
+    } else if (instructions.length < 200) {
+      errors.push(`Skill instructions are too short (${instructions.length} chars, minimum 200). Instructions must contain substantive content, not just a template shell.`);
+    } else if (instructions.length > 20000) {
+      errors.push(`Skill instructions are too long (${instructions.length} chars, maximum 20000). Move detailed references to a references/ directory.`);
+    } else if (isPlaceholder(instructions, PLACEHOLDER_INSTR_PATTERNS)) {
+      errors.push("Skill instructions appear to be a placeholder. Provide concrete, actionable steps.");
+    }
+
+    // 3.1 指令步骤验证：必须包含至少 2 个具体步骤或操作
+    if (instructions) {
+      const numberedSteps = instructions.match(/\b\d+\.\s/g) || [];
+      const listItems = instructions.match(/^[\s]*[-*]\s/gm) || [];
+      const totalSteps = numberedSteps.length + listItems.length;
+      if (totalSteps < 2) {
+        errors.push(`Skill instructions must include at least 2 concrete steps or actions (found ${totalSteps}). Use numbered steps (e.g. "1.") or list items (e.g. "- ").`);
+      }
+    }
+
+    // 3.2 禁止模板步骤检测：拒绝完全相同的7步模板
+    if (instructions) {
+      const TEMPLATE_STEPS = ["Initialize", "Parse", "Execute", "Handle edge cases", "Format", "Log", "Cleanup"];
+      const allTemplateStepsPresent = TEMPLATE_STEPS.every(step => instructions.includes(step));
+      if (allTemplateStepsPresent) {
+        errors.push("Skill instructions appear to follow a generic 7-step template (Initialize → Parse → Execute → Handle edge cases → Format → Log → Cleanup). Provide domain-specific steps instead.");
+      }
+    }
+
+    // 3.3 功能性验证：instructions 必须提及至少一个具体的工具、API、脚本或命令
+    if (instructions) {
+      const FUNCTIONAL_KEYWORDS = /\b(API|script|fetch|curl|python|node|http|endpoint|command|npm|pip|docker|git|ssh|sql|redis|mongo|postgres|axios|request|shell|bash|powershell|cli|sdk|library|module|import|require|exec|spawn|run)\b/i;
+      if (!FUNCTIONAL_KEYWORDS.test(instructions)) {
+        errors.push("Skill instructions must reference at least one concrete tool, API, script, or command (e.g. API, fetch, curl, python, node, http, endpoint, command). Purely abstract instructions are not allowed.");
+      }
+    }
+
+    // 3.4 名称与描述相关性：name 中的关键词必须出现在 description 中
+    if (name && desc) {
+      const nameWords = name.split(/[-_]/).filter(w => w.length > 2);
+      const descLower = desc.toLowerCase();
+      const matchedWords = nameWords.filter(w => descLower.includes(w));
+      if (nameWords.length > 0 && matchedWords.length === 0) {
+        errors.push(`Skill name keywords (${nameWords.join(", ")}) do not appear in the description. The description should relate to the skill name.`);
+      }
+    }
+
+    // 4. Check for duplicate and similar skills (enhanced with fuzzy matching)
+    if (errors.length === 0) {
       try {
-        const rawParams = params.params;
-        if (rawParams && typeof rawParams === "object") {
-          execParams = rawParams as Record<string, unknown>;
-        } else if (rawParams && typeof rawParams === "string") {
-          const parsed = JSON.parse(rawParams);
-          if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-            return { success: false, error: "params must be a JSON object, not array or primitive" };
+        const existing = await skillManager.listSkills();
+        // Exact and normalized match
+        const exact = existing.filter((s: { name: string }) =>
+          s.name.toLowerCase() === name.toLowerCase() ||
+          s.name.toLowerCase().replace(/[-_\s]/g, "") === name.toLowerCase().replace(/[-_\s]/g, "")
+        );
+        if (exact.length > 0) {
+          errors.push(`A skill with the same name "${exact[0].name}" already exists. Use skill_improve to update it instead.`);
+        } else {
+          // Fuzzy match: check if name is too similar to existing skills
+          const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
+          const normalizedName = normalize(name);
+          for (const s of existing as Array<{ name: string; description?: string }>) {
+            const existingNorm = normalize(s.name);
+            // Levenshtein-like check: if one name is a substring of the other or they share most characters
+            if (existingNorm.includes(normalizedName) || normalizedName.includes(existingNorm)) {
+              errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}". Use skill_improve to update it instead.`);
+              break;
+            }
+            // Jaccard similarity on character bigrams
+            const bigramsA = new Set<string>();
+            for (let i = 0; i < normalizedName.length - 1; i++) bigramsA.add(normalizedName.slice(i, i + 2));
+            const bigramsB = new Set<string>();
+            for (let i = 0; i < existingNorm.length - 1; i++) bigramsB.add(existingNorm.slice(i, i + 2));
+            let intersection = 0;
+            for (const b of bigramsA) if (bigramsB.has(b)) intersection++;
+            const union = bigramsA.size + bigramsB.size - intersection;
+            const similarity = union > 0 ? intersection / union : 0;
+            if (similarity > 0.7) {
+              errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}" (similarity ${(similarity * 100).toFixed(0)}%). Use skill_improve to update it instead.`);
+              break;
+            }
           }
-          execParams = parsed as Record<string, unknown>;
         }
       } catch {
-        return { success: false, error: "Invalid JSON in params parameter" };
-      }
-      // ── 容错：模型把「内置工具」误当成「技能」调用 ──
-      // 真实事故：要求添加邮箱时，模型调用 skill_execute(skill="email_add_account")，
-      // 返回 "Skill not found"，导致任务直接失败（而 email_add_account 其实是可用的内置工具）。
-      //
-      // ⚠️ 这里**只做指引、不自动转发**。
-      // 审批门禁（humanApprovalManager.requiresApproval）位于 llm-caller 的
-      // executeSingleToolCall 中、entry.handler 之前；直接调 handler 会**绕过审批**，
-      // 使 git_push / shell_exec 等高危工具可以借 skill_execute 名字逃掉人工确认。
-      // （这是该修复第一版的真实缺陷：为了"少一轮往返"把安全边界拆了。）
-      // 正确做法是明确告知模型改调真正的工具——模型下一次调用就会走完整审批链路，
-      // 配合自动续跑（auto-continuation）不会造成额外停顿。
-      const redirected = resolveBuiltinToolName(executor, skillName);
-      if (redirected) {
-        return {
-          success: false,
-          error:
-            `「${skillName}」不是技能，而是**内置工具**。请不要通过 skill_execute 调用它，` +
-            `请直接调用工具 \`${redirected}\`（同样的参数即可）。`,
-          builtinTool: redirected,
-          hint: `直接调用 \`${redirected}\` 即可；该调用会经过正常的权限/审批流程。`,
-        };
-      }
-      try {
-        const result = await skillManager.executeSkill(skillName, execParams);
-        return { success: true, result };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+        // listSkills may fail — non-fatal
       }
     }
-  );
 
-  executor.registerTool(
-    "skill_create",
-    {
-      name: "skill_create",
-      description: "Create a new reusable Skill when no existing skill matches the task. Only use for genuinely reusable workflows that solve a generalizable problem. Skills must have a meaningful lowercase-hyphenated name (e.g. 'news-search', 'csv-to-json'), a substantive description of what problem it solves and when to use it, and detailed step-by-step instructions with actual tools/APIs/code. DO NOT create skills for one-off tasks, placeholder content, or tasks solvable by a single existing tool.",
-      parameters: {
-        name: { type: "string", description: "Skill name in lowercase-hyphenated format (e.g. 'news-search'). Must be meaningful and reusable." },
-        description: { type: "string", description: "What problem this skill solves and when to use it. Be specific about the use case." },
-        instructions: { type: "string", description: "Detailed step-by-step instructions with concrete tools, APIs, and code to execute. Must be specific and actionable." },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const name = String(params.name || "").trim();
-      const desc = String(params.description || "").trim();
-      const instructions = String(params.instructions || "").trim();
-
-      // --- Quality Gates (aligned with skill-creator/quick_validate.py) ---
-
-      const NAME_REGEX = /^[a-z][a-z0-9-]*$/;
-      const RESERVED_PREFIXES = ["curated-skill", "custom-skill", "new-skill", "test-skill", "temp-"];
-      const GENERIC_NAMES = ["task", "test", "skill", "tool", "helper", "util", "plugin", "script", "module", "action"];
-
-      // Anti-pattern: names that look like auto-generated task-extraction skills
-      const AUTOGEN_PATTERNS = [
-        /-for-(?:data-)?analysis$/,
-        /-test-(?:case|for)-/,
-        /-verification$/,
-        /-for-tracking-(?:changes|history)$/,
-        /-pipeline-for-/,
-        /-for-large-records$/,
-        /-from-(?:user-)?input/,
-        /-from-task-solution/,
-        /^(?:stats|task)-task-/,
-        /^version-(?:history|management|tracking)-/,
-      ];
-
-      const PLACEHOLDER_DESC_PATTERNS: RegExp[] = [
-        /^执行操作(?:。)?$/,
-        /^方案\d*$/,
-        /^解决[方方]案[ABCDEFG]?(?:方案)?$/,
-        /^任务[ABCDEFG]?(?:描述)?$/,
-        /^auto-generated/i,
-        /^placeholder/i,
-        /^te?mp$/i,
-        /^从任务解决方案中提取的技能/i,
-      ];
-      const PLACEHOLDER_INSTR_PATTERNS: RegExp[] = [
-        /^执行操作(?:。)?$/,
-        /^execut(?:e|ing)\s+(?:the\s+)?task/i,
-        /^方案\d*$/,
-        /^follow\s+the\s+steps$/i,
-      ];
-
-      const errors: string[] = [];
-
-      // 1. Name validation (aligned with skill-creator quick_validate.py)
-      if (!name) {
-        errors.push("Skill name is required");
-      } else if (!NAME_REGEX.test(name)) {
-        errors.push(`Skill name "${name}" must be lowercase, start with a letter, and contain only letters, numbers, and hyphens (e.g. 'news-search')`);
-      } else if (name.length < 3) {
-        errors.push("Skill name must be at least 3 characters");
-      } else if (name.length > 64) {
-        errors.push("Skill name must not exceed 64 characters");
-      } else if (name.includes("--")) {
-        errors.push("Skill name cannot contain consecutive hyphens");
-      } else if (name.endsWith("-")) {
-        errors.push("Skill name cannot end with a hyphen");
-      } else {
-        for (const prefix of RESERVED_PREFIXES) {
-          if (name.startsWith(prefix)) {
-            errors.push(`Skill name cannot start with reserved prefix "${prefix}"`);
-            break;
-          }
-        }
-        if (GENERIC_NAMES.includes(name)) {
-          errors.push(`"${name}" is too generic as a skill name. Use a more specific name describing the actual workflow.`);
-        }
-        // Check auto-generated patterns
-        for (const pattern of AUTOGEN_PATTERNS) {
-          if (pattern.test(name)) {
-            errors.push(`Skill name "${name}" matches an auto-generated task-extraction pattern. Use a concise, reusable name instead (e.g. 'csv-to-json' not 'data-conversion-tool-for-csv-to-json-format').`);
-            break;
-          }
-        }
-        // Reject names with too many hyphen-separated segments (>6 = likely auto-generated)
-        const segments = name.split("-").filter(s => s.length > 0);
-        if (segments.length > 6) {
-          errors.push(`Skill name has too many segments (${segments.length}). Use a concise name with at most 6 hyphen-separated parts.`);
-        }
-      }
-
-      // 2. Description quality (aligned with skill-creator: max 1024 chars, no angle brackets)
-      const isPlaceholder = (text: string, patterns: RegExp[]): boolean => {
-        for (const p of patterns) {
-          if (p.test(text)) return true;
-        }
-        return false;
+    if (errors.length > 0) {
+      return {
+        success: false,
+        error: `Skill creation rejected. ${errors.join("; ")}`,
+        details: {
+          rejected: true,
+          reason: "quality_gate",
+          errors,
+          hint: "Skills should represent reusable, generalizable workflows with concrete instructions. Do not create skills for one-off tasks or with placeholder content.",
+        },
       };
-
-      if (!desc) {
-        errors.push("Skill description is required");
-      } else if (desc.length < 30) {
-        errors.push(`Skill description is too short (${desc.length} chars, minimum 30). Provide a meaningful description of what problem this solves and when to use it.`);
-      } else if (desc.length > 1024) {
-        errors.push(`Skill description is too long (${desc.length} chars, maximum 1024). Keep it concise — put details in instructions.`);
-      } else if (/[<>]/.test(desc)) {
-        errors.push("Skill description cannot contain angle brackets (< or >)");
-      } else if (isPlaceholder(desc, PLACEHOLDER_DESC_PATTERNS)) {
-        errors.push(`Skill description "${desc}" appears to be a placeholder. Please provide a meaningful description.`);
-      } else if (desc === name || desc.replace(/[-_\s]/g, "") === name.replace(/[-_\s]/g, "")) {
-        errors.push("Skill description should not be identical to the skill name. Describe what the skill does.");
-      }
-
-      // 3. Instructions quality
-      if (!instructions) {
-        errors.push("Skill instructions are required");
-      } else if (instructions.length < 200) {
-        errors.push(`Skill instructions are too short (${instructions.length} chars, minimum 200). Instructions must contain substantive content, not just a template shell.`);
-      } else if (instructions.length > 20000) {
-        errors.push(`Skill instructions are too long (${instructions.length} chars, maximum 20000). Move detailed references to a references/ directory.`);
-      } else if (isPlaceholder(instructions, PLACEHOLDER_INSTR_PATTERNS)) {
-        errors.push("Skill instructions appear to be a placeholder. Provide concrete, actionable steps.");
-      }
-
-      // 3.1 指令步骤验证：必须包含至少 2 个具体步骤或操作
-      if (instructions) {
-        const numberedSteps = instructions.match(/\b\d+\.\s/g) || [];
-        const listItems = instructions.match(/^[\s]*[-*]\s/gm) || [];
-        const totalSteps = numberedSteps.length + listItems.length;
-        if (totalSteps < 2) {
-          errors.push(`Skill instructions must include at least 2 concrete steps or actions (found ${totalSteps}). Use numbered steps (e.g. "1.") or list items (e.g. "- ").`);
-        }
-      }
-
-      // 3.2 禁止模板步骤检测：拒绝完全相同的7步模板
-      if (instructions) {
-        const TEMPLATE_STEPS = ["Initialize", "Parse", "Execute", "Handle edge cases", "Format", "Log", "Cleanup"];
-        const allTemplateStepsPresent = TEMPLATE_STEPS.every(step => instructions.includes(step));
-        if (allTemplateStepsPresent) {
-          errors.push("Skill instructions appear to follow a generic 7-step template (Initialize → Parse → Execute → Handle edge cases → Format → Log → Cleanup). Provide domain-specific steps instead.");
-        }
-      }
-
-      // 3.3 功能性验证：instructions 必须提及至少一个具体的工具、API、脚本或命令
-      if (instructions) {
-        const FUNCTIONAL_KEYWORDS = /\b(API|script|fetch|curl|python|node|http|endpoint|command|npm|pip|docker|git|ssh|sql|redis|mongo|postgres|axios|request|shell|bash|powershell|cli|sdk|library|module|import|require|exec|spawn|run)\b/i;
-        if (!FUNCTIONAL_KEYWORDS.test(instructions)) {
-          errors.push("Skill instructions must reference at least one concrete tool, API, script, or command (e.g. API, fetch, curl, python, node, http, endpoint, command). Purely abstract instructions are not allowed.");
-        }
-      }
-
-      // 3.4 名称与描述相关性：name 中的关键词必须出现在 description 中
-      if (name && desc) {
-        const nameWords = name.split(/[-_]/).filter(w => w.length > 2);
-        const descLower = desc.toLowerCase();
-        const matchedWords = nameWords.filter(w => descLower.includes(w));
-        if (nameWords.length > 0 && matchedWords.length === 0) {
-          errors.push(`Skill name keywords (${nameWords.join(", ")}) do not appear in the description. The description should relate to the skill name.`);
-        }
-      }
-
-      // 4. Check for duplicate and similar skills (enhanced with fuzzy matching)
-      if (errors.length === 0) {
-        try {
-          const existing = await skillManager.listSkills();
-          // Exact and normalized match
-          const exact = existing.filter((s: { name: string }) =>
-            s.name.toLowerCase() === name.toLowerCase() ||
-            s.name.toLowerCase().replace(/[-_\s]/g, "") === name.toLowerCase().replace(/[-_\s]/g, "")
-          );
-          if (exact.length > 0) {
-            errors.push(`A skill with the same name "${exact[0].name}" already exists. Use skill_improve to update it instead.`);
-          } else {
-            // Fuzzy match: check if name is too similar to existing skills
-            const normalize = (s: string) => s.toLowerCase().replace(/[-_\s]/g, "");
-            const normalizedName = normalize(name);
-            for (const s of existing as Array<{ name: string; description?: string }>) {
-              const existingNorm = normalize(s.name);
-              // Levenshtein-like check: if one name is a substring of the other or they share most characters
-              if (existingNorm.includes(normalizedName) || normalizedName.includes(existingNorm)) {
-                errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}". Use skill_improve to update it instead.`);
-                break;
-              }
-              // Jaccard similarity on character bigrams
-              const bigramsA = new Set<string>();
-              for (let i = 0; i < normalizedName.length - 1; i++) bigramsA.add(normalizedName.slice(i, i + 2));
-              const bigramsB = new Set<string>();
-              for (let i = 0; i < existingNorm.length - 1; i++) bigramsB.add(existingNorm.slice(i, i + 2));
-              let intersection = 0;
-              for (const b of bigramsA) if (bigramsB.has(b)) intersection++;
-              const union = bigramsA.size + bigramsB.size - intersection;
-              const similarity = union > 0 ? intersection / union : 0;
-              if (similarity > 0.7) {
-                errors.push(`Skill name "${name}" is too similar to existing skill "${s.name}" (similarity ${(similarity * 100).toFixed(0)}%). Use skill_improve to update it instead.`);
-                break;
-              }
-            }
-          }
-        } catch {
-          // listSkills may fail — non-fatal
-        }
-      }
-
-      if (errors.length > 0) {
-        return {
-          success: false,
-          error: `Skill creation rejected. ${errors.join("; ")}`,
-          details: {
-            rejected: true,
-            reason: "quality_gate",
-            errors,
-            hint: "Skills should represent reusable, generalizable workflows with concrete instructions. Do not create skills for one-off tasks or with placeholder content.",
-          },
-        };
-      }
-
-      // --- Create the skill ---
-      try {
-        const fsLib = await import("node:fs");
-        const skillDir = path.resolve(__dirname, "..", "..", "..", "data", "skills", name);
-        const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
-        // 修复（SKILL-1）：原实现把**绝对**路径传给 FileSystemManager.createFile，
-        // 其 resolvePath 拒绝任何绝对路径（"absolute paths are not allowed"）→
-        // fileSystemManager 已注册时 skill_create 恒失败。且 server 中该服务
-        // 必然已注册（index.ts setBasePath），else 分支是死代码。
-        // 技能目录本就该走直接 fs 写入（fsBase=data 根，非 workspace 沙箱），
-        // 改为直接 fs：建目录 + 写文件 + installSkill。
-        fsLib.mkdirSync(skillDir, { recursive: true });
-        fsLib.writeFileSync(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
-        const installed = await skillManager.installSkill(skillDir);
-        return { success: true, skillId: installed.id, skillName: installed.name, message: `Skill "${name}" has been created, installed, and is ready to use!` };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
     }
-  );
 
-  executor.registerTool(
-    "skill_uninstall",
-    {
-      name: "skill_uninstall",
-      description: "Uninstall a skill by name or ID. Removes it from the system and deletes its files. Use when a skill is no longer needed or is being replaced.",
-      parameters: {
-        skill: { type: "string", description: "Skill name or ID to uninstall", required: true },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const skillName = String(params.skill || "").trim();
-      if (!skillName) {
-        return { success: false, error: "Skill name or ID is required" };
-      }
-      try {
-        // Find the skill by name or ID
-        const skills = await skillManager.listSkills();
-        const target = skills.find((s: { id: string; name: string }) =>
-          s.id === skillName || s.name === skillName || s.name.replace(/[-_]/g, "") === skillName.replace(/[-_]/g, "")
-        );
-        if (!target) {
-          return { success: false, error: `Skill "${skillName}" not found` };
-        }
-        await skillManager.uninstallSkill(target.id);
-        return { success: true, message: `Skill "${target.name}" has been uninstalled` };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
+    // --- Create the skill ---
+    try {
+      const fsLib = await import("node:fs");
+      const skillDir = path.resolve(__dirname, "..", "..", "..", "data", "skills", name);
+      const skillContent = `# ${name}\n\n> ${desc}\n\n## Instructions\n\n${instructions}\n\n## Config\n\n\`\`\`yaml\nname: ${name}\ndescription: "${desc.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r')}"\nversion: 1.0.0\ncategory: custom\ninputs:\n  query:\n    type: string\n    required: true\n\`\`\`\n`;
+      // 修复（SKILL-1）：原实现把**绝对**路径传给 FileSystemManager.createFile，
+      // 其 resolvePath 拒绝任何绝对路径（"absolute paths are not allowed"）→
+      // fileSystemManager 已注册时 skill_create 恒失败。且 server 中该服务
+      // 必然已注册（index.ts setBasePath），else 分支是死代码。
+      // 技能目录本就该走直接 fs 写入（fsBase=data 根，非 workspace 沙箱），
+      // 改为直接 fs：建目录 + 写文件 + installSkill。
+      fsLib.mkdirSync(skillDir, { recursive: true });
+      fsLib.writeFileSync(path.join(skillDir, "SKILL.md"), skillContent, "utf-8");
+      const installed = await skillManager.installSkill(skillDir);
+      return { success: true, skillId: installed.id, skillName: installed.name, message: `Skill "${name}" has been created, installed, and is ready to use!` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  );
+  };
 
-  executor.registerTool(
-    "skill_search",
-    {
-      name: "skill_search",
-      description: "Search for available skills matching a task description",
-      parameters: {
-        task: { type: "string", description: "Description of the task to search skills for" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const task = String(params.task || "");
-      const match = await autoSkill.findSkillForTask(task);
-      if (!match) return { success: true, found: false, reason: "No matching skill found" };
+  // ── action=uninstall（原 skill_uninstall）────────────────────
+  const handleUninstall = async (params: Record<string, unknown>) => {
+    const skillName = String(params.skill || "").trim();
+    if (!skillName) {
+      return { success: false, error: "Skill name or ID is required" };
+    }
+    try {
+      // Find the skill by name or ID
+      const skills = await skillManager.listSkills();
+      const target = skills.find((s: { id: string; name: string }) =>
+        s.id === skillName || s.name === skillName || s.name.replace(/[-_]/g, "") === skillName.replace(/[-_]/g, "")
+      );
+      if (!target) {
+        return { success: false, error: `Skill "${skillName}" not found` };
+      }
+      await skillManager.uninstallSkill(target.id);
+      return { success: true, message: `Skill "${target.name}" has been uninstalled` };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
 
-      // If the skill is already installed, include its command templates
-      const result: Record<string, unknown> = {
-        success: true,
-        found: true,
-        skillName: match.skillName,
-        skillPath: match.skillPath,
-        relevance: match.relevance,
-        reason: match.reason,
+  // ── action=orchestrate（原 orchestrate_skills，实现自 index.ts 迁入）──
+  const handleOrchestrate = async (params: Record<string, unknown>) => {
+    const name = String(params.name || "orchestration");
+    const description = String(params.description || "");
+    let steps: Array<{
+      name: string;
+      skillName: string;
+      dependsOn?: string[];
+      params?: Record<string, unknown>;
+      mergeStrategy?: "replace" | "merge" | "append" | "none";
+    }> = [];
+    try {
+      steps = JSON.parse(String(params.steps || "[]"));
+    } catch {
+      return { error: "steps must be a valid JSON array" };
+    }
+    try {
+      // SkillOrchestrator 实例由 index.ts 构造时注册为 registry 服务
+      // "skillOrchestrator"；此处惰性解析，与 memory 工具解析 memoryHub 一致。
+      const orchestrator = registry.resolveService<SkillOrchestrator>("skillOrchestrator");
+      if (!orchestrator) {
+        return { success: false, error: "Skill orchestrator service not available" };
+      }
+      const plan = orchestrator.createPlan({ name, description, steps });
+      const result = await orchestrator.execute(plan.id);
+      return {
+        success: result.success,
+        planId: result.planId,
+        totalDuration: result.totalDuration,
+        resultCount: result.results.length,
+        aggregatedOutput: result.aggregatedOutput,
+        results: result.results.map((r) => ({
+          stepId: r.stepId,
+          skillName: r.skillName,
+          success: r.success,
+          duration: r.duration,
+          error: r.error,
+        })),
       };
-
-      try {
-        const skills = await skillManager.listSkills();
-        const installed = skills.find(s =>
-          s.name === match.skillName || s.name.replace(/[_-]/g, "") === match.skillName.replace(/[_-]/g, "")
-        );
-        if (installed) {
-          result.installed = true;
-          result.installPath = installed.installPath;
-          // Extract command templates from SKILL.md instructions
-          const instructions = installed.body?.instructions || "";
-          const commandLines: string[] = [];
-          const codeBlockRegex = /```(?:bash|shell|sh)?\s*\n([\s\S]*?)```/g;
-          let blockMatch: RegExpExecArray | null;
-          while ((blockMatch = codeBlockRegex.exec(instructions)) !== null) {
-            const block = blockMatch[1];
-            for (const line of block.split("\n")) {
-              const trimmed = line.trim();
-              if (trimmed && (trimmed.startsWith("python") || trimmed.startsWith("node") || trimmed.startsWith("bash") || trimmed.startsWith("sh "))) {
-                commandLines.push(trimmed);
-              }
-            }
-          }
-          if (commandLines.length > 0) {
-            result.commands = commandLines;
-            result.hint = "Use shell_exec to run these commands. Replace {baseDir} with the skill's directory.";
-          }
-        }
-      } catch { /* best-effort */ }
-
-      return result;
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
+  };
+
+  executor.registerTool(
+    "skill_manage",
+    {
+      name: "skill_manage",
+      description:
+        "Manage skills: " +
+        "action=create (create a reusable skill), action=install (install a skill from a path), " +
+        "action=uninstall (remove a skill), action=execute (execute an installed skill with params), " +
+        "action=find_and_install (automatically find a suitable skill for a task and install it), " +
+        "action=orchestrate (create and execute a skill orchestration plan with multiple skills in pipeline).",
+      parameters: {
+        action: {
+          type: "string",
+          description: "skill_manage 操作类型",
+          required: true,
+          enum: ["create", "install", "uninstall", "execute", "find_and_install", "orchestrate"],
+        },
+        task: { type: "string", description: "Task description（find_and_install 使用）", required: false },
+        path: { type: "string", description: "Path to the SKILL.md file or skill folder（install 使用）", required: false },
+        skill: { type: "string", description: "Skill name or ID（execute / uninstall 使用）", required: false },
+        params: { type: "object", description: "Parameters to pass to the skill as a JSON object（execute 使用，可选；也可为 JSON 字符串）", required: false },
+        name: { type: "string", description: "Skill name / Plan name（create / orchestrate 使用）", required: false },
+        description: { type: "string", description: "Skill description / Plan description（create / orchestrate 使用）", required: false },
+        instructions: { type: "string", description: "Detailed step-by-step instructions（create 使用）", required: false },
+        steps: { type: "string", description: "JSON array of steps: [{name, skillName, dependsOn[], params{}, mergeStrategy}]（orchestrate 使用）", required: false },
+      },
+    },
+    async (params: Record<string, unknown>) => {
+      const action = String(params.action || "create");
+      if (action === "create") return await handleCreate(params);
+      if (action === "install") return await handleInstall(params);
+      if (action === "uninstall") return await handleUninstall(params);
+      if (action === "execute") return await handleExecute(params);
+      if (action === "find_and_install") return await handleFindAndInstall(params);
+      if (action === "orchestrate") return await handleOrchestrate(params);
+      return { success: false, error: `未知 skill_manage action: ${action}（仅支持 create / install / uninstall / execute / find_and_install / orchestrate）` };
+    },
   );
 }

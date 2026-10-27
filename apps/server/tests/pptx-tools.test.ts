@@ -2,9 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { registerPptxTools } from "../src/tools/pptx-tools";
+import { registerDocumentTools } from "../src/tools/document-tools";
 
-describe("pptx_create tool", () => {
+describe("document tool (action=create_pptx)", () => {
   let tmpDir: string;
   let handler: (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -15,7 +15,7 @@ describe("pptx_create tool", () => {
         handler = fn;
       },
     };
-    registerPptxTools(executor as any, tmpDir);
+    registerDocumentTools(executor as any, tmpDir);
   });
 
   afterEach(() => {
@@ -24,6 +24,7 @@ describe("pptx_create tool", () => {
 
   it("创建包含标题、要点和表格的 PPTX 文件", async () => {
     const result = (await handler({
+      action: "create_pptx",
       path: "slides.pptx",
       title: "EvoClaw 介绍",
       slides: [
@@ -56,6 +57,7 @@ describe("pptx_create tool", () => {
 
   it("拒绝路径穿越", async () => {
     const result = (await handler({
+      action: "create_pptx",
       path: "../outside.pptx",
       title: "Bad",
     })) as { success: boolean; error?: string };
@@ -76,11 +78,12 @@ describe("pptx_create tool", () => {
           wsHandler = fn;
         },
       };
-      registerPptxTools(wsExecutor as any, tmpDir, wsDir);
+      registerDocumentTools(wsExecutor as any, tmpDir, wsDir);
     });
 
     it("相对路径落在 workspace 而非 fsBase 根", async () => {
       const result = (await wsHandler({
+        action: "create_pptx",
         path: "inst_eval2/out.pptx",
         title: "t",
       })) as { success: boolean; absolutePath?: string };

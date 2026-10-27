@@ -107,8 +107,8 @@ export async function detectAndConfigureEmailAccount(
   const provider = detectProvider(message);
   const displayName = email.split("@")[0];
 
-  // Check if email_add_account tool is registered
-  if (!deps.registeredTools.has("email_add_account")) {
+  // Check if email tool is registered
+  if (!deps.registeredTools.has("email")) {
     return {
       reply: `检测到您提供了邮箱账号：${email}\n\n但系统尚未注册邮箱功能。请联系管理员配置邮箱功能。`,
       tokensUsed: 0,
@@ -136,8 +136,9 @@ export async function detectAndConfigureEmailAccount(
 
   // Try to add the email account
   try {
-    const emailTool = deps.registeredTools.get("email_add_account")!;
+    const emailTool = deps.registeredTools.get("email")!;
     const result = await emailTool.handler({
+      action: "add_account",
       email,
       password,
       provider,
@@ -215,7 +216,7 @@ export async function handleEmailOperation(
 
   // ── Send email branch ──
   if (isSendEmailOp) {
-    if (!deps.registeredTools.has("email_send")) {
+    if (!deps.registeredTools.has("email")) {
       return {
         reply: `检测到您想发送邮件，但系统尚未配置邮箱发送功能。\n\n请先提供您的邮箱账号信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
         tokensUsed: 0,
@@ -302,8 +303,8 @@ export async function handleEmailOperation(
     // Get first available account
     let accountsResult: unknown;
     try {
-      const accountsTool = deps.registeredTools.get("email_list_accounts")!;
-      accountsResult = await accountsTool.handler({});
+      const accountsTool = deps.registeredTools.get("email")!;
+      accountsResult = await accountsTool.handler({ action: "list_accounts" });
     } catch (err) {
       return {
         reply: `❌ 获取邮箱账号失败：${err instanceof Error ? err.message : String(err)}`,
@@ -327,10 +328,11 @@ export async function handleEmailOperation(
 
     const accountId = accountsData.accounts[0].id;
 
-    // Call email_send tool
+    // Call email tool
     try {
-      const sendTool = deps.registeredTools.get("email_send")!;
+      const sendTool = deps.registeredTools.get("email")!;
       const sendResult = await sendTool.handler({
+        action: "send",
         accountId,
         to: toEmail,
         subject: subject || "无主题",
@@ -366,7 +368,7 @@ export async function handleEmailOperation(
   }
 
   // Check if email tools are available
-  if (!deps.registeredTools.has("email_list_accounts")) {
+  if (!deps.registeredTools.has("email")) {
     return {
       reply: `检测到您想进行邮件操作，但系统尚未配置邮箱功能。\n\n请先提供您的邮箱账号信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
       tokensUsed: 0,
@@ -379,8 +381,8 @@ export async function handleEmailOperation(
   // List accounts first
   let accountsResult: unknown;
   try {
-    const accountsTool = deps.registeredTools.get("email_list_accounts")!;
-    accountsResult = await accountsTool.handler({});
+    const accountsTool = deps.registeredTools.get("email")!;
+    accountsResult = await accountsTool.handler({ action: "list_accounts" });
   } catch (err) {
     return {
       reply: `❌ 获取邮箱账号列表失败：${err instanceof Error ? err.message : String(err)}`,
@@ -403,7 +405,7 @@ export async function handleEmailOperation(
   }
 
   // Get inbox summary
-  if (!deps.registeredTools.has("email_get_inbox_summary")) {
+  if (!deps.registeredTools.has("email")) {
     return {
       reply: `⚠️ 邮箱功能未完整配置，无法读取收件箱。请联系管理员。`,
       tokensUsed: 0,
@@ -425,8 +427,8 @@ export async function handleEmailOperation(
 
   let summaryResult: unknown;
   try {
-    const summaryTool = deps.registeredTools.get("email_get_inbox_summary")!;
-    summaryResult = await summaryTool.handler(since ? { since } : {});
+    const summaryTool = deps.registeredTools.get("email")!;
+    summaryResult = await summaryTool.handler(since ? { action: "inbox_summary", since } : { action: "inbox_summary" });
   } catch (err) {
     return {
       reply: `❌ 获取收件箱摘要失败：${err instanceof Error ? err.message : String(err)}`,
@@ -457,10 +459,10 @@ export async function handleEmailOperation(
 
   // List recent emails (within the same range)
   let emails: unknown[] = [];
-  if (deps.registeredTools.has("email_list_inbox")) {
+  if (deps.registeredTools.has("email")) {
     try {
-      const inboxTool = deps.registeredTools.get("email_list_inbox")!;
-      const inboxResult = await inboxTool.handler(since ? { limit: 50, since } : { limit: 50 });
+      const inboxTool = deps.registeredTools.get("email")!;
+      const inboxResult = await inboxTool.handler(since ? { action: "list_inbox", limit: 50, since } : { action: "list_inbox", limit: 50 });
       const inboxData = inboxResult as {
         success: boolean;
         emails?: Array<{ subject: string; from: string; date: Date | string; snippet: string; flags: string[]; categories?: string[] }>;

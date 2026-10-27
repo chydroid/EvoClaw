@@ -21,7 +21,11 @@ import * as crypto from "crypto";
 import { execFileSync, spawn } from "child_process";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import type { ServiceRegistry } from "@evoclaw/core";
+import { generateVideoDownloadScript } from "@evoclaw/infrastructure";
 import { validateDownloadUrl } from "./image-tools";
+// video_download 合并进本文件的 video 复合工具；其脚本执行辅助函数复用 shell-media-tools 的实现
+import { findPythonPaths, runPythonScriptAsync } from "./shell-media-tools";
 
 /** 视频生成提供商配置（与 protocol-adapter.ts 中结构一致） */
 interface VideoGenProvider {
@@ -411,257 +415,387 @@ interface VideoGenResult {
 /**
  * 注册视频生成工具
  */
-export function registerVideoTools(executor: AgentModelExecutor): void {
-  // 工具 1：video_generate — 文本生成视频
+export function registerVideoTools(
+  executor: AgentModelExecutor,
+  registry?: ServiceRegistry
+): void {
+  // ── video：复合视频工具（action 判别）──
+  // 合并自原 video_generate（生成视频）、video_info（查询生成能力）与 video_download
+  // （下载视频，实现原样从 shell-media-tools.ts 搬来）：一个工具 + action 字段，
+  // 保持 schema 紧凑、降低每轮 token 成本。
+
+  // SSRF 防护：与原 shell-media-tools 的 checkSsrf 同名同语义（阻止访问内网/元数据端点）。
+  // 区别：本文件可能拿不到 registry（registerVideoTools 的 registry 为可选参数），
+  // 服务未注入时退化为 image-tools 的本地 URL 校验（仍拦截内网/回环/链路本地），
+  // 避免 video action=download 因未传 registry 而完全不可用。
+  const checkSsrf = async (url: string): Promise<string | null> => {
+    const ssrfProtection = registry?.resolveService<{ checkURL(url: string): Promise<{ allowed: boolean; reason?: string }> }>("ssrfProtection");
+    if (!ssrfProtection) {
+      try {
+        validateDownloadUrl(url);
+        return null;
+      } catch (err) {
+        return err instanceof Error ? err.message : String(err);
+      }
+    }
+    try {
+      const result = await ssrfProtection.checkURL(url);
+      if (!result.allowed) return result.reason ?? "blocked by SSRF policy";
+      return null;
+    } catch {
+      return "SSRF check failed";
+    }
+  };
+
+  /** 原 video_generate */
+  const handleVideoGenerate = async (params: Record<string, unknown>) => {
+    const prompt = String(params.prompt || "").trim();
+    if (!prompt) {
+      return { success: false, error: "prompt is required" };
+    }
+
+    const options: VideoGenOptions = {
+      duration: params.duration ? (Number.isFinite(Number(params.duration)) ? Number(params.duration) : undefined) : undefined,
+      aspectRatio: String(params.aspect_ratio || "16:9"),
+      provider: String(params.provider || ""),
+      model: params.model ? String(params.model) : undefined,
+      imageUrl: params.image_url ? String(params.image_url) : undefined,
+    };
+
+    // 确定提供商：优先使用参数指定的，其次配置文件，最后环境变量回退
+    let provider = options.provider || "";
+    let apiKey = "";
+
+    if (!provider) {
+      // 1. 尝试从配置文件读取
+      const enabled = getEnabledVideoProvider();
+      if (enabled) {
+        provider = enabled.provider.id;
+        apiKey = enabled.apiKey;
+        // 如果配置中有默认 model 且用户未指定，使用配置中的 model
+        if (!options.model && enabled.provider.model && enabled.provider.id !== "local") {
+          options.model = enabled.provider.model;
+        }
+      } else {
+        // 2. 环境变量回退（向后兼容）
+        if (process.env.VIDEO_DEFAULT_PROVIDER) {
+          provider = process.env.VIDEO_DEFAULT_PROVIDER;
+        } else if (process.env.FAL_KEY) {
+          provider = "fal";
+        } else if (process.env.REPLICATE_API_TOKEN) {
+          provider = "replicate";
+        } else {
+          provider = "local";
+        }
+      }
+    } else {
+      // 用户指定了 provider，查找对应的 API Key
+      const providers = getVideoGenProviders();
+      const matched = providers.find(p => p.id === provider);
+      if (matched) {
+        apiKey = resolveEnvVar(matched.apiKey || "");
+        if (!options.model && matched.model && matched.id !== "local") {
+          options.model = matched.model;
+        }
+      }
+      // 环境变量回退
+      if (!apiKey) {
+        if (provider === "fal") apiKey = process.env.FAL_KEY || "";
+        else if (provider === "replicate") apiKey = process.env.REPLICATE_API_TOKEN || "";
+      }
+    }
+
+    try {
+      let result: VideoGenResult;
+
+      switch (provider) {
+        case "fal":
+          if (!apiKey) {
+            return {
+              success: false,
+              error: "Fal.ai provider selected but no API key is configured. Please configure Fal.ai API key in video-gen settings or set FAL_KEY environment variable, or use 'local' provider.",
+            };
+          }
+          result = await generateViaFal(prompt, options, apiKey);
+          break;
+
+        case "replicate":
+          if (!apiKey) {
+            return {
+              success: false,
+              error: "Replicate provider selected but no API key is configured. Please configure Replicate API key in video-gen settings or set REPLICATE_API_TOKEN environment variable, or use 'local' provider.",
+            };
+          }
+          result = await generateViaReplicate(prompt, options, apiKey);
+          break;
+
+        case "local":
+          if (!isFfmpegAvailable()) {
+            return {
+              success: false,
+              error: "Local provider requires FFmpeg. Please install FFmpeg or configure FAL_KEY/REPLICATE_API_TOKEN for AI-powered generation.",
+            };
+          }
+          result = await generateLocalSlideshow(prompt, options);
+          break;
+
+        default:
+          return { success: false, error: `Unknown provider: ${provider}. Use 'fal', 'replicate', or 'local'.` };
+      }
+
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      // 如果 API 生成失败，尝试回退到本地
+      if (provider !== "local" && isFfmpegAvailable()) {
+        try {
+          const fallback = await generateLocalSlideshow(prompt, options);
+          return {
+            ...fallback,
+            message: `${fallback.message} (API 生成失败，已回退到本地模式。错误: ${errorMsg})`,
+          };
+        } catch {
+          // 本地也失败，返回原始错误
+        }
+      }
+
+      return { success: false, error: errorMsg };
+    }
+  };
+
+  /** 原 video_info */
+  const handleVideoInfo = async () => {
+    const providers: string[] = [];
+    const models: Record<string, string[]> = {};
+    const providerDetails: Array<{ id: string; name: string; enabled: boolean; hasApiKey: boolean; model: string }> = [];
+
+    // 从配置文件读取
+    const configProviders = getVideoGenProviders();
+    for (const p of configProviders) {
+      const apiKey = resolveEnvVar(p.apiKey || "");
+      const hasApiKey = !!(apiKey || p.id === "local");
+      providerDetails.push({
+        id: p.id,
+        name: p.name,
+        enabled: p.enabled,
+        hasApiKey,
+        model: p.model,
+      });
+      if (p.enabled && (hasApiKey || p.id === "local")) {
+        if (!providers.includes(p.id)) providers.push(p.id);
+      }
+    }
+
+    // 环境变量回退（向后兼容）
+    if (process.env.FAL_KEY && !providers.includes("fal")) {
+      providers.push("fal");
+      providerDetails.push({
+        id: "fal",
+        name: "Fal.ai (env)",
+        enabled: true,
+        hasApiKey: true,
+        model: "fal-ai/wan/v2.2/text-to-video",
+      });
+    }
+
+    if (process.env.REPLICATE_API_TOKEN && !providers.includes("replicate")) {
+      providers.push("replicate");
+      providerDetails.push({
+        id: "replicate",
+        name: "Replicate (env)",
+        enabled: true,
+        hasApiKey: true,
+        model: "lightricks/ltx-video",
+      });
+    }
+
+    if (isFfmpegAvailable() && !providers.includes("local")) {
+      providers.push("local");
+      providerDetails.push({
+        id: "local",
+        name: "Local FFmpeg",
+        enabled: true,
+        hasApiKey: true,
+        model: "ffmpeg-slideshow",
+      });
+    }
+
+    // 模型列表
+    models.fal = [
+      "fal-ai/wan/v2.2/text-to-video",
+      "fal-ai/wan/v2.2/image-to-video",
+      "fal-ai/kling/v1.6/standard/text-to-video",
+      "fal-ai/kling/v1.6/standard/image-to-video",
+      "fal-ai/ltx-video",
+    ];
+    models.replicate = [
+      "lightricks/ltx-video",
+      "cuuupid/cogvideox-5b",
+      "minimax/video-01",
+    ];
+    models.local = ["ffmpeg-slideshow (text overlay on solid background)"];
+
+    const enabled = getEnabledVideoProvider();
+
+    return {
+      available: providers.length > 0,
+      providers,
+      models,
+      providerDetails,
+      defaultProvider: enabled?.provider.id || process.env.VIDEO_DEFAULT_PROVIDER || providers[0] || "none",
+      ffmpegAvailable: isFfmpegAvailable(),
+      hasFalKey: !!(process.env.FAL_KEY || configProviders.find(p => p.id === "fal" && resolveEnvVar(p.apiKey))),
+      hasReplicateToken: !!(process.env.REPLICATE_API_TOKEN || configProviders.find(p => p.id === "replicate" && resolveEnvVar(p.apiKey))),
+      configSource: configProviders.length > 0 ? "data/config/video-gen-providers.json" : "environment variables",
+    };
+  };
+
+  /** 原 video_download（实现从 shell-media-tools.ts 原样搬来，依赖的 checkSsrf /
+   *  findPythonPaths / runPythonScriptAsync / generateVideoDownloadScript 一并注入） */
+  const handleVideoDownload = async (params: Record<string, unknown>) => {
+    const url = String(params.url || "");
+    if (!url) return { success: false, error: "URL is required" };
+    const format = String(params.format || "best");
+    const noWatermark = String(params.noWatermark || "true") === "true";
+
+    // SSRF 防护：阻止访问内网/元数据端点
+    const ssrfReason = await checkSsrf(url);
+    if (ssrfReason) {
+      return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
+    }
+
+    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    const outputDir = path.join(workspaceDir, "downloads");
+    const pythonPaths = findPythonPaths();
+    const existingPath = process.env.PATH || process.env.Path || "";
+    const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
+
+    // Generate download script using media-downloader bridge
+    const script = generateVideoDownloadScript({
+      url,
+      outputDir,
+      format,
+      noWatermark,
+    });
+
+    const scriptPath = path.join(workspaceDir, `_video_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
+    fs.writeFileSync(scriptPath, script, "utf-8");
+
+    try {
+      const result = await runPythonScriptAsync(
+        path.basename(scriptPath),
+        workspaceDir,
+        { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+        600000, // 10 minutes for large videos
+      );
+
+      // Parse [RESULT]...[/RESULT] from output
+      const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
+      if (match) {
+        try {
+          const parsed = JSON.parse(match[1]);
+          return { success: true, ...parsed };
+        } catch (jsonErr) {
+          // 关键修复：原先 JSON.parse 抛错会冒泡到外层 catch，
+          // 且没有 [RESULT] 标记时仍返回 success:true —— 脚本报错也会
+          // 被当成"下载完成"，与此前邮箱伪造完成态同型。
+          return {
+            success: false,
+            error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
+            output: result.slice(-2000),
+          };
+        }
+      }
+      // 无 [RESULT] 标记 = 脚本未产出结果（可能中途报错/被 kill），
+      // 必须如实报告失败，绝不能返回 success:true。
+      return {
+        success: false,
+        error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
+        output: result.slice(-2000),
+      };
+    } catch (err: any) {
+      const stderr = err.stderr?.toString() || err.message || String(err);
+      // Check if partial download exists
+      const resultMatch = stderr.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
+      if (resultMatch) {
+        try {
+          const parsed = JSON.parse(resultMatch[1]);
+          return { success: true, ...parsed, warning: "Download completed with warnings" };
+        } catch (jsonErr) {
+          console.warn(`[VideoDownload] Failed to parse yt-dlp JSON output: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`);
+        }
+      }
+      return { success: false, error: stderr.slice(0, 5000) };
+    } finally {
+      try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
+    }
+  };
+
   executor.registerTool(
-    "video_generate",
+    "video",
     {
-      name: "video_generate",
+      name: "video",
       description:
-        "Generate a short video from a text description. Supports text-to-video and image-to-video. " +
-        "Uses Fal.ai (Wan 2.2, Kling, LTX) or Replicate API if configured, otherwise falls back to local FFmpeg slideshow. " +
-        "Generated video is saved to workspace and a download URL is returned. " +
-        "环境变量 FAL_KEY 或 REPLICATE_API_TOKEN 配置后可使用高质量 AI 生成。",
+        "复合视频工具（composite video tool），通过 action 参数选择具体操作。" +
+        "actions: " +
+        "generate（默认，从文本描述生成短视频，支持文生视频与图生视频；后端为 Fal.ai（Wan 2.2、Kling、LTX）或 Replicate，" +
+        "未配置时回退到本地 FFmpeg 幻灯片；生成的视频保存到 workspace 并返回下载链接） / " +
+        "info（查询可用的视频生成能力：已配置的提供商、可用模型、本地 FFmpeg 是否可用） / " +
+        "download（用 yt-dlp + ffmpeg 从 1000+ 网站下载视频，支持 B站/抖音/YouTube 等，抖音自动去水印；返回文件路径）。",
       parameters: {
+        action: {
+          type: "string",
+          description: "视频操作类型：generate（默认，生成视频）/ info（查询生成能力）/ download（下载视频）",
+          required: true,
+          enum: ["generate", "info", "download"],
+        },
         prompt: {
           type: "string",
-          description: "Detailed description of the video to generate. Be specific about scenes, camera movements, style, and mood. 例：'一只猫在阳光下打盹，镜头缓慢推进，温暖色调'",
+          description: "Detailed description of the video to generate. Be specific about scenes, camera movements, style, and mood. 例：'一只猫在阳光下打盹，镜头缓慢推进，温暖色调'（action=generate 使用）",
         },
         duration: {
           type: "string",
-          description: "Video duration in seconds (default: 5, range: 3-15)",
+          description: "Video duration in seconds (default: 5, range: 3-15)（action=generate 使用）",
         },
         aspect_ratio: {
           type: "string",
-          description: "Aspect ratio: '16:9' (landscape, default), '9:16' (portrait), '1:1' (square)",
+          description: "Aspect ratio: '16:9' (landscape, default), '9:16' (portrait), '1:1' (square)（action=generate 使用）",
         },
         provider: {
           type: "string",
-          description: "Video generation provider: 'fal' (Fal.ai), 'replicate', 'local' (FFmpeg slideshow). If not specified, auto-selects based on available API keys.",
+          description: "Video generation provider: 'fal' (Fal.ai), 'replicate', 'local' (FFmpeg slideshow). If not specified, auto-selects based on available API keys.（action=generate 使用）",
         },
         model: {
           type: "string",
-          description: "Specific model ID (e.g., 'fal-ai/wan/v2.2/text-to-video'). If not specified, uses provider's default.",
+          description: "Specific model ID (e.g., 'fal-ai/wan/v2.2/text-to-video'). If not specified, uses provider's default.（action=generate 使用）",
         },
         image_url: {
           type: "string",
-          description: "Optional image URL for image-to-video generation. If provided, the video will animate from this image.",
+          description: "Optional image URL for image-to-video generation. If provided, the video will animate from this image.（action=generate 使用）",
+        },
+        url: {
+          type: "string",
+          description: "The video URL to download (Bilibili, Douyin, YouTube, etc.)（action=download 使用）",
+        },
+        format: {
+          type: "string",
+          description: "Video quality: 'best', '720p', '1080p', '4k' (default: best)（action=download 使用）",
+        },
+        noWatermark: {
+          type: "string",
+          description: "Set to 'true' to remove watermark (default: true for Douyin)（action=download 使用）",
         },
       },
     },
     async (params: Record<string, unknown>) => {
-      const prompt = String(params.prompt || "").trim();
-      if (!prompt) {
-        return { success: false, error: "prompt is required" };
-      }
-
-      const options: VideoGenOptions = {
-        duration: params.duration ? (Number.isFinite(Number(params.duration)) ? Number(params.duration) : undefined) : undefined,
-        aspectRatio: String(params.aspect_ratio || "16:9"),
-        provider: String(params.provider || ""),
-        model: params.model ? String(params.model) : undefined,
-        imageUrl: params.image_url ? String(params.image_url) : undefined,
-      };
-
-      // 确定提供商：优先使用参数指定的，其次配置文件，最后环境变量回退
-      let provider = options.provider || "";
-      let apiKey = "";
-
-      if (!provider) {
-        // 1. 尝试从配置文件读取
-        const enabled = getEnabledVideoProvider();
-        if (enabled) {
-          provider = enabled.provider.id;
-          apiKey = enabled.apiKey;
-          // 如果配置中有默认 model 且用户未指定，使用配置中的 model
-          if (!options.model && enabled.provider.model && enabled.provider.id !== "local") {
-            options.model = enabled.provider.model;
-          }
-        } else {
-          // 2. 环境变量回退（向后兼容）
-          if (process.env.VIDEO_DEFAULT_PROVIDER) {
-            provider = process.env.VIDEO_DEFAULT_PROVIDER;
-          } else if (process.env.FAL_KEY) {
-            provider = "fal";
-          } else if (process.env.REPLICATE_API_TOKEN) {
-            provider = "replicate";
-          } else {
-            provider = "local";
-          }
-        }
-      } else {
-        // 用户指定了 provider，查找对应的 API Key
-        const providers = getVideoGenProviders();
-        const matched = providers.find(p => p.id === provider);
-        if (matched) {
-          apiKey = resolveEnvVar(matched.apiKey || "");
-          if (!options.model && matched.model && matched.id !== "local") {
-            options.model = matched.model;
-          }
-        }
-        // 环境变量回退
-        if (!apiKey) {
-          if (provider === "fal") apiKey = process.env.FAL_KEY || "";
-          else if (provider === "replicate") apiKey = process.env.REPLICATE_API_TOKEN || "";
-        }
-      }
-
-      try {
-        let result: VideoGenResult;
-
-        switch (provider) {
-          case "fal":
-            if (!apiKey) {
-              return {
-                success: false,
-                error: "Fal.ai provider selected but no API key is configured. Please configure Fal.ai API key in video-gen settings or set FAL_KEY environment variable, or use 'local' provider.",
-              };
-            }
-            result = await generateViaFal(prompt, options, apiKey);
-            break;
-
-          case "replicate":
-            if (!apiKey) {
-              return {
-                success: false,
-                error: "Replicate provider selected but no API key is configured. Please configure Replicate API key in video-gen settings or set REPLICATE_API_TOKEN environment variable, or use 'local' provider.",
-              };
-            }
-            result = await generateViaReplicate(prompt, options, apiKey);
-            break;
-
-          case "local":
-            if (!isFfmpegAvailable()) {
-              return {
-                success: false,
-                error: "Local provider requires FFmpeg. Please install FFmpeg or configure FAL_KEY/REPLICATE_API_TOKEN for AI-powered generation.",
-              };
-            }
-            result = await generateLocalSlideshow(prompt, options);
-            break;
-
-          default:
-            return { success: false, error: `Unknown provider: ${provider}. Use 'fal', 'replicate', or 'local'.` };
-        }
-
-        return result;
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-
-        // 如果 API 生成失败，尝试回退到本地
-        if (provider !== "local" && isFfmpegAvailable()) {
-          try {
-            const fallback = await generateLocalSlideshow(prompt, options);
-            return {
-              ...fallback,
-              message: `${fallback.message} (API 生成失败，已回退到本地模式。错误: ${errorMsg})`,
-            };
-          } catch {
-            // 本地也失败，返回原始错误
-          }
-        }
-
-        return { success: false, error: errorMsg };
-      }
+      const action = String(params.action || "generate");
+      if (action === "generate") return await handleVideoGenerate(params);
+      if (action === "info") return await handleVideoInfo();
+      if (action === "download") return await handleVideoDownload(params);
+      return { success: false, error: `未知 video action: ${action}（仅支持 generate / info / download）` };
     },
     // checkFn: 至少有一种生成方式可用
     () => isVideoGenerationAvailable()
-  );
-
-  // 工具 2：video_info — 查询视频生成能力
-  executor.registerTool(
-    "video_info",
-    {
-      name: "video_info",
-      description:
-        "Check available video generation capabilities and providers. Returns configured providers, available models, and whether local FFmpeg generation is available.",
-      parameters: {},
-    },
-    async () => {
-      const providers: string[] = [];
-      const models: Record<string, string[]> = {};
-      const providerDetails: Array<{ id: string; name: string; enabled: boolean; hasApiKey: boolean; model: string }> = [];
-
-      // 从配置文件读取
-      const configProviders = getVideoGenProviders();
-      for (const p of configProviders) {
-        const apiKey = resolveEnvVar(p.apiKey || "");
-        const hasApiKey = !!(apiKey || p.id === "local");
-        providerDetails.push({
-          id: p.id,
-          name: p.name,
-          enabled: p.enabled,
-          hasApiKey,
-          model: p.model,
-        });
-        if (p.enabled && (hasApiKey || p.id === "local")) {
-          if (!providers.includes(p.id)) providers.push(p.id);
-        }
-      }
-
-      // 环境变量回退（向后兼容）
-      if (process.env.FAL_KEY && !providers.includes("fal")) {
-        providers.push("fal");
-        providerDetails.push({
-          id: "fal",
-          name: "Fal.ai (env)",
-          enabled: true,
-          hasApiKey: true,
-          model: "fal-ai/wan/v2.2/text-to-video",
-        });
-      }
-
-      if (process.env.REPLICATE_API_TOKEN && !providers.includes("replicate")) {
-        providers.push("replicate");
-        providerDetails.push({
-          id: "replicate",
-          name: "Replicate (env)",
-          enabled: true,
-          hasApiKey: true,
-          model: "lightricks/ltx-video",
-        });
-      }
-
-      if (isFfmpegAvailable() && !providers.includes("local")) {
-        providers.push("local");
-        providerDetails.push({
-          id: "local",
-          name: "Local FFmpeg",
-          enabled: true,
-          hasApiKey: true,
-          model: "ffmpeg-slideshow",
-        });
-      }
-
-      // 模型列表
-      models.fal = [
-        "fal-ai/wan/v2.2/text-to-video",
-        "fal-ai/wan/v2.2/image-to-video",
-        "fal-ai/kling/v1.6/standard/text-to-video",
-        "fal-ai/kling/v1.6/standard/image-to-video",
-        "fal-ai/ltx-video",
-      ];
-      models.replicate = [
-        "lightricks/ltx-video",
-        "cuuupid/cogvideox-5b",
-        "minimax/video-01",
-      ];
-      models.local = ["ffmpeg-slideshow (text overlay on solid background)"];
-
-      const enabled = getEnabledVideoProvider();
-
-      return {
-        available: providers.length > 0,
-        providers,
-        models,
-        providerDetails,
-        defaultProvider: enabled?.provider.id || process.env.VIDEO_DEFAULT_PROVIDER || providers[0] || "none",
-        ffmpegAvailable: isFfmpegAvailable(),
-        hasFalKey: !!(process.env.FAL_KEY || configProviders.find(p => p.id === "fal" && resolveEnvVar(p.apiKey))),
-        hasReplicateToken: !!(process.env.REPLICATE_API_TOKEN || configProviders.find(p => p.id === "replicate" && resolveEnvVar(p.apiKey))),
-        configSource: configProviders.length > 0 ? "data/config/video-gen-providers.json" : "environment variables",
-      };
-    },
-    () => true
   );
 }

@@ -167,7 +167,7 @@ export class ErrorRecoveryManager {
 
   /**
    * 不可重试错误：确定性失败，重试永远不会成功。
-   * 2026-10-14 评测发现：file_create 遇 "File already exists" 被无差别重试 6 次
+   * 2026-10-14 评测发现：file_write 遇 "File already exists" 被无差别重试 6 次
    * （含 15.5s 退避），浪费整轮工具配额还让模型误判为瞬态故障。
    */
   private isNonRetryable(err: unknown): boolean {

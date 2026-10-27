@@ -6,9 +6,8 @@ export { registerEmailTools } from "./email-tools";
 export { registerSchedulerTools } from "./scheduler-tools";
 export { registerShellMediaTools } from "./shell-media-tools";
 export { registerSkillIndexTools } from "./skill-index-tools";
-export { registerDocxTools } from "./docx-tools";
-export { registerXlsxTools } from "./xlsx-tools";
-export { registerPptxTools } from "./pptx-tools";
+// Word / Excel / PPT 生成工具合并为单一 `document` 复合工具（action: create_docx / create_xlsx / create_pptx）
+export { registerDocumentTools } from "./document-tools";
 export { registerVideoTools } from "./video-tools";
 export { registerImageTools } from "./image-tools";
 // v0.70: 一线 AI Agent 能力对齐工具集

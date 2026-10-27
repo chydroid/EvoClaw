@@ -245,12 +245,12 @@ describe("Enhanced Browser Plugin", () => {
       expect(result.message).toContain("browser_login");
     });
 
-    it("should require confirmation for browser_submit_form", async () => {
+    it("should require confirmation for browser_act submit", async () => {
       const plugin = createPlugin();
       const beforeHook = plugin.hooks.find((h) => h.hookType === "before_tool_call")!;
       const result = await beforeHook.handler({
-        toolName: "browser_submit_form",
-        params: { url: "https://example.com/form" },
+        toolName: "browser_act",
+        params: { action: "submit", url: "https://example.com/form" },
       });
       expect(result.requireConfirmation).toBe(true);
     });
@@ -914,11 +914,15 @@ describe("Enhanced Browser Plugin", () => {
       const plugin = createPlugin();
       const beforeHook = plugin.hooks.find((h) => h.hookType === "before_tool_call")!;
 
-      const ops = ["browser_login", "browser_submit_form", "browser_file_upload"];
+      const ops = [
+        { toolName: "browser_login", params: { url: "https://example.com" } },
+        { toolName: "browser_act", params: { action: "submit", url: "https://example.com" } },
+        { toolName: "browser_file_upload", params: {} },
+      ];
       for (const op of ops) {
         const result = await beforeHook.handler({
-          toolName: op,
-          params: { url: "https://example.com" },
+          toolName: op.toolName,
+          params: op.params,
         });
         expect(result.requireConfirmation).toBe(true);
       }
@@ -1047,7 +1051,8 @@ describe("Enhanced Browser Plugin", () => {
         <a href="/thread/11111.html">第三章 冒险</a>
         <a href="/detail/22222.html">第四章 结局</a>`;
       const result = await afterHook.handler({
-        toolName: "browser_get_html",
+        toolName: "browser_get",
+        params: { action: "html" },
         result: { html },
         errored: false,
       });
@@ -1117,14 +1122,14 @@ describe("Enhanced Browser Plugin", () => {
       expect(afterResult.result).toContain("Chapter Links Found");
     });
 
-    it("should handle file_create and shell_exec for novel download", async () => {
+    it("should handle file_write and shell_exec for novel download", async () => {
       const plugin = createPlugin();
       const beforeHook = plugin.hooks.find((h) => h.hookType === "before_tool_call")!;
 
-      // file_create should not be blocked (not a browser tool)
+      // file_write should not be blocked (not a browser tool)
       const fileCreateResult = await beforeHook.handler({
-        toolName: "file_create",
-        params: { path: "download_novel.py", content: "print('hello')" },
+        toolName: "file_write",
+        params: { action: "create", path: "download_novel.py", content: "print('hello')" },
       });
       expect(fileCreateResult.block).toBeUndefined();
 
@@ -1155,8 +1160,8 @@ describe("Enhanced Browser Plugin", () => {
       await beforeHook.handler({ toolName: "web_fetch", params: { url: "https://example.com/ch1" } });
       expect(plugin.getStats().browseCount).toBe(3);
 
-      // 4. file_create and shell_exec should NOT count (not browser tools)
-      await beforeHook.handler({ toolName: "file_create", params: { path: "test.py" } });
+      // 4. file_write and shell_exec should NOT count (not browser tools)
+      await beforeHook.handler({ toolName: "file_write", params: { action: "create", path: "test.py" } });
       await beforeHook.handler({ toolName: "shell_exec", params: { command: "python test.py" } });
       expect(plugin.getStats().browseCount).toBe(3);
     });

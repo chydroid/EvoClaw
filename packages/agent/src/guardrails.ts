@@ -339,7 +339,7 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   // Privilege escalation
   // 回归（2026-10-16 实例任务）：旧 argPattern 含裸 `admin|root|elevated` 子串匹配，
   // 把合法 Python heredoc 里的 `root = ET.fromstring(...)`、`root.find(...)`（变量名
-  // 叫 root）判成提权并 block，模型被迫改走 file_create 绕路。
+  // 叫 root）判成提权并 block，模型被迫改走 file_write 绕路。
   // 收窄到真实提权信号：sudo/sudoers/runas/su 调用；`admin`、`root` 仅在与
   // su 组合（su root / su -）时算信号，裸变量名不再命中。
   {
@@ -360,7 +360,7 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   },
 
   // SQL injection in tool args
-  // 只对可能触达数据库/解释器的工具生效（file_create 等写文件工具豁免——
+  // 只对可能触达数据库/解释器的工具生效（file_write 等写文件工具豁免——
   // 源码/Markdown 内容不是 SQL 上下文，历史上被误拦）。
   // 2026-10-14 修复两类误伤：
   // 1. 裸 `--\s*$`（多行）会命中任何以两个以上短横线结尾的行
@@ -879,8 +879,7 @@ function actionRank(a: GuardrailAction): number {
  */
 export const IDEMPOTENT_TOOL_NAMES = new Set([
   "web_search", "web_fetch", "file_read", "file_list", "ls",
-  "memory_retrieve", "memory_search", "skill_search", "skill_view",
-  "skill_index_list", "scrapling_fetch", "fetch_node_page",
+  "memory_retrieve", "memory", "skill_list", "skill_view",
   "sequential_thinking", "assess_coding_capability", "markitdown_convert",
 ]);
 
@@ -892,8 +891,8 @@ export const MUTATING_TOOL_NAMES = new Set([
   "file_write", "file_delete", "file_move", "file_copy",
   "shell_exec", "execute_command", "run_command",
   "memory_save", "memory_store", "remember",
-  "skill_install", "skill_uninstall",
-  "browser_click", "browser_type", "browser_navigate",
+  "skill_manage",
+  "browser_navigate", "browser_act",
 ]);
 
 /**
@@ -987,14 +986,16 @@ const STALL_GUARD_MIN_LAPS = 3;
  * 应重置失败计数与停滞检测状态。EvoClaw 对齐 verification-stop 的变更工具口径。
  */
 export const PROGRESS_RESET_TOOLS = new Set([
-  "file_create", "file_modify", "file_delete",
+  "file_write", "file_delete",
   "shell_exec", "execute_code", "apply_patch",
-  "docx_create", "xlsx_create", "pptx_create",
-  "browser_click", "browser_type", "browser_press", "browser_navigate", "browser_fill_form",
+  "document",
+  "browser_act", "browser_navigate",
+  // 合并后的复合工具：任一 action 成功都意味着世界状态可能已改变
+  "git", "email", "scheduler", "kanban", "music", "video", "skill_manage",
 ]);
 
 /** 计入每 turn 硬顶的 web 检索类工具（hermes LoopCapConfig max_web_searches 口径）。 */
-const WEB_SEARCH_TOOLS = new Set(["web_search", "web_fetch", "scrapling_fetch", "browser_search"]);
+const WEB_SEARCH_TOOLS = new Set(["web_search", "web_fetch"]);
 
 /**
  * 工具循环检测器。

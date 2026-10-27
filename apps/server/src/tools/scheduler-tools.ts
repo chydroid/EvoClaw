@@ -1,4 +1,5 @@
-import type { AgentModelExecutor } from "@evoclaw/agent";
+import type { AgentModelExecutor, DLQEntry, DLQRetryHandler } from "@evoclaw/agent";
+import { DLQBatchRetry as DLQClass } from "@evoclaw/agent";
 import type { EventBus, ServiceRegistry } from "@evoclaw/core";
 import type { EmailClient } from "@evoclaw/email";
 import type { ParsedEmail } from "@evoclaw/email";
@@ -9,6 +10,11 @@ import type { ReportGenerator } from "@evoclaw/reporting";
 import type { ReportData } from "@evoclaw/reporting";
 import path from "path";
 
+/**
+ * Scheduler 复合工具 — 原 scheduler_create/list/update/delete/execute/history 六个工具
+ * 与 dlq_retry_batch（从 vision-batch-tools.ts 搬来）合并为一个 scheduler 工具，
+ * 通过 action 参数选择具体操作。
+ */
 export function registerSchedulerTools(
   executor: AgentModelExecutor,
   scheduleManager: ScheduleManager,
@@ -16,7 +22,9 @@ export function registerSchedulerTools(
   eventBus: EventBus,
   reportGenerator: ReportGenerator,
   playwrightBrowser: PlaywrightBrowser,
-  registry: ServiceRegistry
+  registry: ServiceRegistry,
+  /** dlq_retry_batch（现 retry_dlq action）调用的重试处理器（可选；未提供时工具返回错误） */
+  dlqHandler?: DLQRetryHandler
 ): void {
   const sched = scheduleManager;
 
@@ -181,177 +189,196 @@ export function registerSchedulerTools(
     }
   });
 
-  executor.registerTool(
-    "scheduler_create",
-    {
-      name: "scheduler_create",
-      description: "Create a scheduled task with cron expression",
-      parameters: {
-        name: { type: "string", description: "Task name" },
-        cronExpression: { type: "string", description: "Cron expression (e.g. '0 9 * * *')" },
-        description: { type: "string", description: "Task description" },
-        handlerType: { type: "string", description: "Handler type: email_check, report_generate, browser_action, system_cleanup, custom, shell. For shell handler, handlerConfig should be {\"command\":\"pnpm test\",\"cwd\":\"/path\",\"timeout\":60000}" },
-        handlerConfig: { type: "string", description: "JSON config for handler" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const name = String(params.name || "");
-      const cronExpression = String(params.cronExpression || "");
-      const description = String(params.description || "");
-      const handlerType = (String(params.handlerType || "custom")) as ScheduledTask["handlerType"];
-      let handlerConfig: Record<string, unknown> = {};
+  // ── scheduler 复合工具 ─────────────────────────────────────
+  // 以下 7 个 handler 为原工具 handler 原样抽出，逻辑逐字保留
+
+  /** 原 scheduler_create */
+  const handleSchedulerCreate = async (params: Record<string, unknown>) => {
+    const name = String(params.name || "");
+    const cronExpression = String(params.cronExpression || "");
+    const description = String(params.description || "");
+    const handlerType = (String(params.handlerType || "custom")) as ScheduledTask["handlerType"];
+    let handlerConfig: Record<string, unknown> = {};
+    try {
+      handlerConfig = JSON.parse(String(params.handlerConfig || "{}"));
+    } catch {
+      return { success: false, error: "Invalid handlerConfig JSON" };
+    }
+    if (!name || !cronExpression) {
+      return { success: false, error: "name and cronExpression are required" };
+    }
+    // 安全：shell 类型任务需审批告警并阻止明显危险命令（registerSchedulerTools 无 permissionManager，故仅告警+黑名单拦截）
+    if (handlerType === "shell") {
+      const command = typeof handlerConfig.command === "string" ? handlerConfig.command : "";
+      if (command && SCHED_DANGEROUS_PATTERNS.some((p) => p.test(command))) {
+        return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
+      }
+      process.stderr.write(`[scheduler_create] WARNING: creating shell scheduled task "${name}" — ensure command is trusted\n`);
+      publish("scheduler.shell_task_created", { name, command });
+    }
+    try {
+      const task = sched.createTask({ name, cronExpression, description, handlerType, handlerConfig });
+      return { success: true, taskId: task.id, name: task.name, nextRun: task.nextRun };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  /** 原 scheduler_list */
+  const handleSchedulerList = async () => {
+    const tasks = sched.listTasks();
+    const stats = sched.getStats();
+    return {
+      success: true,
+      tasks: tasks.map((t) => ({
+        id: t.id, name: t.name, cronExpression: t.cronExpression,
+        enabled: t.enabled, handlerType: t.handlerType, runCount: t.runCount,
+        errorCount: t.errorCount, lastRun: t.lastRun, nextRun: t.nextRun,
+      })),
+      stats,
+    };
+  };
+
+  /** 原 scheduler_update */
+  const handleSchedulerUpdate = async (params: Record<string, unknown>) => {
+    const taskId = String(params.taskId || "");
+    const updates: Record<string, unknown> = {};
+    if (params.enabled !== undefined) {
+      updates.enabled = String(params.enabled) === "true";
+    }
+    if (params.cronExpression) {
+      updates.cronExpression = String(params.cronExpression);
+    }
+    if (params.handlerConfig) {
       try {
-        handlerConfig = JSON.parse(String(params.handlerConfig || "{}"));
+        updates.handlerConfig = JSON.parse(String(params.handlerConfig));
       } catch {
         return { success: false, error: "Invalid handlerConfig JSON" };
       }
-      if (!name || !cronExpression) {
-        return { success: false, error: "name and cronExpression are required" };
-      }
-      // 安全：shell 类型任务需审批告警并阻止明显危险命令（registerSchedulerTools 无 permissionManager，故仅告警+黑名单拦截）
-      if (handlerType === "shell") {
-        const command = typeof handlerConfig.command === "string" ? handlerConfig.command : "";
+      // 安全：shell 任务更新 handlerConfig 时重新检查危险命令（与 scheduler_create 一致）
+      const existingTask = sched.getTask(taskId);
+      if (existingTask?.handlerType === "shell") {
+        const newConfig = updates.handlerConfig as Record<string, unknown>;
+        const command = typeof newConfig.command === "string" ? newConfig.command : "";
         if (command && SCHED_DANGEROUS_PATTERNS.some((p) => p.test(command))) {
           return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
         }
-        process.stderr.write(`[scheduler_create] WARNING: creating shell scheduled task "${name}" — ensure command is trusted\n`);
-        publish("scheduler.shell_task_created", { name, command });
-      }
-      try {
-        const task = sched.createTask({ name, cronExpression, description, handlerType, handlerConfig });
-        return { success: true, taskId: task.id, name: task.name, nextRun: task.nextRun };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     }
-  );
-
-  executor.registerTool(
-    "scheduler_list",
-    {
-      name: "scheduler_list",
-      description: "List all scheduled tasks",
-      parameters: {},
-    },
-    async () => {
-      const tasks = sched.listTasks();
-      const stats = sched.getStats();
-      return {
-        success: true,
-        tasks: tasks.map((t) => ({
-          id: t.id, name: t.name, cronExpression: t.cronExpression,
-          enabled: t.enabled, handlerType: t.handlerType, runCount: t.runCount,
-          errorCount: t.errorCount, lastRun: t.lastRun, nextRun: t.nextRun,
-        })),
-        stats,
-      };
+    try {
+      const updated = sched.updateTask(taskId, updates as Parameters<typeof sched.updateTask>[1]);
+      if (!updated) {
+        return { success: false, error: `Task not found: ${taskId}` };
+      }
+      return { success: true, task: updated };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
     }
-  );
+  };
+
+  /** 原 scheduler_delete */
+  const handleSchedulerDelete = async (params: Record<string, unknown>) => {
+    const taskId = String(params.taskId || "").trim();
+    if (!taskId) return { success: false, error: "taskId is required" };
+    const removed = sched.deleteTask(taskId);
+    // 明确区分"任务不存在"与"删除成功"，避免模型把 false 当成成功或误判
+    return removed
+      ? { success: true, taskId }
+      : { success: false, taskId, error: `Task not found: ${taskId}` };
+  };
+
+  /** 原 scheduler_execute */
+  const handleSchedulerExecute = async (params: Record<string, unknown>) => {
+    const taskId = String(params.taskId || "");
+    try {
+      const result = await sched.executeTask(taskId);
+      return result;
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
+  /** 原 scheduler_history */
+  const handleSchedulerHistory = async (params: Record<string, unknown>) => {
+    const taskId = String(params.taskId || "");
+    const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "20"), 10) || 20, 100));
+    const history = sched.getRunHistory(taskId || undefined, limit);
+    return { success: true, history, count: history.length };
+  };
+
+  /** 原 dlq_retry_batch（从 vision-batch-tools.ts 搬来；仅 deps.dlqHandler → dlqHandler 适配） */
+  const handleSchedulerRetryDlq = async (params: Record<string, unknown>) => {
+    try {
+      if (!dlqHandler) {
+        return { success: false, error: "DLQ retry handler not configured on server" };
+      }
+      const entries = Array.isArray(params.entries) ? (params.entries as DLQEntry[]) : [];
+      if (entries.length === 0) return { success: false, error: "entries array is required" };
+      const dlqRetry = new DLQClass(dlqHandler, {
+        maxConcurrency: (() => {
+          if (!params.maxConcurrency) return undefined;
+          const n = Number(params.maxConcurrency);
+          return Number.isFinite(n) ? n : undefined;
+        })(),
+        maxRetries: (() => {
+          if (!params.maxRetries) return undefined;
+          const n = Number(params.maxRetries);
+          return Number.isFinite(n) ? n : undefined;
+        })(),
+        failFast: params.failFast === true,
+      });
+      const result = await dlqRetry.retryAll(entries);
+      return { success: true, ...result };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
 
   executor.registerTool(
-    "scheduler_update",
+    "scheduler",
     {
-      name: "scheduler_update",
-      description: "Update or enable/disable a scheduled task",
+      name: "scheduler",
+      description:
+        "复合定时任务工具（composite scheduler tool），通过 action 参数选择具体操作，默认 list。" +
+        "actions: " +
+        "create（创建定时任务，必填 name + cronExpression；handlerType: email_check, report_generate, browser_action, system_cleanup, custom, shell；For shell handler, handlerConfig should be {\"command\":\"pnpm test\",\"cwd\":\"/path\",\"timeout\":60000}；shell 任务会做危险命令黑名单拦截与告警）； " +
+        "list（默认，列出所有定时任务及统计）； " +
+        "update（更新任务：enabled 开关、cronExpression、handlerConfig；shell 任务更新时重新检查危险命令）； " +
+        "delete（删除任务，区分任务不存在与删除成功）； " +
+        "execute（立即执行指定任务）； " +
+        "history（查看执行历史，可按 taskId 过滤，limit 默认 20）； " +
+        "retry_dlq（死信队列批量重试：并发上限、指数退避、失败隔离，返回统计）。",
       parameters: {
-        taskId: { type: "string", description: "Task ID to update" },
-        enabled: { type: "string", description: "Enable (true) or disable (false)" },
-        cronExpression: { type: "string", description: "New cron expression (optional)" },
-        handlerConfig: { type: "string", description: "JSON config for handler (optional)" },
+        action: {
+          type: "string",
+          description: "要执行的定时任务操作。action to perform: create / list (default) / update / delete / execute / history / retry_dlq",
+          enum: ["create", "list", "update", "delete", "execute", "history", "retry_dlq"],
+          required: true,
+        },
+        name: { type: "string", description: "Task name（create 用）", required: false },
+        cronExpression: { type: "string", description: "Cron expression (e.g. '0 9 * * *')（create / update 用）", required: false },
+        description: { type: "string", description: "Task description（create 用）", required: false },
+        handlerType: { type: "string", description: "Handler type: email_check, report_generate, browser_action, system_cleanup, custom, shell. For shell handler, handlerConfig should be {\"command\":\"pnpm test\",\"cwd\":\"/path\",\"timeout\":60000}（create 用）", required: false },
+        handlerConfig: { type: "string", description: "JSON config for handler（create / update 用）", required: false },
+        taskId: { type: "string", description: "Task ID（update / delete / execute / history 用）", required: false },
+        enabled: { type: "string", description: "Enable (true) or disable (false)（update 用）", required: false },
+        limit: { type: "number", description: "Max results (default 20)（history 用）", required: false },
+        entries: { type: "array", description: "Array of DLQ entries to retry（retry_dlq 用）", required: false },
+        maxConcurrency: { type: "number", description: "Max concurrent retries (default: 10)（retry_dlq 用）", required: false },
+        maxRetries: { type: "number", description: "Max retries per entry (default: 3)（retry_dlq 用）", required: false },
+        failFast: { type: "boolean", description: "Stop on first failure (default: false)（retry_dlq 用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
-      const taskId = String(params.taskId || "");
-      const updates: Record<string, unknown> = {};
-      if (params.enabled !== undefined) {
-        updates.enabled = String(params.enabled) === "true";
-      }
-      if (params.cronExpression) {
-        updates.cronExpression = String(params.cronExpression);
-      }
-      if (params.handlerConfig) {
-        try {
-          updates.handlerConfig = JSON.parse(String(params.handlerConfig));
-        } catch {
-          return { success: false, error: "Invalid handlerConfig JSON" };
-        }
-        // 安全：shell 任务更新 handlerConfig 时重新检查危险命令（与 scheduler_create 一致）
-        const existingTask = sched.getTask(taskId);
-        if (existingTask?.handlerType === "shell") {
-          const newConfig = updates.handlerConfig as Record<string, unknown>;
-          const command = typeof newConfig.command === "string" ? newConfig.command : "";
-          if (command && SCHED_DANGEROUS_PATTERNS.some((p) => p.test(command))) {
-            return { success: false, error: "Command blocked by safety filter: matched dangerous pattern" };
-          }
-        }
-      }
-      try {
-        const updated = sched.updateTask(taskId, updates as Parameters<typeof sched.updateTask>[1]);
-        if (!updated) {
-          return { success: false, error: `Task not found: ${taskId}` };
-        }
-        return { success: true, task: updated };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
-  executor.registerTool(
-    "scheduler_delete",
-    {
-      name: "scheduler_delete",
-      description: "Delete a scheduled task",
-      parameters: {
-        taskId: { type: "string", description: "Task ID to delete" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const taskId = String(params.taskId || "").trim();
-      if (!taskId) return { success: false, error: "taskId is required" };
-      const removed = sched.deleteTask(taskId);
-      // 明确区分"任务不存在"与"删除成功"，避免模型把 false 当成成功或误判
-      return removed
-        ? { success: true, taskId }
-        : { success: false, taskId, error: `Task not found: ${taskId}` };
-    }
-  );
-
-  executor.registerTool(
-    "scheduler_execute",
-    {
-      name: "scheduler_execute",
-      description: "Execute a scheduled task immediately",
-      parameters: {
-        taskId: { type: "string", description: "Task ID to execute" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const taskId = String(params.taskId || "");
-      try {
-        const result = await sched.executeTask(taskId);
-        return result;
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    }
-  );
-
-  executor.registerTool(
-    "scheduler_history",
-    {
-      name: "scheduler_history",
-      description: "Get execution history for tasks",
-      parameters: {
-        taskId: { type: "string", description: "Task ID (optional, omit for all)" },
-        limit: { type: "number", description: "Max results (default 20)" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const taskId = String(params.taskId || "");
-      const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "20"), 10) || 20, 100));
-      const history = sched.getRunHistory(taskId || undefined, limit);
-      return { success: true, history, count: history.length };
+      const action = String(params.action || "list");
+      if (action === "create") return await handleSchedulerCreate(params);
+      if (action === "list") return await handleSchedulerList();
+      if (action === "update") return await handleSchedulerUpdate(params);
+      if (action === "delete") return await handleSchedulerDelete(params);
+      if (action === "execute") return await handleSchedulerExecute(params);
+      if (action === "history") return await handleSchedulerHistory(params);
+      if (action === "retry_dlq") return await handleSchedulerRetryDlq(params);
+      return { success: false, error: `未知 scheduler action: ${action}（仅支持 create / list / update / delete / execute / history / retry_dlq）` };
     }
   );
 }

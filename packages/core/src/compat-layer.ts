@@ -119,8 +119,8 @@ export function translateLegacyKey(legacyKey: string): string {
  */
 export const TOOL_ALIASES: Record<string, string> = {
   read_file: "file_read",
-  write_file: "file_create",
-  edit_file: "file_modify",
+  write_file: "file_write",
+  edit_file: "file_write",
   delete_file: "file_delete",
   list_files: "file_list",
   run_shell: "shell_exec",
@@ -128,7 +128,7 @@ export const TOOL_ALIASES: Record<string, string> = {
   fetch_url: "web_fetch",
   google_search: "web_search",
   search_web: "web_search",
-  send_mail: "email_send",
+  send_mail: "email",
   take_screenshot: "browser_screenshot",
 };
 

@@ -677,7 +677,7 @@ export class SkillManager {
     // TOOL_GROUP 内 → buildOpenAITools 永不裁剪 → tools 数组携带全部
     // skill 定义（300 skill ≈ 24-45K tokens/请求），且安装/卸载改变
     // tools 前缀 → provider 缓存全量失效。
-    // 现行为：skill 统一经 skill_execute(skill: name, params) 调用，
+    // 现行为：skill 统一经 skill_manage(skill: name, params) 调用，
     // 内容按需经 skill_view(level 1/2) 加载；所有内部执行路径
     // （SkillDispatcher / SkillOrchestrator / DAG / quick-reply）直接
     // 调 executeSkill，不依赖工具注册。

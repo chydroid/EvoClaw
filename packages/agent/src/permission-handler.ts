@@ -109,15 +109,15 @@ export async function approveAndExecute(
     }
 
     // 根据工具类型生成简洁的确认消息
+    // 注意：复合工具（file_write / email / browser_act / skill_manage）覆盖多个 action，
+    // 这里按工具名给出泛化标签；action 级细分由权限审批文案承担。
     const toolLabelMap: Record<string, string> = {
-      "file_create": "创建文件",
-      "file_modify": "修改文件",
+      "file_write": "文件写入",
       "file_delete": "删除文件",
       "browser_navigate": "浏览器访问",
-      "browser_submit_form": "提交表单",
-      "skill_find_and_install": "安装技能",
-      "email_add_account": "添加邮箱",
-      "email_send": "发送邮件",
+      "browser_act": "浏览器操作",
+      "skill_manage": "技能管理",
+      "email": "邮箱操作",
     };
     const toolLabel = toolLabelMap[pending.toolName] || pending.toolName;
 

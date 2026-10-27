@@ -8,6 +8,7 @@ import {
   buildVerifyOnStopNudge,
   shouldTriggerVerificationGate,
   extractChangedPaths,
+  FILE_MUTATING_TOOLS,
 } from "./verification-stop";
 
 describe("isNonCodePath", () => {
@@ -56,15 +57,27 @@ describe("filterVerifiablePaths", () => {
 });
 
 describe("hasFileMutation", () => {
-  it("检测到文件写工具", () => {
-    expect(hasFileMutation(["file_create", "shell_exec"])).toBe(true);
-    expect(hasFileMutation(["file_modify"])).toBe(true);
-    expect(hasFileMutation(["docx_create"])).toBe(true);
+  it("检测到文件写工具（含合并后的复合工具）", () => {
+    // 原 file_create / file_modify 合并为 file_write；原 docx_create 并入 document。
+    // 该函数只按工具名匹配，action 由调用方在 toolName 之外另行判定。
+    expect(hasFileMutation(["file_write", "shell_exec"])).toBe(true);
+    expect(hasFileMutation(["document"])).toBe(true);
+    expect(hasFileMutation(["file_delete"])).toBe(true);
   });
 
   it("未检测到文件写工具", () => {
     expect(hasFileMutation(["shell_exec", "file_read"])).toBe(false);
     expect(hasFileMutation([])).toBe(false);
+  });
+});
+
+describe("FILE_MUTATING_TOOLS 覆盖合并后的复合工具", () => {
+  it("file_write 与 document 都在变更类白名单里", () => {
+    // 合并后细粒度工具名（file_create / file_modify / docx_create / xlsx_create /
+    // pptx_create）已不存在，若白名单仍只列旧名，验证门会对新工具完全失明
+    expect(FILE_MUTATING_TOOLS.has("file_write")).toBe(true);
+    expect(FILE_MUTATING_TOOLS.has("file_delete")).toBe(true);
+    expect(FILE_MUTATING_TOOLS.has("document")).toBe(true);
   });
 });
 
@@ -76,7 +89,9 @@ describe("hasVerificationIntent", () => {
   });
 
   it("未检测到验证类工具", () => {
-    expect(hasVerificationIntent(["file_create"])).toBe(false);
+    // file_write / document 是变更类工具，不算验证意图
+    expect(hasVerificationIntent(["file_write"])).toBe(false);
+    expect(hasVerificationIntent(["document"])).toBe(false);
     expect(hasVerificationIntent([])).toBe(false);
   });
 });
@@ -135,7 +150,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["report.docx"],
-        ["file_create", "docx_create"],
+        ["file_write", "document"],
         "文件已创建完成",
         0,
       ),
@@ -146,7 +161,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["report.docx"],
-        ["file_create", "file_read"],
+        ["file_write", "file_read"],
         "文件已创建完成",
         0,
       ),
@@ -157,7 +172,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["report.docx"],
-        ["file_create"],
+        ["file_write"],
         "已验证，解包验证通过",
         0,
       ),
@@ -179,7 +194,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["README.md", "config.json"],
-        ["file_create"],
+        ["file_write"],
         "文件已创建完成",
         0,
       ),
@@ -190,7 +205,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         [],
-        ["file_create"],
+        ["file_write"],
         "文件已创建完成",
         0,
       ),
@@ -201,7 +216,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["report.docx"],
-        ["file_create"],
+        ["file_write"],
         "文件已创建完成",
         2,
       ),
@@ -212,7 +227,7 @@ describe("shouldTriggerVerificationGate", () => {
     expect(
       shouldTriggerVerificationGate(
         ["report.docx"],
-        ["file_create"],
+        ["file_write"],
         "文件已创建完成",
         0,
         { enabled: false },
@@ -222,20 +237,20 @@ describe("shouldTriggerVerificationGate", () => {
 });
 
 describe("extractChangedPaths", () => {
-  it("从 file_create 参数提取路径", () => {
+  it("从 file_write 参数提取路径", () => {
     const paths = extractChangedPaths([
-      { name: "file_create", arguments: { path: "data/test.txt" } },
+      { name: "file_write", arguments: { action: "create", path: "data/test.txt" } },
     ]);
     expect(paths).toEqual(["data/test.txt"]);
   });
 
-  it("从多个工具提取路径", () => {
+  it("从多个工具提取路径（含 document 复合工具）", () => {
     const paths = extractChangedPaths([
-      { name: "file_create", arguments: { path: "a.docx" } },
-      { name: "file_modify", arguments: { path: "b.ts" } },
+      { name: "file_write", arguments: { action: "create", path: "a.docx" } },
+      { name: "document", arguments: { action: "create_docx", path: "b.docx" } },
       { name: "shell_exec", arguments: { command: "ls" } },
     ]);
-    expect(paths).toEqual(["a.docx", "b.ts"]);
+    expect(paths).toEqual(["a.docx", "b.docx"]);
   });
 
   it("无路径参数时返回空", () => {

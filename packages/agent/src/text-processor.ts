@@ -69,12 +69,12 @@ export function summarizeToolResult(toolName: string, result: string): string {
   }
 
   // web_fetch / browser 结果：保留首尾+中间关键段落
-  if (toolName === "web_fetch" || toolName === "fetch_node_page" || toolName.startsWith("browser_")) {
+  if (toolName === "web_fetch" || toolName.startsWith("browser_")) {
     return summarizeWebContent(result);
   }
 
   // email 结果：保留邮件头+正文摘要
-  if (toolName.startsWith("email_")) {
+  if (toolName === "email" || toolName.startsWith("email_")) {
     return summarizeEmailResult(result);
   }
 

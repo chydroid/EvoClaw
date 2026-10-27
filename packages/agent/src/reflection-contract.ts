@@ -224,7 +224,7 @@ export const MACRO_TOOL_SYSTEM_PROMPT = `
   "memory": "已进入登录页，待输入用户名",
   "next_goal": "在用户名输入框输入 admin",
   "action": {
-    "browser_input_by_index": { "index": 3, "text": "admin" }
+    "browser_act": { "action": "fill", "index": 3, "text": "admin" }
   }
 }
 \`\`\`

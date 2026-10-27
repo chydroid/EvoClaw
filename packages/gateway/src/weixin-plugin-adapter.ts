@@ -1171,13 +1171,11 @@ export class WeixinPluginAdapter {
       const formatToolName = (name: string): string => {
         const nameMap: Record<string, string> = {
           "web_search": "网络搜索",
-          "fetch_node_page": "网页抓取",
-          "skill_execute": "技能调用",
+          "web_fetch": "网页抓取",
+          "skill_manage": "技能调用",
           "browser_navigate": "浏览器访问",
-          "browser_search": "浏览器搜索",
           "browser_screenshot": "页面截图",
-          "file_create": "创建文件",
-          "file_modify": "修改文件",
+          "file_write": "文件写入",
           "file_delete": "删除文件",
           "execute_programming_task": "编程任务",
           "decompose_programming_task": "任务分解",
@@ -1202,7 +1200,7 @@ export class WeixinPluginAdapter {
               msg = `✅ 已完成${searchCount}轮网络搜索`;
               lastSearchReportRound = searchCount;
             }
-          } else if (event.toolName === "fetch_node_page") {
+          } else if (event.toolName === "web_fetch") {
             fetchCount++;
             const shouldReport = fetchCount % 5 === 0;
             if (shouldReport) {
@@ -1219,7 +1217,7 @@ export class WeixinPluginAdapter {
             const toolLabel = formatToolName(event.toolName);
             if (event.toolName === "web_search" && searchCount > 0) {
               msg = `🔍 继续网络搜索（已${searchCount}轮）...`;
-            } else if (event.toolName === "fetch_node_page" && fetchCount > 0) {
+            } else if (event.toolName === "web_fetch" && fetchCount > 0) {
               msg = `🔍 继续抓取网页（已${fetchCount}个）...`;
             } else {
               msg = `🔍 正在${toolLabel}...`;

@@ -180,52 +180,48 @@ describe("buildOpenAITools — 关键词激活不得吃掉创建类能力（回�
     new Map(names.map((n) => [n, { definition: { name: n, description: "d", parameters: {} }, handler: async () => ({}) }]));
 
   const REG = mk([
-    "web_search", "web_fetch", "file_read", "file_create", "file_modify",
+    "web_search", "web_fetch", "file_read", "file_write",
     "file_list", "file_delete", "shell_exec", "sequential_thinking",
-    "skill_execute", "skill_install",
-    "email_add_account", "email_send", "email_analyze", "email_summarize",
-    "email_list_accounts", "email_list_inbox", "email_get_inbox_summary",
-    "scheduler_create", "scheduler_list",
-    "kanban_create_board", "kanban_add_task",
+    "skill_manage", "skill_list", "skill_view",
+    "email", "scheduler", "kanban", "memory",
   ]);
   const sent = (msg?: string) =>
     buildOpenAITools(REG, msg, (fn) => fn()).map((t) => t.function.name as string);
 
-  it("★ 说「添加邮箱账户」时 email_add_account 必须下发", () => {
-    expect(sent("帮我添加邮箱账户 chydroid@163.com")).toContain("email_add_account");
+  it("★ 说「添加邮箱账户」时 email 必须下发", () => {
+    expect(sent("帮我添加邮箱账户 chydroid@163.com")).toContain("email");
   });
 
-  it("★ 各种中文措辞下 email_add_account 都不丢失", () => {
+  it("★ 各种中文措辞下 email 都不丢失", () => {
     for (const msg of ["添加邮箱", "配置邮箱", "注册个邮箱", "把我的邮箱接进来",
                        "添加邮箱账号", "设置邮箱", "163邮箱", "imap 收信"]) {
-      expect(sent(msg), `消息「${msg}」下发了 email_add_account`).toContain("email_add_account");
+      expect(sent(msg), `消息「${msg}」下发了 email`).toContain("email");
     }
   });
 
   it("★ 完全无关的消息也不会裁掉创建类工具（白名单兜底）", () => {
     const names = sent("今天天气怎么样");
-    expect(names).toContain("email_add_account");
-    expect(names).toContain("scheduler_create");
-    expect(names).toContain("kanban_create_board");
-    expect(names).toContain("kanban_add_task");
+    expect(names).toContain("email");
+    expect(names).toContain("scheduler");
+    expect(names).toContain("kanban");
+    expect(names).toContain("file_write");
   });
 
   it("未激活的组内非创建类工具仍可被裁剪（保留裁剪省 token 的能力）", () => {
-    // email_send 在 email 组且非创建类：无关消息下应被裁剪
-    expect(sent("今天天气怎么样")).not.toContain("email_send");
+    // memory 在 memory 组且非创建类：无关消息下应被裁剪
+    expect(sent("今天天气怎么样")).not.toContain("memory");
   });
 
   it("命中关键词时整组恢复下发", () => {
-    const names = sent("发邮件给张三");
-    expect(names).toContain("email_send");
-    expect(names).toContain("email_add_account");
+    expect(sent("发邮件给张三")).toContain("email");
+    expect(sent("帮我记住这个约定")).toContain("memory");
   });
 
   it("checkFn 返回 false 的工具仍然不下发（白名单不覆盖可用性门禁）", () => {
-    const reg = mk(["email_add_account", "web_search"]);
-    reg.get("email_add_account")!.checkFn = () => false;
+    const reg = mk(["email", "web_search"]);
+    reg.get("email")!.checkFn = () => false;
     const names = buildOpenAITools(reg, "添加邮箱", (fn) => fn()).map((t) => t.function.name as string);
-    expect(names).not.toContain("email_add_account");
+    expect(names).not.toContain("email");
   });
 });
 
@@ -293,8 +289,8 @@ describe("lookupCachedToolResult — 副作用工具豁免", () => {
 
   it("NO_RESULT_CACHE_TOOLS 覆盖浏览器工具（页面状态是活对象，结果非 args 纯函数）", () => {
     // 评测事故（2026-10-15 browser-eval b05/b07）：browser_navigate 命中结果缓存
-    // → 导航被跳过 → js_eval/get_text 作用在旧页面上。
-    for (const t of ["browser_navigate", "browser_get_text", "browser_js_eval", "browser_tabs", "browser_screenshot"]) {
+    // → 导航被跳过 → js_eval/get 作用在旧页面上。
+    for (const t of ["browser_navigate", "browser_get", "browser_js_eval", "browser_tabs", "browser_screenshot", "browser_act"]) {
       expect(NO_RESULT_CACHE_TOOLS.has(t)).toBe(true);
     }
     const r = lookupCachedToolResult(
@@ -389,9 +385,9 @@ describe("P0-2 buildOpenAITools — 会话级单调并集（tools JSON 字节稳
   const mk = (names: string[]) =>
     new Map(names.map((n) => [n, { definition: { name: n, description: "d", parameters: {} }, handler: async () => ({}) }]));
   const REG = mk([
-    "web_search", "web_fetch", "file_read", "file_create",
-    "email_send", "email_add_account", "scheduler_create",
-    "kanban_add_task", "skill_execute", "skill_install", "shell_exec",
+    "web_search", "web_fetch", "file_read", "file_write",
+    "email", "scheduler",
+    "kanban", "skill_manage", "shell_exec", "memory",
   ]);
   const evalFn = (fn: () => boolean) => fn();
 
@@ -413,13 +409,13 @@ describe("P0-2 buildOpenAITools — 会话级单调并集（tools JSON 字节稳
     const out1: { activeTools?: Set<string> } = {};
     buildOpenAITools(REG, "帮我发邮件给张三", evalFn, undefined, out1);
     const out2: { activeTools?: Set<string> } = {};
-    const tools2 = JSON.stringify(buildOpenAITools(REG, "帮我建个日程", evalFn, out1.activeTools, out2));
+    const tools2 = JSON.stringify(buildOpenAITools(REG, "帮我建个定时任务", evalFn, out1.activeTools, out2));
     const out3: { activeTools?: Set<string> } = {};
     const tools3 = JSON.stringify(buildOpenAITools(REG, "完全无关的消息", evalFn, out2.activeTools, out3));
     expect(tools3).toBe(tools2); // 稳态后字节恒定
     const names3 = JSON.parse(tools3).map((t: { function: { name: string } }) => t.function.name);
-    expect(names3).toContain("email_send");       // email 组不丢
-    expect(names3).toContain("scheduler_create"); // scheduler 组保留
+    expect(names3).toContain("email");       // email 组不丢
+    expect(names3).toContain("scheduler"); // scheduler 组保留
   });
 
   it("fresh session（base 为空）行为与旧语义一致", () => {
@@ -427,17 +423,18 @@ describe("P0-2 buildOpenAITools — 会话级单调并集（tools JSON 字节稳
     const names = JSON.parse(
       JSON.stringify(buildOpenAITools(REG, "今天天气怎么样", evalFn, undefined, out))
     ).map((t: { function: { name: string } }) => t.function.name);
-    // 无关消息：非创建类 email_send 被裁剪（旧行为）
-    expect(names).not.toContain("email_send");
+    // 无关消息：非创建类 memory 被裁剪（旧行为）
+    expect(names).not.toContain("memory");
     // 创建类工具白名单兜底保留
-    expect(names).toContain("email_add_account");
+    expect(names).toContain("email");
+    expect(names).toContain("scheduler");
   });
 
   it("message === undefined（/health 计数路径）仍全量下发", () => {
     const names = JSON.parse(JSON.stringify(buildOpenAITools(REG, undefined, evalFn)))
       .map((t: { function: { name: string } }) => t.function.name);
-    expect(names).toContain("email_send");
-    expect(names).toContain("scheduler_create");
+    expect(names).toContain("email");
+    expect(names).toContain("scheduler");
   });
 });
 
@@ -1879,23 +1876,18 @@ describe("P0-5 buildOpenAITools — 领域工具分组瘦身 + 输出分档（�
   // 取真实注册集的一批：core + 刻意常驻的编码基座 + 各分组代表（含创建类）
   const REG = mk([
     // core
-    "web_search", "web_fetch", "file_read", "file_create", "file_modify",
+    "web_search", "web_fetch", "file_read", "file_write",
     "file_list", "file_delete", "shell_exec", "sequential_thinking",
-    // ★ 刻意保留常驻的 12 个编码基座工具
-    "apply_patch", "apply_rename", "batch_execute", "code_search", "codebase_search",
-    "find_references", "execute_code", "lint", "run_tests", "verify_project",
-    "todo_list", "plan_rename",
-    // browser / email
-    "browser_navigate", "browser_check", "browser_wait",
-    "email_send", "email_add_account", "email_list_inbox", "email_list_accounts",
+    // ★ 刻意保留常驻的编码基座工具（未分组 → 恒定下发）
+    "apply_patch", "code_search", "dev_check", "execute_code", "verify_project",
+    "todo_list", "document", "task_plan", "report", "classify_task",
+    // browser / email / media
+    "browser_navigate", "browser_wait", "browser_scroll",
+    "email", "video", "music", "image_generate",
     // P0-5 收进分组的领域工具
-    "git_status", "git_diff", "git_commit",
-    "kanban_list_tasks", "kanban_add_task", "kanban_create_board",
-    "vision_analyze", "vision_find_elements",
-    "computer_mouse_click", "computer_key_press",
-    "checkpoint_save", "checkpoint_restore",
-    "workflow_execute", "grounded_research", "dlq_retry_batch",
-    "music_search", "memory_stats", "skill_create", "skill_uninstall",
+    "git", "kanban", "vision_analyze", "computer_use",
+    "checkpoint", "scheduler", "memory", "workflow",
+    "skill_manage", "skill_list", "skill_view",
   ]);
   const evalFn = (fn: () => boolean) => fn();
 
@@ -1905,21 +1897,16 @@ describe("P0-5 buildOpenAITools — 领域工具分组瘦身 + 输出分档（�
     return { names, active: out.activeTools };
   };
 
-  /** 常驻编码基座：任何措辞（哪怕完全无关）都必须在手 */
+  /** 常驻编码基座：任何措辞（哪怕完全无关）都必须在手（未分组 → 恒定下发） */
   const ALWAYS_ON = [
-    "apply_patch", "apply_rename", "batch_execute", "code_search", "codebase_search",
-    "find_references", "execute_code", "lint", "run_tests", "verify_project",
-    "todo_list", "plan_rename",
+    "apply_patch", "code_search", "dev_check", "execute_code", "verify_project",
+    "todo_list", "document", "task_plan", "report", "classify_task",
   ];
   /** 领域工具：关键词不命中时必须被裁掉（这正是本次瘦身的目标） */
   const DOMAIN_GATED = [
-    "email_list_inbox", "email_list_accounts",
-    "git_status", "git_diff", "git_commit",
-    "kanban_list_tasks", "vision_analyze", "vision_find_elements",
-    "computer_mouse_click", "computer_key_press",
-    "checkpoint_save", "checkpoint_restore",
-    "workflow_execute", "grounded_research", "dlq_retry_batch",
-    "music_search", "memory_stats", "skill_uninstall",
+    "memory", "vision_analyze", "computer_use", "checkpoint",
+    "workflow", "video", "music", "image_generate",
+    "browser_navigate", "browser_wait", "browser_scroll",
   ];
 
   it("无关消息：常驻编码基座全在，领域工具全裁", () => {
@@ -1930,56 +1917,59 @@ describe("P0-5 buildOpenAITools — 领域工具分组瘦身 + 输出分档（�
 
   it("创建类工具（白名单）即使所属组未激活也恒定下发", () => {
     const { names } = run("今天天气怎么样");
-    expect(names).toContain("kanban_create_board");
-    expect(names).toContain("kanban_add_task");
-    expect(names).toContain("email_add_account");
-    expect(names).toContain("skill_create");
+    expect(names).toContain("email");
+    expect(names).toContain("scheduler");
+    expect(names).toContain("kanban");
+    expect(names).toContain("git");
+    expect(names).toContain("skill_manage");
+    expect(names).toContain("file_write");
   });
 
   it("关键词命中即下发对应组的全部工具", () => {
     const git = run("帮我看看这个仓库的改动并提交").names;
-    expect(git).toContain("git_status");
-    expect(git).toContain("git_diff");
-    expect(git).toContain("git_commit");
+    expect(git).toContain("git");
 
     const mail = run("帮我收一下邮件").names;
-    expect(mail).toContain("email_list_inbox");
-    expect(mail).toContain("email_list_accounts");
-    expect(mail).toContain("email_send");
+    expect(mail).toContain("email");
 
     const shot = run("帮我分析这张截图").names;
     expect(shot).toContain("vision_analyze");
-    expect(shot).toContain("vision_find_elements");
+
+    const mem = run("帮我记住这个约定").names;
+    expect(mem).toContain("memory");
 
     const web = run("打开网页看看").names;
     expect(web).toContain("browser_navigate");
-    expect(web).toContain("browser_check");
     expect(web).toContain("browser_wait");
+    expect(web).toContain("browser_scroll");
+
+    const song = run("下载一首歌").names;
+    expect(song).toContain("music");
   });
 
   it("新激活的组排在数组末尾 → 前缀只增不改（缓存不失配）", () => {
     const r1 = run("帮我看看这个仓库的改动");
-    expect(r1.names).toContain("git_status");
+    expect(r1.names).toContain("git");
 
-    // turn2 激活 email 组：git 工具位置必须原封不动，email 工具只能追加在末尾
-    const r2 = run("顺便帮我收下邮件", r1.active!);
-    expect(r2.names).toContain("email_list_inbox");
+    // turn2 激活 vision 组：git 工具位置必须原封不动，vision 工具只能追加在末尾
+    const r2 = run("顺便帮我分析这张截图", r1.active!);
+    expect(r2.names).toContain("vision_analyze");
     expect(r2.names.slice(0, r1.names.length)).toEqual(r1.names);
-    expect(r2.names.indexOf("email_list_inbox")).toBeGreaterThan(r2.names.indexOf("git_status"));
+    expect(r2.names.indexOf("vision_analyze")).toBeGreaterThan(r2.names.indexOf("git"));
   });
 
   it("同轮激活多个组：按组声明序排列，稳态后字节恒定", () => {
     const r1 = run("帮我看看这个仓库的改动");
-    const r2 = run("顺便帮我分析这张截图并收下邮件", r1.active!);
+    const r2 = run("顺便帮我分析这张截图并记住这个约定", r1.active!);
     expect(r2.names).toContain("vision_analyze");
-    expect(r2.names).toContain("email_list_inbox");
-    // 声明序：email 在 vision 之前
-    expect(r2.names.indexOf("email_list_inbox")).toBeLessThan(r2.names.indexOf("vision_analyze"));
-    // 但 git 组声明在 email/vision **之后**、却**先**被激活 → 必须仍排在它们前面：
+    expect(r2.names).toContain("memory");
+    // 声明序：memory 在 vision 之前
+    expect(r2.names.indexOf("memory")).toBeLessThan(r2.names.indexOf("vision_analyze"));
+    // 但 git 组声明在 memory **之后**、却**先**被激活 → 必须仍排在它们前面：
     // 组位次按「首次激活序」（baseTools 插入序）而非「组声明序」。
     // 若按声明序排，git 会在下一轮「转为已激活」时插到中间 → 缓存全量失配。
-    expect(r2.names.indexOf("git_status")).toBeLessThan(r2.names.indexOf("email_list_inbox"));
-    expect(r2.names.indexOf("git_status")).toBeLessThan(r2.names.indexOf("vision_analyze"));
+    expect(r2.names.indexOf("git")).toBeLessThan(r2.names.indexOf("memory"));
+    expect(r2.names.indexOf("git")).toBeLessThan(r2.names.indexOf("vision_analyze"));
 
     const r3 = run("再随便说点什么", r2.active!);
     expect(r3.names).toEqual(r2.names);

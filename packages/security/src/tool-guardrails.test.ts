@@ -19,8 +19,8 @@ describe("Tool Guardrails", () => {
     });
 
     it("isMutating 应正确识别变异工具", () => {
-      expect(isMutating("file_create")).toBe(true);
-      expect(isMutating("email_send")).toBe(true);
+      expect(isMutating("file_write")).toBe(true);
+      expect(isMutating("email")).toBe(true);
       expect(isMutating("file_read")).toBe(false);
     });
 
@@ -111,7 +111,7 @@ describe("Tool Guardrails", () => {
     });
 
     it("变异工具应 warn", () => {
-      const decision = guardrails.check("file_create", { path: "/tmp/new" });
+      const decision = guardrails.check("file_write", { path: "/tmp/new" });
       expect(decision.action).toBe("warn");
     });
 

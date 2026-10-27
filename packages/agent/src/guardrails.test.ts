@@ -3,7 +3,7 @@ import { GuardrailsManager } from "./guardrails";
 
 /**
  * tool-sql-injection 规则回归（2026-10-14 真实浏览器评测中发现）：
- * 旧规则对所有工具生效，且含裸 `--\s*$`（多行）——file_create 写入的
+ * 旧规则对所有工具生效，且含裸 `--\s*$`（多行）——file_write 写入的
  * Python 注释分隔线 `# -----` 任何以两个以上短横线结尾的行都会被判
  * 「SQL 注入」并 block，任务直接失败。修复后：写文件工具豁免 +
  * SQL 注释注入必须紧跟引号（`'\s*--`）+ `1=1` 加词界。
@@ -22,16 +22,18 @@ describe("guardrails tool-sql-injection（回归）", () => {
     "import json2md",
   ].join("\n");
 
-  it("file_create 搭载 Python 注释分隔线 + count1=1 赋值不被误拦", () => {
-    const r = mgr.checkToolCall("file_create", {
+  it("file_write(action=create) 搭载 Python 注释分隔线 + count1=1 赋值不被误拦", () => {
+    const r = mgr.checkToolCall("file_write", {
+      action: "create",
       path: "tools/json2md.py",
       content: PY_CONTENT,
     });
     expect(r.passed).toBe(true);
   });
 
-  it("file_modify 写 Markdown 水平分隔线（---）不被误拦", () => {
-    const r = mgr.checkToolCall("file_modify", {
+  it("file_write(action=modify) 写 Markdown 水平分隔线（---）不被误拦", () => {
+    const r = mgr.checkToolCall("file_write", {
+      action: "modify",
       path: "docs/x.md",
       content: "# 标题\n\n---\n\n正文段落。\n",
     });
@@ -119,7 +121,7 @@ describe("guardrails tool-shell-injection（回归）", () => {
 // 提权规则回归（2026-10-16 实例任务 worktemp.zip 汇总）：
 // 旧 argPattern 含裸 `admin|root|elevated` 子串匹配，把合法 Python
 // heredoc 里的 `root = ET.fromstring(...)`（变量名 root）判成提权并
-// block，模型被迫改走 file_create 绕路。收窄后：变量名不命中，
+// block，模型被迫改走 file_write 绕路。收窄后：变量名不命中，
 // 真提权（sudo/su root/runas）仍拦。
 // ═══════════════════════════════════════════════════════════
 describe("guardrails tool-privilege-sudo（回归）", () => {
@@ -161,10 +163,24 @@ describe("guardrails tool-file-deletion（回归）", () => {
   });
 
   it("真删除类工具名仍被拦截", () => {
-    for (const tool of ["file_delete", "memory_delete", "scheduler_delete", "rm", "truncate_file"]) {
+    // memory_delete / scheduler_delete 已随合并消失（memory 只有 search/stats；
+    // scheduler 的删除能力变成 action=delete），保留仍存在的名字与合成名。
+    for (const tool of ["file_delete", "rm", "truncate_file"]) {
       const r = mgr.checkToolCall(tool, { path: "x" });
       expect(r.passed).toBe(false);
       expect(r.triggeredRules).toContain("tool-file-deletion");
     }
+  });
+
+  it("★ 合并回归（源码缺口）：scheduler 的 delete action 不再被 tool-file-deletion 命中", () => {
+    // 合并前 scheduler_delete 是独立工具名、带 delete 词根 → 本规则硬拦（high/block）。
+    // 合并后工具名变成 scheduler，而 BUILTIN_TOOL_RULES 只对 toolName 做正则匹配、
+    // 不解析 args.action → `scheduler` + action=delete 逃过这层硬拦，只剩
+    // ACTION_RISK_LEVELS 里 scheduler.delete="medium" 的审批流兜底。
+    //
+    // 这是**源码缺口**（规则需要补 action 维度），不是本测试认可的行为。
+    // 规则补齐后，本断言必须改回 expect(...).passed).toBe(false)。
+    const r = mgr.checkToolCall("scheduler", { action: "delete", id: "job-1" });
+    expect(r.triggeredRules).not.toContain("tool-file-deletion");
   });
 });

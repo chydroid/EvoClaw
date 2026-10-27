@@ -74,59 +74,116 @@ export interface TrustRule {
 
 // ── Defaults ───────────────────────────────────────────────
 
+/** 风险等级排序：用于「action 缺省时取该工具最高等级」的保守回落 */
+const RISK_ORDER: Record<RiskLevel, number> = { low: 0, medium: 1, high: 2, critical: 3 };
+
 const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
   // Critical risk - always requires approval
   file_delete: "critical",
-  // High risk - requires approval by default
-  file_modify: "high",
-  email_send: "high",
+  // 未合并的独立工具：高风险（browser_login 会暴露凭据）
   browser_login: "high",
-  // Git 远程/破坏性操作：此前在 security/permission-manager.ts 配了
-  // requireExplicitConsent，但本表缺配 → 缺省按 medium 处理（requireApproval=false）
-  // 导致 HITL 层直接放行，force push 这类高危操作实际无需审批。此处补齐对齐。
-  git_commit: "high",
-  git_push: "high",
-  // 自动装技能会引入可执行代码，设为 medium（medium 默认可配置为需审批）
-  skill_find_and_install: "medium",
   // Medium risk - configurable
-  file_create: "medium",
-  skill_install: "medium",
-  video_download: "medium",
-  music_download: "medium",
+  // 复合工具（file_write / email / git / skill_manage / scheduler / music / video /
+  // browser_get / browser_act / ...）的 action 级风险见下方 ACTION_RISK_LEVELS，
+  // 不再在这里给单一等级——否则要么过度封禁（email 整体 high → 读收件箱也要审批），
+  // 要么失去护栏（email 整体 low → 发信免审批）。
   // Low risk - auto-approved
-  // email_add_account 设为 low：用户明确要求首次添加邮箱免人工审批。
-  // 与 security/permission-manager.ts 的 autoApprove:true 对齐，消除双轨冲突。
-  // 凭据加密落盘，真正高危的 email_send 仍保持 high。
-  email_add_account: "low",
-  // shell_exec 设为 low：技能中的 Python 脚本无须批准即可执行
   shell_exec: "low",
-  // skill_execute 设为 low：技能执行无须批准
-  skill_execute: "low",
   web_search: "low",
   web_fetch: "low",
   file_read: "low",
   file_list: "low",
-  memory_search: "low",
   memory_store: "low",
-  // Browser automation - low risk (read-only navigation & interaction)
+  // Browser automation - low risk（未合并的独立浏览器工具：只读导航与交互）
   browser_navigate: "low",
-  browser_get_text: "low",
-  browser_find_elements: "low",
-  browser_submit_form: "low",
-  browser_search: "low",
-  browser_fetch_json: "low",
   browser_tabs: "low",
   browser_launch: "low",
   browser_screenshot: "low",
   browser_js_eval: "low",
-  browser_click: "low",
-  browser_fill_form: "low",
-  browser_get_html: "low",
-  browser_select: "low",
-  browser_check: "low",
   browser_wait: "low",
-  browser_hover: "low",
-  browser_scroll: "low",
+};
+
+/**
+ * 复合工具的 action 级风险等级。
+ *
+ * 合并前每个细粒度工具在 DEFAULT_RISK_LEVELS 里各占一行；合并后一个工具名覆盖多个
+ * action，风险跨度很大。此处按 (工具, action) 精确还原合并前的等级语义。
+ * 未列出的 action 回落到工具级 DEFAULT_RISK_LEVELS，再回落 "medium"。
+ */
+const ACTION_RISK_LEVELS: Record<string, Record<string, RiskLevel>> = {
+  // file_create=medium / file_modify=high
+  file_write: { create: "medium", modify: "high" },
+  // email_send=high；email_add_account=low（用户明确要求首次添加邮箱免审批）；
+  // 其余只读 action=low
+  email: {
+    send: "high",
+    add_account: "low",
+    list_accounts: "low",
+    list_inbox: "low",
+    get_email: "low",
+    analyze: "low",
+    summarize: "low",
+    inbox_summary: "low",
+  },
+  // Git 远程/破坏性操作需审批：此前在 security/permission-manager.ts 配了
+  // requireExplicitConsent，但本表缺配 → 缺省按 medium 处理（requireApproval=false）
+  // 导致 HITL 层直接放行，force push 这类高危操作实际无需审批。此处按 action 补齐对齐。
+  git: {
+    commit: "high",
+    push: "high",
+    status: "low",
+    diff: "low",
+    log: "low",
+    blame: "low",
+    show: "low",
+    add: "low",
+  },
+  // 自动装技能会引入可执行代码 → medium（medium 默认可配置为需审批）
+  skill_manage: {
+    create: "medium",
+    install: "medium",
+    uninstall: "medium",
+    find_and_install: "medium",
+    execute: "low",
+    orchestrate: "low",
+  },
+  skill_list: { index: "low", search: "low" },
+  // video_download / music_download 会拉取外部内容 → medium
+  video: { generate: "low", info: "low", download: "medium" },
+  music: { search: "low", download: "medium" },
+  image_generate: { generate: "low", info: "low" },
+  document: { create_docx: "low", create_xlsx: "low", create_pptx: "low" },
+  kanban: {
+    create_board: "low", add_task: "low", claim_task: "low",
+    complete_task: "low", list_tasks: "low", get_stats: "low",
+  },
+  memory: { search: "low", stats: "low" },
+  scheduler: {
+    create: "medium", update: "medium", delete: "medium",
+    execute: "medium", retry_dlq: "medium",
+    list: "low", history: "low",
+  },
+  dev_check: { test: "low", lint: "low" },
+  code_search: { symbol: "low", text: "low", references: "low" },
+  // apply_patch 会改代码 → medium；重命名计划/执行只读或受控
+  apply_patch: { patch: "medium", plan_rename: "low", apply_rename: "low" },
+  // Browser 合并后：全部只读/交互类，沿用合并前的 low
+  browser_get: { text: "low", html: "low", elements: "low" },
+  browser_act: { click: "low", hover: "low", check: "low", select: "low", fill: "low", submit: "low" },
+  browser_scroll: { scroll: "low" },
+  browser_extract_dom: { extract: "low", clear: "low" },
+  web_search: { search: "low", research: "low", browser: "low" },
+  web_fetch: { fetch: "low", stealth: "low", json: "low" },
+  vision_analyze: { analyze: "low", describe: "low", find_elements: "low", detect_issues: "low", compare: "low" },
+  workflow: { validate: "low", execute: "low", batch: "low" },
+  checkpoint: { save: "low", restore: "low", list: "low" },
+  task_plan: { decompose: "low", templates: "low", status: "low" },
+  report: { generate: "low", templates: "low", weekly: "low", email_digest: "medium" },
+  classify_task: { classify: "low", stats: "low" },
+  computer_use: {
+    screenshot: "low", click: "low", move: "low", drag: "low", scroll: "low",
+    type: "low", press: "low", window_list: "low", window_focus: "low",
+  },
 };
 
 const DEFAULT_REQUIRE_APPROVAL: Record<RiskLevel, boolean> = {
@@ -167,12 +224,33 @@ export class HumanApprovalManager {
     this.startCleanupTimer();
   }
 
+  /**
+   * 解析风险等级：先看 (工具, action) 二元规则，未命中再看工具级配置。
+   *
+   * 复合工具的 action 是必填字段，但模型仍可能漏传；此时取该工具**所有 action 的
+   * 最高等级**（保守方向）——宁可多审批一次，也不要因为 action 缺失就把
+   * email.send 这类高危操作放成 low。
+   */
+  resolveRiskLevel(toolName: string, args?: Record<string, unknown>): RiskLevel {
+    const actionRules = ACTION_RISK_LEVELS[toolName];
+    if (actionRules) {
+      const action = typeof args?.action === "string" ? args.action : undefined;
+      if (action && actionRules[action]) return actionRules[action];
+      let worst: RiskLevel = "low";
+      for (const level of Object.values(actionRules)) {
+        if (RISK_ORDER[level] > RISK_ORDER[worst]) worst = level;
+      }
+      return worst;
+    }
+    return this.config.riskLevels[toolName] || "medium";
+  }
+
   /** Check if a tool call requires approval */
   requiresApproval(toolName: string, args: Record<string, unknown>): boolean {
     // Check trust rules first
     if (this.isTrusted(toolName, args)) return false;
 
-    const riskLevel = this.config.riskLevels[toolName] || "medium";
+    const riskLevel = this.resolveRiskLevel(toolName, args);
     // 「一定风险」档：高危/极高危操作也免人工审批。
     // 极端危险命令（格式化磁盘、删根目录、命令注入）在 shell 层已硬拦，
     // 不依赖这里兜底，故此处放行不会让不可逆操作失去护栏。
@@ -183,9 +261,9 @@ export class HumanApprovalManager {
     return this.config.requireApproval[riskLevel];
   }
 
-  /** Get the risk level for a tool */
-  getRiskLevel(toolName: string): RiskLevel {
-    return this.config.riskLevels[toolName] || "medium";
+  /** Get the risk level for a tool（复合工具需传 args 才能拿到 action 级等级） */
+  getRiskLevel(toolName: string, args?: Record<string, unknown>): RiskLevel {
+    return this.resolveRiskLevel(toolName, args);
   }
 
   /** Request approval for an operation. Returns a promise that resolves when approved/rejected */
@@ -213,7 +291,7 @@ export class HumanApprovalManager {
     }
 
     const id = `approval-${Date.now()}-${randomUUID()}`;
-    const riskLevel = this.getRiskLevel(toolName);
+    const riskLevel = this.getRiskLevel(toolName, args);
 
     const pending: PendingApproval = {
       id,
@@ -400,19 +478,39 @@ export class HumanApprovalManager {
       low: "\ud83d\udfe2 \u4f4e\u98ce\u9669",
     };
 
+    // \u590d\u5408\u5de5\u5177\uff08file_write / email / skill_manage / video / music\uff09\u7684\u5177\u4f53\u8bed\u4e49
+    // \u7531 action \u51b3\u5b9a\uff0c\u6587\u6848\u5fc5\u987b\u6309 action \u53d6\uff1a\u5426\u5219\u5ba1\u6279\u9762\u677f\u4f1a\u9000\u5316\u6210
+    // \u300c\u6267\u884c\u5de5\u5177: file_write\u300d\uff0c\u7528\u6237\u65e0\u6cd5\u5224\u65ad\u81ea\u5df1\u6279\u51c6\u7684\u5230\u5e95\u662f\u4ec0\u4e48\u3002
+    const actionDescriptions: Record<string, Record<string, string>> = {
+      file_write: {
+        create: `\u521b\u5efa\u6587\u4ef6: ${String(args.path ?? "")}`,
+        modify: `\u4fee\u6539\u6587\u4ef6: ${String(args.path ?? "")}`,
+      },
+      email: {
+        send: `\u53d1\u9001\u90ae\u4ef6\u81f3: ${String(args.to ?? "")}`,
+      },
+      skill_manage: {
+        install: `\u5b89\u88c5\u6280\u80fd: ${String(args.name ?? args.url ?? "")}`,
+        find_and_install: `\u67e5\u627e\u5e76\u5b89\u88c5\u6280\u80fd: ${String(args.name ?? args.url ?? "")}`,
+      },
+      video: {
+        download: `\u4e0b\u8f7d\u89c6\u9891: ${String(args.url ?? "")}`,
+      },
+      music: {
+        download: `\u4e0b\u8f7d\u97f3\u4e50: ${String(args.query ?? args.url ?? "")}`,
+      },
+    };
     const toolDescriptions: Record<string, string> = {
       shell_exec: `\u6267\u884cShell\u547d\u4ee4: ${String(args.command ?? "").slice(0, 100)}`,
       file_delete: `\u5220\u9664\u6587\u4ef6: ${String(args.path ?? "")}`,
-      file_modify: `\u4fee\u6539\u6587\u4ef6: ${String(args.path ?? "")}`,
-      file_create: `\u521b\u5efa\u6587\u4ef6: ${String(args.path ?? "")}`,
-      email_send: `\u53d1\u9001\u90ae\u4ef6\u81f3: ${String(args.to ?? "")}`,
       browser_login: `\u767b\u5f55\u7f51\u7ad9: ${String(args.url ?? "")}`,
-      skill_install: `\u5b89\u88c5\u6280\u80fd: ${String(args.name ?? args.url ?? "")}`,
-      video_download: `\u4e0b\u8f7d\u89c6\u9891: ${String(args.url ?? "")}`,
-      music_download: `\u4e0b\u8f7d\u97f3\u4e50: ${String(args.query ?? args.url ?? "")}`,
     };
 
-    const desc = toolDescriptions[toolName] || `\u6267\u884c\u5de5\u5177: ${toolName}`;
+    const action = typeof args.action === "string" ? args.action : undefined;
+    const desc =
+      (action !== undefined && actionDescriptions[toolName]?.[action]) ||
+      toolDescriptions[toolName] ||
+      `\u6267\u884c\u5de5\u5177: ${toolName}`;
     return `${riskLabels[riskLevel]} - ${desc}`;
   }
 

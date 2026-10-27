@@ -291,7 +291,7 @@ export class SemanticQuickReply {
    * Classify user intent for routing purposes (not for quick-reply).
    * Returns the best matching category and its confidence score, or null if
    * no category exceeds the threshold. This is used by the agent to decide
-   * whether to auto-trigger skill_search, route to tools, etc.
+   * whether to auto-trigger skill_list, route to tools, etc.
    */
   async classifyIntent(message: string): Promise<{ category: string; score: number } | null> {
     const trimmed = message.trim();

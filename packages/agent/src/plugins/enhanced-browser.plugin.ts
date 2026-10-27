@@ -31,7 +31,7 @@ const MANIFEST = {
 /** Operations that require user confirmation */
 const SENSITIVE_OPERATIONS = new Set([
   "browser_login",
-  "browser_submit_form",
+  "browser_act",
   "browser_file_upload",
   "browser_create_profile",
   "browser_delete_profile",
@@ -45,11 +45,8 @@ const BROWSER_TOOLS = [
   "web_browse",
   "browser_navigate",
   "browser_screenshot",
-  "browser_click",
-  "browser_type",
-  "browser_fill_form",
+  "browser_act",
   "browser_login",
-  "browser_submit_form",
   "browser_file_upload",
   "browser_create_profile",
   "browser_delete_profile",
@@ -61,12 +58,8 @@ const BROWSER_TOOLS = [
   "browser_get_cookies",
   "browser_set_cookies",
   "browser_list_sessions",
-  "browser_get_text",
-  "browser_get_html",
-  "browser_find_elements",
-  "browser_fetch_json",
+  "browser_get",
   "browser_tabs",
-  "browser_search",
 ];
 
 /** Blocked URL patterns */

@@ -67,8 +67,8 @@ export class MCPProtocolHandler {
 
   /** 危险工具黑名单：禁止通过 MCP 暴露/调用 */
   private static readonly MCP_BLOCKED_TOOLS = new Set([
-    "shell_exec", "execute_code", "file_delete", "file_modify",
-    "video_download",
+    "shell_exec", "execute_code", "file_delete", "file_write",
+    "video",
   ]);
 
   constructor(options: {

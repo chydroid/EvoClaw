@@ -18,14 +18,11 @@
 
 /** 变更类（文件写）工具名——这些工具的产出需要验证 */
 export const FILE_MUTATING_TOOLS = new Set([
-  "file_create",
-  "file_modify",
+  "file_write",
   "file_delete",
   "file_rename",
   "file_copy",
-  "docx_create",
-  "xlsx_create",
-  "pptx_create",
+  "document",
   "write_file",
   "patch",
 ]);
@@ -227,7 +224,7 @@ export async function buildVerifyOnStopNudgeWithHooks(
 /**
  * 从工具调用参数中提取变更的文件路径。
  *
- * 支持 file_create / file_modify / docx_create / xlsx_create / pptx_create 等工具，
+ * 支持 file_write / document 等工具，
  * 它们的参数中都包含 `path` 字段。
  */
 export function extractChangedPaths(

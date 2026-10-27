@@ -24,8 +24,7 @@ const BROWSER_TOOLS = [
   "web_browse",
   "browser_navigate",
   "browser_screenshot",
-  "browser_click",
-  "browser_type",
+  "browser_act",
 ];
 
 /** Blocked URL patterns for safety */

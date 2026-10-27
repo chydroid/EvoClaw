@@ -35,23 +35,24 @@ export interface CapabilityRule {
  * 顺序即输出顺序；越容易误判为"没有这个能力"的意图排越靠前。
  */
 export const CAPABILITY_RULES: CapabilityRule[] = [
-  // ── 最容易漏的一类：创建/添加/注册接口 ──
-  { intent: "添加/配置/注册邮箱账户", pattern: /^email_(add|create|register|setup|connect)/ },
-  { intent: "创建/添加定时任务或提醒", pattern: /^scheduler_(create|add)/ },
-  { intent: "安装/添加技能", pattern: /^skill_(install|find|add)/ },
+  // ── 最容易漏的一类：创建/添加/注册接口（合并后由复合工具的 action 承担） ──
+  { intent: "邮箱：添加账户 / 发送 / 读取收件箱 / 分析", pattern: /^email(_|$)/ },
+  { intent: "定时任务：创建 / 查询 / 修改 / 删除 / 执行 / 历史 / DLQ 重试", pattern: /^scheduler(_|$)/ },
+  { intent: "技能：安装 / 创建 / 执行 / 卸载 / 检索", pattern: /^skill(_|$)/ },
   { intent: "添加/连接 MCP 服务", pattern: /^mcp_(add|connect|install|register)/ },
-  { intent: "添加/新建记忆条目", pattern: /^memory_(store|add|create|save)/ },
+  { intent: "记忆检索与统计", pattern: /^memory(_|$)/ },
 
   // ── 常规能力域 ──
-  { intent: "查看/管理已配置邮箱账户", pattern: /^email_(list_accounts|accounts|remove|delete|update)/, limit: 4 },
-  { intent: "发送邮件 / 读取收件箱 / 分析邮件", pattern: /^email_(send|list|get|read|analyze|summarize|fetch|search)/, limit: 6 },
-  { intent: "管理定时任务（查询/修改/删除/执行/历史）", pattern: /^scheduler_(list|update|delete|execute|history|pause|resume)/, limit: 6 },
-  { intent: "生成 Word/Excel/PPT 文档", pattern: /^(docx|xlsx|pptx)_/, limit: 8 },
-  { intent: "生成图片 / 视频，下载音视频", pattern: /^(image|video|music)_/, limit: 8 },
-  { intent: "浏览器自动化（打开网页/点击/截图/填表）", pattern: /^browser_/, limit: 14 },
+  { intent: "Git 版本操作（status / diff / log / commit / push）", pattern: /^git(_|$)/ },
+  { intent: "看板：建板 / 加任务 / 领取 / 完成 / 统计", pattern: /^kanban(_|$)/ },
+  { intent: "生成 Word / Excel / PPT 文档", pattern: /^document(_|$)/ },
+  { intent: "生成图片 / 视频，下载音视频", pattern: /^(image_generate|video|music)(_|$)/ },
+  { intent: "视觉分析（截图描述 / 找元素 / 检测问题 / 对比）", pattern: /^vision_analyze(_|$)/ },
+  { intent: "开发自检：跑测试 / lint", pattern: /^dev_check(_|$)/ },
+  { intent: "浏览器自动化（打开网页 / 点击 / 截图 / 填表）", pattern: /^browser_/, limit: 14 },
   { intent: "文件读写与检索", pattern: /^file_/, limit: 8 },
-  { intent: "代码库语义检索", pattern: /^(codebase|code)_/, limit: 6 },
-  { intent: "网页搜索与抓取", pattern: /^(web_search|web_fetch|scrapling_fetch|fetch_node_page)$/ },
+  { intent: "代码库语义检索 / 应用补丁 / 批量重命名", pattern: /^(code_search|apply_patch)(_|$)/ },
+  { intent: "网页搜索与抓取", pattern: /^(web_search|web_fetch)(_|$)/ },
   { intent: "执行 Shell 命令 / 运行脚本", pattern: /^(shell_exec|shell_)/, limit: 4 },
 ];
 
@@ -65,6 +66,35 @@ export const CAPABILITY_RULES: CapabilityRule[] = [
 const CREATION_PATTERN = /_(?:add|create|register|new|setup|connect|install)(?:_|$)/;
 
 /**
+ * 合并后不再含 add/create/install 等词、但确实具备「创建/添加」能力的复合工具。
+ *
+ * 这些名字匹配不到 CREATION_PATTERN，而 isCreationTool 同时是**工具下发裁剪的
+ * 白名单**：一旦被裁掉，模型会直接失去"新增某物"的能力并误判系统不支持
+ * （文件头记录的真实事故）。故显式列入，保证任何措辞下都下发。
+ * 对应 action：file_write.create / email.add_account / git.commit+push /
+ * apply_patch.patch / document.create_* / kanban.create_board+add_task /
+ * skill_manage.create+install+find_and_install / scheduler.create。
+ */
+const COMPOSITE_CREATION_TOOLS: ReadonlySet<string> = new Set([
+  "file_write",
+  "email",
+  "git",
+  "apply_patch",
+  "document",
+  "kanban",
+  "skill_manage",
+  "scheduler",
+]);
+
+/** 判断工具名是否属于「创建/添加/注册」类（含合并后的复合工具） */
+function isCreationToolName(toolName: string): boolean {
+  return (
+    typeof toolName === "string" &&
+    (CREATION_PATTERN.test(toolName) || COMPOSITE_CREATION_TOOLS.has(toolName))
+  );
+}
+
+/**
  * 判断工具名是否属于「创建/添加/注册」类。
  *
  * 除用于提示词速查表外，还用于**工具下发裁剪的白名单**：这类工具一旦因
@@ -72,7 +102,7 @@ const CREATION_PATTERN = /_(?:add|create|register|new|setup|connect|install)(?:_
  * 因此必须保证任何措辞下都下发。
  */
 export function isCreationTool(toolName: string): boolean {
-  return typeof toolName === "string" && CREATION_PATTERN.test(toolName);
+  return isCreationToolName(toolName);
 }
 
 /**
@@ -89,7 +119,7 @@ export function matchCapabilityTools(toolNames: string[], pattern: RegExp, limit
  * 排除已在速查表中作为独立意图首项出现的邮箱添加工具也无妨——重复出现反而强化记忆。
  */
 export function collectCreationTools(toolNames: string[], limit = 24): string[] {
-  return toolNames.filter((name) => CREATION_PATTERN.test(name)).slice(0, limit);
+  return toolNames.filter((name) => isCreationToolName(name)).slice(0, limit);
 }
 
 /** 超过这个数量的工具就自动折行，避免又变回"一行十几个名字"的可读性问题 */

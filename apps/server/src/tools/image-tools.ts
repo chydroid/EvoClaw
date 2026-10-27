@@ -445,233 +445,241 @@ async function generateViaReplicate(
  * 注册图片生成工具
  */
 export function registerImageTools(executor: AgentModelExecutor): void {
-  // 工具 1：image_generate — 文本生成图片
+  // ── image_generate：复合图片工具（action 判别）──
+  // 合并自原 image_generate（生成图片）与 image_info（查询生成能力）：
+  // 一个工具 + action 字段，保持 schema 紧凑、降低每轮 token 成本。
+
+  /** 原 image_generate */
+  const handleImageGenerate = async (params: Record<string, unknown>) => {
+    const prompt = String(params.prompt || "").trim();
+    if (!prompt) {
+      return { success: false, error: "prompt is required" };
+    }
+
+    const options: ImageGenOptions = {
+      width: params.width ? (Number.isFinite(Number(params.width)) ? Number(params.width) : undefined) : undefined,
+      height: params.height ? (Number.isFinite(Number(params.height)) ? Number(params.height) : undefined) : undefined,
+      provider: String(params.provider || ""),
+      model: params.model ? String(params.model) : undefined,
+    };
+
+    // 确定提供商：优先使用参数指定的，其次配置文件，最后环境变量回退
+    let providerId = options.provider || "";
+    let apiKey = "";
+
+    if (!providerId) {
+      const enabled = getEnabledImageProvider();
+      if (enabled) {
+        providerId = enabled.provider.id;
+        apiKey = enabled.apiKey;
+        // 如果配置中没有指定 model，使用配置中的默认 model
+        if (!options.model && enabled.provider.model) {
+          options.model = enabled.provider.model;
+        }
+      } else {
+        // 环境变量回退（向后兼容）
+        if (process.env.FAL_KEY) {
+          providerId = "fal";
+          apiKey = process.env.FAL_KEY;
+        } else if (process.env.REPLICATE_API_TOKEN) {
+          providerId = "replicate";
+          apiKey = process.env.REPLICATE_API_TOKEN;
+        } else {
+          // 没有任何配置，默认使用 pollinations（免费）
+          providerId = "pollinations";
+        }
+      }
+    } else {
+      // 用户指定了 provider，查找对应的 API Key
+      const providers = getImageGenProviders();
+      const matched = providers.find(p => p.id === providerId);
+      if (matched) {
+        apiKey = resolveEnvVar(matched.apiKey || "");
+        if (!options.model && matched.model) {
+          options.model = matched.model;
+        }
+      } else {
+        // 环境变量回退
+        if (providerId === "fal") apiKey = process.env.FAL_KEY || "";
+        else if (providerId === "replicate") apiKey = process.env.REPLICATE_API_TOKEN || "";
+      }
+    }
+
+    try {
+      let result: ImageGenResult;
+
+      switch (providerId) {
+        case "pollinations":
+          result = await generateViaPollinations(prompt, options);
+          break;
+
+        case "fal":
+          if (!apiKey) {
+            return {
+              success: false,
+              error: "Fal.ai provider selected but no API key is configured. Please configure Fal.ai API key in image-gen settings or use 'pollinations' provider.",
+            };
+          }
+          result = await generateViaFal(prompt, options, apiKey);
+          break;
+
+        case "replicate":
+          if (!apiKey) {
+            return {
+              success: false,
+              error: "Replicate provider selected but no API key is configured. Please configure Replicate API key in image-gen settings or use 'pollinations' provider.",
+            };
+          }
+          result = await generateViaReplicate(prompt, options, apiKey);
+          break;
+
+        default:
+          return { success: false, error: `Unknown provider: ${providerId}. Use 'pollinations', 'fal', or 'replicate'.` };
+      }
+
+      return result;
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+
+      // 如果 API 生成失败，尝试回退到免费的 pollinations
+      if (providerId !== "pollinations") {
+        try {
+          const fallback = await generateViaPollinations(prompt, options);
+          return {
+            ...fallback,
+            message: `${fallback.message} (API 生成失败，已回退到 Pollinations 免费模式。错误: ${errorMsg})`,
+          };
+        } catch {
+          // 回退也失败，返回原始错误
+        }
+      }
+
+      return { success: false, error: errorMsg };
+    }
+  };
+
+  /** 原 image_info */
+  const handleImageInfo = async () => {
+    const providers: string[] = [];
+    const models: Record<string, string[]> = {};
+    const providerDetails: Array<{ id: string; name: string; enabled: boolean; hasApiKey: boolean; model: string }> = [];
+
+    // 从配置文件读取
+    const configProviders = getImageGenProviders();
+    for (const p of configProviders) {
+      const apiKey = resolveEnvVar(p.apiKey || "");
+      const hasApiKey = !!(apiKey || p.id === "pollinations");
+      providerDetails.push({
+        id: p.id,
+        name: p.name,
+        enabled: p.enabled,
+        hasApiKey,
+        model: p.model,
+      });
+      if (p.enabled && (hasApiKey || p.id === "pollinations")) {
+        providers.push(p.id);
+      }
+    }
+
+    // 环境变量回退
+    if (process.env.FAL_KEY && !providers.includes("fal")) {
+      providers.push("fal");
+      providerDetails.push({
+        id: "fal",
+        name: "Fal.ai (env)",
+        enabled: true,
+        hasApiKey: true,
+        model: "fal-ai/flux/schnell",
+      });
+    }
+    if (process.env.REPLICATE_API_TOKEN && !providers.includes("replicate")) {
+      providers.push("replicate");
+      providerDetails.push({
+        id: "replicate",
+        name: "Replicate (env)",
+        enabled: true,
+        hasApiKey: true,
+        model: "stability-ai/sdxl",
+      });
+    }
+
+    // Pollinations 始终可用（免费）
+    if (!providers.includes("pollinations")) {
+      providers.push("pollinations");
+      providerDetails.push({
+        id: "pollinations",
+        name: "Pollinations.ai (Free)",
+        enabled: true,
+        hasApiKey: true,
+        model: "flux",
+      });
+    }
+
+    // 模型列表
+    models.pollinations = ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"];
+    models.fal = ["fal-ai/flux/schnell", "fal-ai/flux/dev", "fal-ai/flux-pro"];
+    models.replicate = ["stability-ai/sdxl", "stability-ai/sdxl:latest", "black-forest-labs/flux-schnell"];
+
+    const enabled = getEnabledImageProvider();
+
+    return {
+      available: providers.length > 0,
+      providers,
+      models,
+      providerDetails,
+      defaultProvider: enabled?.provider.id || providers[0] || "pollinations",
+      hasFalKey: !!(process.env.FAL_KEY || configProviders.find(p => p.id === "fal" && resolveEnvVar(p.apiKey))),
+      hasReplicateToken: !!(process.env.REPLICATE_API_TOKEN || configProviders.find(p => p.id === "replicate" && resolveEnvVar(p.apiKey))),
+      freeProviderAvailable: true, // pollinations 始终可用
+    };
+  };
+
   executor.registerTool(
     "image_generate",
     {
       name: "image_generate",
       description:
-        "Generate an image from a text description. Supports text-to-image generation. " +
-        "Uses Pollinations.ai (free, no API key), Fal.ai (flux/schnell/dev/pro), or Replicate API based on backend config. " +
-        "Generated image is saved to workspace and a download URL is returned. " +
-        "默认使用 Pollinations.ai 免费模式，无需配置 API Key。",
+        "复合图片工具（composite image tool），通过 action 参数选择具体操作。" +
+        "actions: " +
+        "generate（默认，从文本描述生成图片；支持 Pollinations.ai（免费，无需 API Key）、Fal.ai（flux/schnell/dev/pro）、" +
+        "Replicate API，按后端配置选择；生成的图片保存到 workspace 并返回下载链接） / " +
+        "info（查询可用的图片生成能力：已配置的提供商、可用模型、免费 Pollinations.ai 是否可用）。",
       parameters: {
+        action: {
+          type: "string",
+          description: "图片操作类型：generate（默认，生成图片）/ info（查询生成能力）",
+          required: true,
+          enum: ["generate", "info"],
+        },
         prompt: {
           type: "string",
-          description: "Detailed description of the image to generate. Be specific about style, composition, colors, and mood. 例：'一只橘猫坐在窗台上，阳光洒落，水彩画风格'",
+          description: "Detailed description of the image to generate. Be specific about style, composition, colors, and mood. 例：'一只橘猫坐在窗台上，阳光洒落，水彩画风格'（action=generate 使用）",
         },
         width: {
           type: "string",
-          description: "Image width in pixels (default: 1024). Common: 512, 768, 1024, 1536.",
+          description: "Image width in pixels (default: 1024). Common: 512, 768, 1024, 1536.（action=generate 使用）",
         },
         height: {
           type: "string",
-          description: "Image height in pixels (default: 1024). Common: 512, 768, 1024, 1536.",
+          description: "Image height in pixels (default: 1024). Common: 512, 768, 1024, 1536.（action=generate 使用）",
         },
         provider: {
           type: "string",
-          description: "Image generation provider: 'pollinations' (free, default), 'fal' (Fal.ai), 'replicate'. If not specified, auto-selects based on config priority.",
+          description: "Image generation provider: 'pollinations' (free, default), 'fal' (Fal.ai), 'replicate'. If not specified, auto-selects based on config priority.（action=generate 使用）",
         },
         model: {
           type: "string",
-          description: "Specific model ID. Pollinations: flux, flux-realism, flux-anime, flux-3d, turbo. Fal.ai: fal-ai/flux/schnell, fal-ai/flux/dev, fal-ai/flux-pro. If not specified, uses provider's default.",
+          description: "Specific model ID. Pollinations: flux, flux-realism, flux-anime, flux-3d, turbo. Fal.ai: fal-ai/flux/schnell, fal-ai/flux/dev, fal-ai/flux-pro. If not specified, uses provider's default.（action=generate 使用）",
         },
       },
     },
     async (params: Record<string, unknown>) => {
-      const prompt = String(params.prompt || "").trim();
-      if (!prompt) {
-        return { success: false, error: "prompt is required" };
-      }
-
-      const options: ImageGenOptions = {
-        width: params.width ? (Number.isFinite(Number(params.width)) ? Number(params.width) : undefined) : undefined,
-        height: params.height ? (Number.isFinite(Number(params.height)) ? Number(params.height) : undefined) : undefined,
-        provider: String(params.provider || ""),
-        model: params.model ? String(params.model) : undefined,
-      };
-
-      // 确定提供商：优先使用参数指定的，其次配置文件，最后环境变量回退
-      let providerId = options.provider || "";
-      let apiKey = "";
-
-      if (!providerId) {
-        const enabled = getEnabledImageProvider();
-        if (enabled) {
-          providerId = enabled.provider.id;
-          apiKey = enabled.apiKey;
-          // 如果配置中没有指定 model，使用配置中的默认 model
-          if (!options.model && enabled.provider.model) {
-            options.model = enabled.provider.model;
-          }
-        } else {
-          // 环境变量回退（向后兼容）
-          if (process.env.FAL_KEY) {
-            providerId = "fal";
-            apiKey = process.env.FAL_KEY;
-          } else if (process.env.REPLICATE_API_TOKEN) {
-            providerId = "replicate";
-            apiKey = process.env.REPLICATE_API_TOKEN;
-          } else {
-            // 没有任何配置，默认使用 pollinations（免费）
-            providerId = "pollinations";
-          }
-        }
-      } else {
-        // 用户指定了 provider，查找对应的 API Key
-        const providers = getImageGenProviders();
-        const matched = providers.find(p => p.id === providerId);
-        if (matched) {
-          apiKey = resolveEnvVar(matched.apiKey || "");
-          if (!options.model && matched.model) {
-            options.model = matched.model;
-          }
-        } else {
-          // 环境变量回退
-          if (providerId === "fal") apiKey = process.env.FAL_KEY || "";
-          else if (providerId === "replicate") apiKey = process.env.REPLICATE_API_TOKEN || "";
-        }
-      }
-
-      try {
-        let result: ImageGenResult;
-
-        switch (providerId) {
-          case "pollinations":
-            result = await generateViaPollinations(prompt, options);
-            break;
-
-          case "fal":
-            if (!apiKey) {
-              return {
-                success: false,
-                error: "Fal.ai provider selected but no API key is configured. Please configure Fal.ai API key in image-gen settings or use 'pollinations' provider.",
-              };
-            }
-            result = await generateViaFal(prompt, options, apiKey);
-            break;
-
-          case "replicate":
-            if (!apiKey) {
-              return {
-                success: false,
-                error: "Replicate provider selected but no API key is configured. Please configure Replicate API key in image-gen settings or use 'pollinations' provider.",
-              };
-            }
-            result = await generateViaReplicate(prompt, options, apiKey);
-            break;
-
-          default:
-            return { success: false, error: `Unknown provider: ${providerId}. Use 'pollinations', 'fal', or 'replicate'.` };
-        }
-
-        return result;
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-
-        // 如果 API 生成失败，尝试回退到免费的 pollinations
-        if (providerId !== "pollinations") {
-          try {
-            const fallback = await generateViaPollinations(prompt, options);
-            return {
-              ...fallback,
-              message: `${fallback.message} (API 生成失败，已回退到 Pollinations 免费模式。错误: ${errorMsg})`,
-            };
-          } catch {
-            // 回退也失败，返回原始错误
-          }
-        }
-
-        return { success: false, error: errorMsg };
-      }
+      const action = String(params.action || "generate");
+      if (action === "generate") return await handleImageGenerate(params);
+      if (action === "info") return await handleImageInfo();
+      return { success: false, error: `未知 image_generate action: ${action}（仅支持 generate / info）` };
     },
     // checkFn: 至少有一个可用的提供商（pollinations 始终可用）
     () => hasImageGenConfigured()
-  );
-
-  // 工具 2：image_info — 查询图片生成能力
-  executor.registerTool(
-    "image_info",
-    {
-      name: "image_info",
-      description:
-        "Check available image generation capabilities and providers. Returns configured providers, available models, and whether free Pollinations.ai is available.",
-      parameters: {},
-    },
-    async () => {
-      const providers: string[] = [];
-      const models: Record<string, string[]> = {};
-      const providerDetails: Array<{ id: string; name: string; enabled: boolean; hasApiKey: boolean; model: string }> = [];
-
-      // 从配置文件读取
-      const configProviders = getImageGenProviders();
-      for (const p of configProviders) {
-        const apiKey = resolveEnvVar(p.apiKey || "");
-        const hasApiKey = !!(apiKey || p.id === "pollinations");
-        providerDetails.push({
-          id: p.id,
-          name: p.name,
-          enabled: p.enabled,
-          hasApiKey,
-          model: p.model,
-        });
-        if (p.enabled && (hasApiKey || p.id === "pollinations")) {
-          providers.push(p.id);
-        }
-      }
-
-      // 环境变量回退
-      if (process.env.FAL_KEY && !providers.includes("fal")) {
-        providers.push("fal");
-        providerDetails.push({
-          id: "fal",
-          name: "Fal.ai (env)",
-          enabled: true,
-          hasApiKey: true,
-          model: "fal-ai/flux/schnell",
-        });
-      }
-      if (process.env.REPLICATE_API_TOKEN && !providers.includes("replicate")) {
-        providers.push("replicate");
-        providerDetails.push({
-          id: "replicate",
-          name: "Replicate (env)",
-          enabled: true,
-          hasApiKey: true,
-          model: "stability-ai/sdxl",
-        });
-      }
-
-      // Pollinations 始终可用（免费）
-      if (!providers.includes("pollinations")) {
-        providers.push("pollinations");
-        providerDetails.push({
-          id: "pollinations",
-          name: "Pollinations.ai (Free)",
-          enabled: true,
-          hasApiKey: true,
-          model: "flux",
-        });
-      }
-
-      // 模型列表
-      models.pollinations = ["flux", "flux-realism", "flux-anime", "flux-3d", "turbo"];
-      models.fal = ["fal-ai/flux/schnell", "fal-ai/flux/dev", "fal-ai/flux-pro"];
-      models.replicate = ["stability-ai/sdxl", "stability-ai/sdxl:latest", "black-forest-labs/flux-schnell"];
-
-      const enabled = getEnabledImageProvider();
-
-      return {
-        available: providers.length > 0,
-        providers,
-        models,
-        providerDetails,
-        defaultProvider: enabled?.provider.id || providers[0] || "pollinations",
-        hasFalKey: !!(process.env.FAL_KEY || configProviders.find(p => p.id === "fal" && resolveEnvVar(p.apiKey))),
-        hasReplicateToken: !!(process.env.REPLICATE_API_TOKEN || configProviders.find(p => p.id === "replicate" && resolveEnvVar(p.apiKey))),
-        freeProviderAvailable: true, // pollinations 始终可用
-      };
-    },
-    () => true
   );
 }

@@ -8,8 +8,7 @@ const base = {
   masterTerm: "主人",
   personaTone: "warm",
   registeredToolNames: [
-    "email_add_account", "email_send", "email_list_accounts",
-    "web_search", "web_fetch", "file_read", "file_create", "shell_exec",
+    "email", "web_search", "web_fetch", "file_read", "file_write", "shell_exec",
   ],
 };
 
@@ -41,11 +40,23 @@ describe("buildAgentSystemPrompt — 基本结构", () => {
 describe("能力速查表 —— 必须由真实工具名生成（回归）", () => {
   // 历史事故：清单曾被平铺成一行 90+ 个名字，弱模型必然漏看单项，
   // 遂断言「系统没有这个工具」并臆造出「需要改配置文件」这类不存在的限制。
-  it("★ 注入结构化速查表，且创建类工具被单独高亮", () => {
+  it("★ 注入结构化速查表，且合并后的复合工具名挂在对应意图行下", () => {
     const p = build();
     expect(p).toContain("能力速查表");
-    expect(p).toContain("email_add_account");
-    expect(p).toMatch(/新建\/添加\/注册|添加\/配置\/注册/);
+    // 原 email_add_account / email_send / email_list_accounts 等 9 个细粒度工具
+    // 合并为 `email`。速查表必须让模型在同一行看到 `email`，否则它又会说
+    // 「邮件工具只有 list_accounts / send，缺少添加账户的接口」。
+    expect(p).toMatch(/邮箱：添加账户[\s\S]{0,80}?`email`/);
+    // 原 file_create / file_modify 合并为 `file_write`，必须出现在文件意图行里
+    expect(p).toMatch(/文件读写与检索[\s\S]{0,120}?`file_write`/);
+  });
+
+  it("★ 未被意图规则覆盖的创建类工具仍被单独高亮", () => {
+    const p = buildAgentSystemPrompt({
+      ...base,
+      registeredToolNames: ["email", "invoice_create"],
+    });
+    expect(p).toMatch(/其它「新建\/添加\/注册」类操作[\s\S]{0,80}?`invoice_create`/);
   });
 
   it("★ 不再把全部工具平铺成一行（用真实规模 120 个工具验证）", () => {

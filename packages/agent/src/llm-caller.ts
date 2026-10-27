@@ -678,9 +678,9 @@ export function validateToolParams(
         }
       }
 
-      // 回归（2026-10-16 实例任务 worktemp.zip 汇总）：docx_create 的 paragraphs/tables
-      // 等 array 参数被模型以 JSON 字符串形式下发（工具参数序列化习惯），旧逻辑直接报
-      // "wrong type: expected array, got string"，模型原样重试仍失败，成品文档无法生成。
+      // 回归（2026-10-16 实例任务 worktemp.zip 汇总）：document / create_docx 的
+      // paragraphs/tables 等 array 参数被模型以 JSON 字符串形式下发（工具参数序列化习惯），
+      // 旧逻辑直接报 "wrong type: expected array, got string"，模型原样重试仍失败，成品文档无法生成。
       // 与 number/boolean 同原理：array/object 参数收到合法 JSON 字符串时自动解析。
       if ((expectedType === "array" || expectedType === "object") && typeof value === "string") {
         try {
@@ -915,21 +915,18 @@ export interface LLMCallerDeps {
 
 /**
  * 生成可读的工具操作摘要（进度反馈用）。
- * 针对编程任务高频工具（file_create/modify/delete, shell_exec 等）生成友好提示。
+ * 针对编程任务高频工具（file_write/delete, shell_exec 等）生成友好提示。
  */
 function formatToolSummary(toolName: string, args: Record<string, unknown>): string {
   switch (toolName) {
-    case "file_create": {
+    case "file_write": {
       const p = String(args.path || "");
       const content = String(args.content || "");
       const sizeKB = (content.length / 1024).toFixed(1);
-      return `📝 创建文件: ${p} (${sizeKB} KB)`;
-    }
-    case "file_modify": {
-      const p = String(args.path || "");
-      const content = String(args.content || "");
-      const sizeKB = (content.length / 1024).toFixed(1);
-      return `✏️ 修改文件: ${p} (${sizeKB} KB)`;
+      // action=modify 覆盖已有文件；create（默认）新建文件
+      return args.action === "modify"
+        ? `✏️ 修改文件: ${p} (${sizeKB} KB)`
+        : `📝 创建文件: ${p} (${sizeKB} KB)`;
     }
     case "file_delete": {
       const p = String(args.path || "");
@@ -980,13 +977,12 @@ function formatToolResultSummary(toolName: string, args: Record<string, unknown>
   const success = parsed ? (parsed.success !== false) : !result.includes('"error"');
 
   switch (toolName) {
-    case "file_create": {
+    case "file_write": {
       const p = String(args.path || "");
-      return success ? `✅ 已创建: ${p}` : `❌ 创建失败: ${p}`;
-    }
-    case "file_modify": {
-      const p = String(args.path || "");
-      return success ? `✅ 已修改: ${p}` : `❌ 修改失败: ${p}`;
+      // action=modify 覆盖已有文件；create（默认）新建文件
+      return args.action === "modify"
+        ? (success ? `✅ 已修改: ${p}` : `❌ 修改失败: ${p}`)
+        : (success ? `✅ 已创建: ${p}` : `❌ 创建失败: ${p}`);
     }
     case "file_delete": {
       const p = String(args.path || "");
@@ -1112,15 +1108,16 @@ function cleanToolCache(cache: Map<string, ToolResultCacheEntry>): void {
 }
 
 // ── Idempotency cache for write operations ──
-// Prevents duplicate file creates, email sends, etc. when the LLM retries
+// Prevents duplicate file writes/deletes when the LLM retries
 // a tool call with identical parameters within the TTL window.
 const idempotencyCache = new Map<string, { result: string; timestamp: number }>();
 const IDEMPOTENCY_TTL = 5 * 60 * 1000; // 5 minutes
 const IDEMPOTENCY_MAX = 200;
+// ★ 2026-10-27 工具合并后：email / scheduler 复合工具同时覆盖只读 action
+// （list_inbox / list / add_account），结果非 args 纯函数、不可整体幂等，
+// 故不再加入（旧 email_send / scheduler_create / scheduler_delete 已合并消失）。
 const IDEMPOTENT_TOOLS = new Set([
-  "file_create", "file_modify", "file_delete",
-  "email_send",
-  "scheduler_create", "scheduler_delete",
+  "file_write", "file_delete",
 ]);
 
 /** 工具结果进入上下文的体积上限（字符）。超出则截断并附提示。 */
@@ -1134,7 +1131,7 @@ const TOOL_RESULT_MAX_CHARS = 4_000;
 /**
  * 截断过大的工具结果，避免单个返回值吃掉大量上下文。
  *
- * 事故：email_list_inbox 单次返回 6920 字节，同一轮被重复调用 3 次，
+ * 事故：email / list_inbox 单次返回 6920 字节，同一轮被重复调用 3 次，
  * 仅这一个工具就占了约 20KB 上下文。截断时保留一个明确标记，
  * 让模型知道内容被截断了，而不是误以为工具只返回了这么点数据。
  */
@@ -1166,23 +1163,21 @@ export const NO_RESULT_CACHE_TOOLS = new Set([
   "run_node",
   // 浏览器工具：页面状态是跨调用共享的活对象（当前标签/DOM 随导航与交互变化），
   // 结果不是 args 的纯函数。评测事故（2026-10-15 browser-eval b05/b07）：
-  // browser_navigate 命中结果缓存 → 导航被跳过执行 → 只读工具（get_text/js_eval）
+  // browser_navigate 命中结果缓存 → 导航被跳过执行 → 只读工具（browser_get/js_eval）
   // 继续作用在旧页面上，agent 绕路 shell+fetch 解析站点。
+  // browser_fetch_json 已并入 web_fetch/json（纯 URL 抓取，非浏览器活状态），不再列入。
   "browser_navigate",
-  "browser_get_text",
-  "browser_get_html",
-  "browser_find_elements",
+  "browser_get",
   "browser_js_eval",
   "browser_screenshot",
   "browser_tabs",
-  "browser_submit_form",
-  "browser_fetch_json",
+  "browser_act",
 ]);
 
 /**
  * 工具结果缓存查找（带「语义等价」识别）。
  *
- * 事故：模型连续三次调用 email_list_inbox，参数只有 limit 不同
+ * 事故：模型连续三次调用 email / list_inbox，参数只有 limit 不同
  * （100 → 200 → 50），而邮箱里邮件总数不足 50 封，三次返回的**完全相同**。
  * 严格按 args 字面量做 key 时全部 miss，导致重复拉取 + 重复占上下文。
  *
@@ -1254,7 +1249,7 @@ function countResultItems(result: string): number | null {
 }
 
 /** 会产出"搜索结果"的工具——只有它们真的跑通，才值得提示模型别再搜了 */
-const SEARCH_TOOLS_HINT = new Set(["web_search", "web_fetch", "fetch_node_page", "scrapling_fetch"]);
+const SEARCH_TOOLS_HINT = new Set(["web_search", "web_fetch"]);
 
 function cleanIdempotencyCache(): void {
   const now = Date.now();
@@ -1371,43 +1366,40 @@ interface ToolGroupDef {
  *   会话首消息未命中关键词时不下发，命中后进入单调并集、此后整段保持字节
  *   稳定（缓存不再逐轮漂移）。
  *
- *   **刻意保留常驻（不分组）的 12 个**：apply_patch / apply_rename /
- *   batch_execute / code_search / codebase_search / find_references /
- *   execute_code / lint / run_tests / verify_project / todo_list / plan_rename。
+ *   **刻意保留常驻（不分组）的 7 个**：apply_patch（patch/plan_rename/apply_rename）/
+ *   workflow（batch）/ code_search（text/references）/
+ *   execute_code / dev_check（test/lint）/ verify_project / todo_list。
  *   理由：Agentic 编码任务的首消息常常是「这个页面报错了」这类**不含任何
  *   编码关键词**的叙述，而代码检索/编辑/执行/测试是这类任务一上来就要用的
  *   能力；一旦被关键词裁掉，模型只能退到 shell_exec，属于行为回归而非省 token。
- *   这 12 个 + core 组 ≈13.6K 字符，是「任何请求都该在手」的稳定基座。
+ *   这 7 个 + core 组是「任何请求都该在手」的稳定基座。
  *
  *   ★ 注意「创建类」工具（isCreationTool 白名单）即使被分进某组也**仍然恒定
  *   下发**，所以把它们放进组里不省 token——但为了组内语义完整仍照写，
  *   输出分档时会把它们归入稳定基座（见 buildOpenAITools 的档 1）。
  */
-// 「无关键词命中」时的兜底技能集——**只含技能发现/执行/安装**这 6 个。
-// 不能用 TOOL_GROUPS.skill.tools 代替：该组现已并入 skill_create / skill_uninstall
-// （P0-5 瘦身），若把它们也塞进兜底，任何模糊首消息都会常驻下发，省不下 token。
+// 「无关键词命中」时的兜底技能集——**只含技能发现/执行/安装**这 3 个复合工具。
+// 不能用 TOOL_GROUPS.skill.tools 代替：该组含 skill_manage 全部动作，
+// 兜底集刻意只留技能入口，避免任何模糊首消息都常驻下发全部技能管理动作。
 const SKILL_DISCOVERY_TOOLS = [
-  "skill_execute", "skill_install", "skill_search", "skill_find_and_install", "skill_view", "skill_index_list",
+  "skill_manage", "skill_list", "skill_view",
 ];
 
 const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   core: {
     tools: [
-      "web_search", "web_fetch", "file_read", "file_create", "file_modify",
+      "web_search", "web_fetch", "file_write", "file_read",
       "file_list", "file_delete", "shell_exec", "sequential_thinking",
     ],
     keywords: [], // always included
   },
   browser: {
     tools: [
-      "browser_navigate", "browser_search", "browser_launch", "browser_screenshot",
-      "browser_get_text", "browser_get_html", "browser_click", "browser_fetch_json",
-      "browser_find_elements", "browser_submit_form", "browser_tabs", "browser_js_eval",
-      "browser_fill_form", "browser_login",
-      // ↑ 以下 10 个此前未分组、逐轮常驻（≈4.2K 字符）
-      "browser_check", "browser_clear_dom_indexes", "browser_click_by_index",
-      "browser_extract_dom", "browser_hover", "browser_input_by_index",
-      "browser_scroll", "browser_scroll_by_index", "browser_select", "browser_wait",
+      "browser_navigate", "browser_launch", "browser_screenshot",
+      "browser_get", "browser_act", "browser_tabs", "browser_js_eval",
+      "browser_extract_dom", "browser_login",
+      // ↑ 以下 2 个此前未分组、逐轮常驻（≈4.2K 字符）
+      "browser_scroll", "browser_wait",
     ],
     keywords: [
       "browse", "browser", "网页", "网站", "打开", "navigate", "click", "screenshot",
@@ -1418,22 +1410,13 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     ],
   },
   skill: {
-    tools: [
-      "skill_execute", "skill_install", "skill_search", "skill_find_and_install",
-      "skill_view", "skill_index_list",
-      "skill_create", "skill_uninstall",
-    ],
+    tools: ["skill_manage", "skill_list", "skill_view"],
     keywords: ["skill", "技能", "install skill", "安装技能", "搜索技能", "翻译", "translate", "转换", "convert", "查找技能", "执行技能", "卸载技能", "创建技能"],
   },
   email: {
-    tools: [
-      "email_send", "email_add_account",
-      // ↑ 以下 6 个此前未分组、逐轮常驻（≈2.6K 字符）
-      "email_analyze", "email_get_email", "email_get_inbox_summary",
-      "email_list_accounts", "email_list_inbox", "email_summarize",
-    ],
+    tools: ["email"],
     // 必须覆盖中文常见说法：「邮箱」此前缺失，导致「添加邮箱账户」无法激活本组，
-    // email_add_account 被静默裁剪，模型误判「系统没有添加接口」（真实事故）。
+    // email / add_account 被静默裁剪，模型误判「系统没有添加接口」（真实事故）。
     keywords: [
       "email", "e-mail", "邮件", "邮箱", "邮件账户", "邮箱账户", "电子邮箱",
       "发送邮件", "发邮件", "收邮件", "收件箱", "inbox", "send email",
@@ -1446,47 +1429,49 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     keywords: ["programming", "编程", "代码", "code", "开发", "程序", "写代码", "实现功能"],
   },
   media: {
-    tools: ["video_download", "music_download", "scrapling_fetch", "fetch_node_page", "markitdown_convert", "video_generate", "video_info", "image_generate", "image_info", "music_search"],
+    tools: ["video", "music", "image_generate", "markitdown_convert"],
     keywords: ["video", "视频", "download", "下载", "music", "音乐", "歌曲", "youtube", "b站", "抖音", "generate video", "生成视频", "制作视频", "create video", "生成图片", "画图", "generate image", "create image", "draw", "画一张", "图片生成"],
   },
   scheduler: {
-    tools: ["scheduler_create", "scheduler_list", "scheduler_update", "scheduler_delete", "scheduler_execute", "scheduler_history", "dlq_retry_batch"],
+    tools: ["scheduler"],
     keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务", "死信", "dlq", "重试队列", "失败重试", "投递失败"],
   },
   memory: {
-    tools: ["memory_store", "memory_retrieve", "memory_search", "memory_delete", "memory_stats"],
+    tools: ["memory"],
     keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索"],
   },
   // ── 以下 7 组为 P0-5 新增：把原先「不分组 → 逐轮常驻」的领域工具收进分组 ──
   git: {
-    tools: ["git_add", "git_blame", "git_commit", "git_diff", "git_log", "git_push", "git_show", "git_status"],
+    tools: ["git"],
     // 「代码/code/开发/修复/修改/实现」与 coding 组同源：只要消息进入编码语境，
-    // git 工具就该在手（git_status/git_diff/git_log 是每轮定位改动的常规动作）。
+    // git 工具就该在手（status/diff/log 是每轮定位改动的常规动作）。
     // 兜底：即便真的没命中，模型仍可用 core 组的 shell_exec 执行 git 命令。
     keywords: ["git", "commit", "推送", "push", "拉取", "分支", "branch", "合并", "merge", "diff", "仓库", "repo", "代码库", "版本历史", "回滚", "撤销", "stash", "blame", "追溯", "改动", "编程", "代码", "code", "开发", "写代码", "修复", "修改", "实现", "提交代码"],
   },
   kanban: {
-    tools: ["kanban_add_task", "kanban_claim_task", "kanban_complete_task", "kanban_create_board", "kanban_get_stats", "kanban_list_tasks"],
+    tools: ["kanban"],
     keywords: ["kanban", "看板", "任务板", "任务队列", "领取任务", "看板统计", "board"],
   },
   vision: {
-    tools: ["vision_analyze", "vision_compare_images", "vision_describe_screen", "vision_detect_issues", "vision_find_elements"],
+    tools: ["vision_analyze"],
     keywords: ["截图分析", "截图", "图片分析", "视觉分析", "屏幕截图", "对比图片", "找元素", "界面检查", "ui 检查", "图像识别", "视觉", "vision", "screenshot analysis", "analyze image"],
   },
   computer: {
-    tools: ["computer_key_press", "computer_key_type", "computer_mouse_click", "computer_mouse_drag", "computer_mouse_move", "computer_mouse_scroll", "computer_screenshot", "computer_window_focus", "computer_window_list"],
+    tools: ["computer_use"],
     keywords: ["电脑", "桌面", "鼠标", "键盘", "窗口管理", "远程桌面", "gui", "desktop", "mouse", "keyboard", "computer use", "电脑自动化", "桌面自动化", "点击屏幕"],
   },
   checkpoint: {
-    tools: ["checkpoint_list", "checkpoint_restore", "checkpoint_save"],
+    tools: ["checkpoint"],
     keywords: ["检查点", "checkpoint", "存档", "快照", "回滚点", "保存进度", "恢复现场", "进度存档"],
   },
   workflow: {
-    tools: ["workflow_execute", "workflow_validate"],
+    tools: ["workflow"],
     keywords: ["workflow", "工作流", "编排", "流程编排"],
   },
   research: {
-    tools: ["grounded_research"],
+    // 研究类意图（research action）已并入 web_search；本组保留关键词语义
+    // （命中「研究/调研」时显式激活），web_search 本身在 core 组恒定下发。
+    tools: ["web_search"],
     keywords: ["研究", "调研", "查证", "资料收集", "事实核查", "research", "文献"],
   },
 };
@@ -1545,7 +1530,7 @@ export function buildOpenAITools(
     }
     // If the message doesn't match any specific group, include core + skill
     // groups only (inspired by OpenClaw's tool profile strategy).
-    // The skill_execute tool can dynamically discover and run other skills,
+    // The skill_manage tool can dynamically discover and run other skills,
     // so we don't need to include ALL tools for ambiguous requests.
     //
     // ★ P0-2：仅在会话首消息（base 为空）生效。后续消息的并集已含 skill
@@ -1609,7 +1594,7 @@ export function buildOpenAITools(
       // 关键词激活是 best-effort 的，措辞稍有变化就可能漏激活某个组。
       // 一旦「新增某物」的工具因此消失，模型会直接失去该能力并误判
       // 「系统没有提供接口」（真实事故：说「添加邮箱账户」时 email 组关键词
-      // 缺「邮箱」，email_add_account 被裁，模型遂称无法添加邮箱）。
+      // 缺「邮箱」，email / add_account 被裁，模型遂称无法添加邮箱）。
       // 这类工具数量有限且价值极高，故无条件下发（但仍受上面的可用性门禁约束）。
       if (isCreationTool(t.definition.name)) return true;
 
@@ -1707,10 +1692,16 @@ export function buildOpenAITools(
 
       for (const [key, paramDef] of Object.entries(effectiveDef.parameters)) {
         const p = paramDef as Record<string, unknown>;
-        props[key] = {
+        const prop: Record<string, unknown> = {
           type: p.type || "string",
           description: p.description || key,
         };
+        // 复合工具（file_write / git / email / scheduler …）靠 action 判别字段
+        // 区分语义，其合法取值写在 enum 里。这里必须透传 enum/default，
+        // 否则模型只能从 description 里猜取值，猜错就落到「未知 action」分支。
+        if (p.enum !== undefined) prop.enum = p.enum;
+        if (p.default !== undefined) prop.default = p.default;
+        props[key] = prop;
         // 与 validateToolParams 一致：描述里标 "Optional" 的参数不进 required 列表
         if (p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""))) {
           required.push(key);
@@ -3713,7 +3704,7 @@ export async function tryCallLLM(
       // ★ 2026-10-26 核心修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说/方案/指南）
       //   在首次 LLM 调用时移除所有工具，强制模型直接在回复中输出完整内容。
       //   实测 agnes-3.0-flash 对这类任务会先 shell_exec 查文件→file_read 读文件→
-      //   file_create 写文件→checkpoint_restore，5-9 轮 × 15-61s = 远超超时。
+      //   file_write 写文件→checkpoint / restore，5-9 轮 × 15-61s = 远超超时。
       //   移除工具后模型只能凭自身知识输出，1 轮即可完成。
       //   副作用：模型无法创建文件——但创造性任务的用户诉求是"在聊天中阅读回复"，不是下载文件。
       //   ★ 2026-10-26 二次修复：移除 hasActionIntent 检查——auto-continuation 消息
@@ -3738,7 +3729,7 @@ export async function tryCallLLM(
         //   tool_choice:none」相反）是**有意的**。tools 在请求体末尾，置空只丢掉
         //   tools 段本身的缓存、不影响 messages 前缀；而创造性任务**设计上只跑 1 轮**，
         //   这个代价只付一次。换回来的是硬保证——模型手里没有任何工具，不可能先
-        //   shell_exec 查文件再 file_create 写文件。若改用 tool_choice:"none"，部分
+        //   shell_exec 查文件再 file_write 写文件。若改用 tool_choice:"none"，部分
         //   网关会无视该指令（见 toolCallsNoneRefusals），模型仍发起工具调用 →
         //   5-9 轮 × 15-61s 超时，正是本修复要消灭的问题。用 1 轮的 tools 段缓存
         //   换掉 5-9 轮超时风险，划算。
@@ -3809,7 +3800,7 @@ export async function tryCallLLM(
       // 本回合真实执行过的工具（含参数），用于 transcript 持久化
       const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
       // 本回合真实执行过的**变更类**工具（文件写类）—— 完成声明对账的写操作证据
-      const WRITE_EVIDENCE_TOOLS = new Set(["file_create", "file_modify", "file_delete"]);
+      const WRITE_EVIDENCE_TOOLS = new Set(["file_write", "file_delete"]);
       const writeOps = (): Array<{ name: string; args: string }> =>
         executedToolCalls
           .filter((c) => WRITE_EVIDENCE_TOOLS.has(c.name))
@@ -4032,7 +4023,7 @@ export async function tryCallLLM(
 
         // ★ 2026-10-26 修复：nudge 阈值从 4 降到 2，且 nudge 后强制禁用工具调用。
         //   创造性任务（API 设计/PRD/商业计划书）模型会过度调用工具
-        //   （shell_exec 查文件、file_read 读文件、file_create 写文件），
+        //   （shell_exec 查文件、file_read 读文件、file_write 写文件），
         //   每次工具结果加入对话历史导致上下文爆炸（300K tokens/轮）。
         //   model 对"请给出最终回复"的 nudge 响应很差，会继续调工具。
         //   直接设置 tool_choice="none" 强制模型只输出文本，不再调工具。
@@ -4442,12 +4433,12 @@ export async function tryCallLLM(
         const usedWebSearch = toolCalls && toolCalls.some(tc => {
           const args = JSON.stringify(tc.function.arguments || {});
           return tc.function.name === "web_search" ||
-            (tc.function.name === "skill_execute" && args.includes("tavily")) ||
-            tc.function.name === "scrapling_fetch";
+            (tc.function.name === "skill_manage" && args.includes("tavily")) ||
+            (tc.function.name === "web_fetch" && args.includes("stealth"));
         });
         const usedCiccSkill = toolCalls && toolCalls.some(tc => {
           const args = JSON.stringify(tc.function.arguments || {});
-          return (tc.function.name === "skill_execute" && args.includes("cicc")) ||
+          return (tc.function.name === "skill_manage" && args.includes("cicc")) ||
             (tc.function.name === "shell_exec" && args.includes("cicc"));
         });
         const searchWasDone = usedWebSearch || searchPreDone;
@@ -4470,10 +4461,10 @@ export async function tryCallLLM(
               break;
             }
           }
-          // ── Fallback: auto-trigger skill_search for skill-install intents ──
+          // ── Fallback: auto-trigger skill_list / search for skill-install intents ──
           // When the LLM returns a chat reply without calling any tool, but the
           // user message semantically matches a skill-install or action intent,
-          // we auto-trigger skill_search as a safety net.
+          // we auto-trigger skill_list (action=search) as a safety net.
           // Prefer semantic classification (embedding-based) over keyword matching.
           // ★ 2026-10-26 修复：action_task 意图的置信度阈值从"任意正值"提高到 0.7，
           //   否则分析类任务（如"设计API"、"项目管理"）会被误判为 action_task
@@ -4488,10 +4479,10 @@ export async function tryCallLLM(
               if (intent) {
                 const threshold = intent.category === "skill_install" ? MIN_SKILL_INSTALL_SCORE : MIN_ACTION_TASK_SCORE;
                 if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score >= threshold) {
-                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (≥${threshold}), auto-triggering skill_search\n`);
+                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (≥${threshold}), auto-triggering skill_list\n`);
                   shouldTriggerSkillSearch = true;
                 } else if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score > 0) {
-                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (<${threshold}), skipping auto skill_search\n`);
+                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (<${threshold}), skipping auto skill_list\n`);
                 }
               }
             } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
@@ -4502,17 +4493,17 @@ export async function tryCallLLM(
             const skillIntentKeywords = ["install", "安装", "装一个", "装个", "技能", "skill"];
             shouldTriggerSkillSearch = skillIntentKeywords.some(kw => lowerMsg.includes(kw));
           }
-          if (shouldTriggerSkillSearch && deps.registeredTools.has("skill_search")) {
+          if (shouldTriggerSkillSearch && deps.registeredTools.has("skill_list")) {
             try {
-              const searchTool = deps.registeredTools.get("skill_search")!;
-              const searchResult = await searchTool.handler({ task: message });
+              const searchTool = deps.registeredTools.get("skill_list")!;
+              const searchResult = await searchTool.handler({ action: "search", task: message });
               const searchStr = typeof searchResult === "string" ? searchResult : JSON.stringify(searchResult);
               // Log the search result but do NOT append to user-facing reply.
               // The skill search is informational only; if a matching skill
               // was found, the SkillDispatcher would have handled it earlier.
-              process.stdout.write(`[AgentModelExecutor] Auto skill_search result: ${searchStr.slice(0, 200)}\n`);
+              process.stdout.write(`[AgentModelExecutor] Auto skill_list result: ${searchStr.slice(0, 200)}\n`);
             } catch (err) {
-              process.stderr.write(`[AgentModelExecutor] Auto skill_search failed:` + " " + err + "\n");
+              process.stderr.write(`[AgentModelExecutor] Auto skill_list failed:` + " " + err + "\n");
             }
           }
           // ── fix-4: post_tool_empty 重试 ──
@@ -4752,10 +4743,10 @@ export async function tryCallLLM(
         // 并发操作同一浏览器实例。浏览器工具通过 browserToolMutex 串行化。
         const PARALLEL_SAFE_TOOLS = new Set([
           "web_search", "web_fetch", "file_read", "file_list",
-          "skill_execute", "skill_search", "skill_view", "skill_index_list",
-          "memory_retrieve", "memory_search",
+          "skill_manage", "skill_list", "skill_view",
+          "memory_retrieve", "memory",
           "sequential_thinking", "assess_coding_capability",
-          "scrapling_fetch", "fetch_node_page", "markitdown_convert",
+          "markitdown_convert",
         ]);
 
         // ── 工具执行并发控制（灵感来自 hermes-agent 的 semaphore 限制） ──
@@ -4764,7 +4755,7 @@ export async function tryCallLLM(
         // 网络工具上限防止触发对端限流。
         const getToolSemaphore = (toolName: string): Semaphore => {
           if (toolName.startsWith("browser_")) return browserToolMutex;
-          if (["web_search", "web_fetch", "scrapling_fetch", "fetch_node_page"].includes(toolName)) {
+          if (["web_search", "web_fetch"].includes(toolName)) {
             return networkToolSemaphore;
           }
           return globalToolSemaphore;
@@ -5017,7 +5008,7 @@ export async function tryCallLLM(
             toolResult = typeof skipWithResult === "string" ? skipWithResult : JSON.stringify(skipWithResult);
           } else if (!toolErrored) {
             // ── Execute the tool ──
-            const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_search", "browser_fetch_json", "scrapling_fetch", "fetch_node_page", "skill_execute"].includes(toolName);
+            const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_act", "skill_manage"].includes(toolName);
             const isBrowser = toolName.startsWith("browser_");
             const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
 
@@ -5136,7 +5127,7 @@ export async function tryCallLLM(
               }
 
               // ★ 只在**真的执行过搜索类工具**时才注入。
-              // 事故（2026-10-07 15:2x）：`skill_execute` 明明返回
+              // 事故（2026-10-07 15:2x）：`skill_manage` 明明返回
               // 「不是技能而是内置工具」的错误，这里仍给它追加
               // "You have search results now. Do NOT search again"，
               // 与场景完全无关的噪音指令把模型带偏（它随即放弃了正确路径）。
@@ -5167,7 +5158,7 @@ export async function tryCallLLM(
                 }
               }
               // ── 识别「执行了但返回失败」的工具 ──
-              // 典型：skill_execute 外层 success:true、内层 errors:["Skill not found"]，
+              // 典型：skill_manage 外层 success:true、内层 errors:["Skill not found"]，
               // 模型极易误读为成功并声称完成。此处收集失败证据供对账使用。
               //
               // ★ 2026-10-11 修正：原实现这里先写一条 `ok:false`，紧接着又**无条件**
@@ -5215,7 +5206,7 @@ export async function tryCallLLM(
                 // 恒为 []，前端「文件下载」区永远不出现。
                 // 只识别明确的文件写入类工具；结果 shape 见 file-tools.ts
                 // （errRecovery.executeWithRetry 剥掉 success 后透传 path/size/workspaceRelative）。
-                if ((toolName === "file_create" || toolName === "file_modify") && rawResult && typeof rawResult === "object") {
+                if (toolName === "file_write" && rawResult && typeof rawResult === "object") {
                   const r = rawResult as Record<string, unknown>;
                   const filePath =
                     (typeof r.path === "string" && r.path) ||
@@ -5251,7 +5242,7 @@ export async function tryCallLLM(
               // 文件写类工具成功 = 世界状态已变，此前的验证覆盖不再可信，
               // 标记为失效；验证门后续会要求对这些路径定向复验。
               if (
-                (toolName === "file_create" || toolName === "file_modify") &&
+                toolName === "file_write" &&
                 rawResult && typeof rawResult === "object"
               ) {
                 const r = rawResult as Record<string, unknown>;
@@ -5434,7 +5425,7 @@ export async function tryCallLLM(
           // 现在技能只能通过 WebUI 手动创建或显式 API 调用创建。
 
           // 体积上限：单个工具结果最多 TOOL_RESULT_MAX_CHARS 字符进入上下文。
-          // 事故：email_list_inbox 单次 6920 字符、同一轮被重复调用 3 次，
+          // 事故：email / list_inbox 单次 6920 字符、同一轮被重复调用 3 次，
           // 仅一个工具就吃掉约 20KB 上下文。
           //
           // ★ 2026-10-26 修复：sequential_thinking 工具结果不进入对话历史。
@@ -5561,7 +5552,7 @@ export async function tryCallLLM(
         // When the LLM chose web_search over an installed skill, and the user intent
         // matches an installed skill, we auto-execute the skill's script and store
         // the result to append to the final reply later.
-        if (searchWasDone && !usedCiccSkill && deps.registeredTools.has("skill_search")) {
+        if (searchWasDone && !usedCiccSkill && deps.registeredTools.has("skill_list")) {
           try {
             const classifier = deps.semanticIntentClassifier;
             let shouldAutoExecute = false;
@@ -5575,8 +5566,8 @@ export async function tryCallLLM(
               process.stdout.write(`[AgentModelExecutor] Skill fallback: no semantic classifier available\n`);
             }
             if (shouldAutoExecute) {
-              const searchTool = deps.registeredTools.get("skill_search")!;
-              const searchResult = await searchTool.handler({ task: message });
+              const searchTool = deps.registeredTools.get("skill_list")!;
+              const searchResult = await searchTool.handler({ action: "search", task: message });
               process.stdout.write(`[AgentModelExecutor] Skill fallback search result:` + " " + JSON.stringify(searchResult).slice(0, 500) + "\n");
               const searchObj = typeof searchResult === "object" ? searchResult as Record<string, unknown> : null;
               if (searchObj?.installed && searchObj.commands && Array.isArray(searchObj.commands)) {

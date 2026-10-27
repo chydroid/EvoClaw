@@ -232,7 +232,7 @@ export function createCodeAnalyzerPlugin(): Plugin {
       // 模型可读可改，且不影响文件本身。
       handler: async (hook) => {
         const h = hook as import("@evoclaw/core").AfterToolCallHook;
-        if (h.toolName !== "file_create" && h.toolName !== "file_modify") return {};
+        if (h.toolName !== "file_write") return {};
         if (h.errored) return {};
         const params = h.params || {};
         const content = String(params.content ?? "");

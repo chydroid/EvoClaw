@@ -236,318 +236,256 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
 
   const unregistered: string[] = [];
 
-  // 工具 1：computer_screenshot — 截取屏幕
+  // ── 内部 handler：由 computer_use 复合工具的分发器调用 ──
+  // 每个 handler 保留原 inline arrow 的逻辑体（逐字搬运），仅将内联箭头改为命名函数，
+  // 仍闭包捕获上方 backend / checkRateLimit / getValidScreenSize / validateCoords / validateKeySequence。
+
+  // 原 computer_screenshot — 截取屏幕
+  async function handleComputerScreenshot(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    try {
+      const buf = await backend.screenshot();
+      const size = await getValidScreenSize(backend, sessionId);
+      return {
+        image: buf.toString("base64"),
+        format: "png",
+        width: size.width,
+        height: size.height,
+        size: buf.length,
+      };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_mouse_click — 鼠标点击
+  async function handleComputerMouseClick(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const x = Number(params.x);
+    const y = Number(params.y);
+    const buttonStr = String(params.button || "left");
+    const button: MouseButton = buttonStr === "right" ? "right" : buttonStr === "middle" ? "middle" : "left";
+    const doubleClick = String(params.doubleClick || "false") === "true";
+    try {
+      const size = await getValidScreenSize(backend, sessionId);
+      const coordCheck = validateCoords(x, y, size);
+      if (!coordCheck.ok) return { success: false, error: coordCheck.error };
+      await backend.mouseClick(x, y, button, doubleClick);
+      return { success: true, x, y, button, doubleClick };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_mouse_move — 移动鼠标
+  async function handleComputerMouseMove(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const x = Number(params.x);
+    const y = Number(params.y);
+    try {
+      const size = await getValidScreenSize(backend, sessionId);
+      const coordCheck = validateCoords(x, y, size);
+      if (!coordCheck.ok) return { success: false, error: coordCheck.error };
+      await backend.mouseMove(x, y);
+      return { success: true, x, y };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_mouse_drag — 拖拽
+  async function handleComputerMouseDrag(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const fromX = Number(params.fromX);
+    const fromY = Number(params.fromY);
+    const toX = Number(params.toX);
+    const toY = Number(params.toY);
+    try {
+      const size = await getValidScreenSize(backend, sessionId);
+      const c1 = validateCoords(fromX, fromY, size);
+      if (!c1.ok) return { success: false, error: `起点${c1.error}` };
+      const c2 = validateCoords(toX, toY, size);
+      if (!c2.ok) return { success: false, error: `终点${c2.error}` };
+      await backend.mouseDrag(fromX, fromY, toX, toY);
+      return { success: true, from: { x: fromX, y: fromY }, to: { x: toX, y: toY } };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_mouse_scroll — 滚动
+  async function handleComputerMouseScroll(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const x = Number(params.x);
+    const y = Number(params.y);
+    const directionStr = String(params.direction || "down");
+    const direction: ScrollDirection = directionStr === "up" ? "up" : "down";
+    // 安全：Number() 对非数字字符串返回 NaN，会传播到 PowerShell 导致异常行为。
+    // 使用 ?? 避免 0 被折叠为默认值，再用 Number.isFinite 防御 NaN/Infinity。
+    const amountRaw = Number(params.amount ?? 3);
+    const amount = Number.isFinite(amountRaw) ? amountRaw : 3;
+    try {
+      const size = await getValidScreenSize(backend, sessionId);
+      const coordCheck = validateCoords(x, y, size);
+      if (!coordCheck.ok) return { success: false, error: coordCheck.error };
+      await backend.mouseScroll(x, y, direction, amount);
+      return { success: true, x, y, direction, amount };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_key_type — 输入文本
+  async function handleComputerKeyType(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const text = String(params.text || "");
+    if (!text) return { success: false, error: "text 不能为空" };
+    // 文本长度限制（防滥用）
+    const MAX_TEXT_LEN = 2000;
+    if (text.length > MAX_TEXT_LEN) {
+      return { success: false, error: `文本过长（${text.length} > ${MAX_TEXT_LEN}），请分段输入` };
+    }
+    try {
+      await backend.keyType(text);
+      return { success: true, length: text.length };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_key_press — 按组合键
+  async function handleComputerKeyPress(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const keysStr = String(params.keys || "");
+    const keys = keysStr.split(",").map((k) => k.trim()).filter(Boolean);
+    if (keys.length === 0) return { success: false, error: "keys 不能为空" };
+    // 按键白名单 + 危险组合黑名单校验
+    const keyCheck = validateKeySequence(keys);
+    if (!keyCheck.ok) return { success: false, error: keyCheck.error };
+    try {
+      await backend.keyPress(keys);
+      return { success: true, keys };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_window_list — 列出窗口
+  async function handleComputerWindowList(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    try {
+      if (!backend.windowList) {
+        return { windows: [], supported: false };
+      }
+      const windows = await backend.windowList();
+      return { windows, supported: true, count: windows.length };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 原 computer_window_focus — 聚焦窗口
+  async function handleComputerWindowFocus(params: Record<string, unknown>): Promise<unknown> {
+    if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
+    const sessionId = String(params.sessionId || "default");
+    const rate = checkRateLimit(sessionId);
+    if (!rate.ok) return { success: false, error: rate.error };
+    const windowId = String(params.windowId || "");
+    if (!windowId) return { success: false, error: "windowId 不能为空" };
+    try {
+      if (!backend.windowFocus) {
+        return { success: false, error: "当前后端不支持窗口聚焦" };
+      }
+      await backend.windowFocus(windowId);
+      return { success: true, windowId };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  // 复合工具：computer_use — 桌面控制（合并原 9 个 computer_* 工具）
   executor.registerTool(
-    "computer_screenshot",
+    "computer_use",
     {
-      name: "computer_screenshot",
+      name: "computer_use",
       description:
-        "截取当前屏幕截图，返回 base64 编码的 PNG 图像及屏幕尺寸。用于查看桌面状态、定位 UI 元素。",
+        "桌面控制复合工具（computer use）。action=screenshot 截取屏幕返回 base64 PNG 与屏幕尺寸；" +
+        "action=click 在 (x,y) 点击鼠标（button: left/right/middle，doubleClick: true/false）；" +
+        "action=move 移动鼠标到 (x,y)；" +
+        "action=drag 从 (fromX,fromY) 拖拽到 (toX,toY)；" +
+        "action=scroll 在 (x,y) 滚动滚轮（direction: up/down，amount 默认 3）；" +
+        "action=type 输入文本 text（支持中文/Unicode，最长 2000 字符）；" +
+        "action=press 按组合键 keys（逗号分隔，如 ctrl,c；危险组合键被拒绝）；" +
+        "action=window_list 列出可见窗口（标题/ID/边界）；" +
+        "action=window_focus 聚焦指定窗口 windowId。" +
+        "English: composite desktop control tool — screenshot / mouse click, move, drag, scroll / " +
+        "text input / key combos / window list & focus.",
       parameters: {
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
+        action: {
+          type: "string",
+          description: "操作类型（默认 screenshot）",
+          required: true,
+          enum: [
+            "screenshot", "click", "move", "drag", "scroll",
+            "type", "press", "window_list", "window_focus",
+          ],
+        },
+        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）", required: false },
+        x: { type: "number", description: "X 坐标（像素）", required: false },
+        y: { type: "number", description: "Y 坐标（像素）", required: false },
+        button: { type: "string", description: "鼠标键：left(默认) / right / middle", required: false },
+        doubleClick: { type: "string", description: "是否双击：true/false（默认 false）", required: false },
+        fromX: { type: "number", description: "起点 X 坐标（像素）", required: false },
+        fromY: { type: "number", description: "起点 Y 坐标（像素）", required: false },
+        toX: { type: "number", description: "终点 X 坐标（像素）", required: false },
+        toY: { type: "number", description: "终点 Y 坐标（像素）", required: false },
+        direction: { type: "string", description: "滚动方向：up / down", required: false },
+        amount: { type: "number", description: "滚动量（格数，默认 3）", required: false },
+        text: { type: "string", description: "要输入的文本", required: false },
+        keys: { type: "string", description: '组合键，逗号分隔，如 "ctrl,c" 或 "enter"', required: false },
+        windowId: { type: "string", description: "窗口 ID（来自 computer_window_list）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      try {
-        const buf = await backend.screenshot();
-        const size = await getValidScreenSize(backend, sessionId);
-        return {
-          image: buf.toString("base64"),
-          format: "png",
-          width: size.width,
-          height: size.height,
-          size: buf.length,
-        };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
+      const action = String(params.action || "screenshot");
+      if (action === "screenshot") return await handleComputerScreenshot(params);
+      if (action === "click") return await handleComputerMouseClick(params);
+      if (action === "move") return await handleComputerMouseMove(params);
+      if (action === "drag") return await handleComputerMouseDrag(params);
+      if (action === "scroll") return await handleComputerMouseScroll(params);
+      if (action === "type") return await handleComputerKeyType(params);
+      if (action === "press") return await handleComputerKeyPress(params);
+      if (action === "window_list") return await handleComputerWindowList(params);
+      if (action === "window_focus") return await handleComputerWindowFocus(params);
+      return { success: false, error: `未知 computer_use action: ${action}（仅支持 screenshot / click / move / drag / scroll / type / press / window_list / window_focus）` };
     },
     checkFn,
   );
-  unregistered.push("computer_screenshot");
-
-  // 工具 2：computer_mouse_click — 鼠标点击
-  executor.registerTool(
-    "computer_mouse_click",
-    {
-      name: "computer_mouse_click",
-      description: "在指定坐标点击鼠标。支持左/右/中键及双击。",
-      parameters: {
-        x: { type: "number", description: "X 坐标（像素）" },
-        y: { type: "number", description: "Y 坐标（像素）" },
-        button: { type: "string", description: "鼠标键：left(默认) / right / middle" },
-        doubleClick: { type: "string", description: "是否双击：true/false（默认 false）" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const x = Number(params.x);
-      const y = Number(params.y);
-      const buttonStr = String(params.button || "left");
-      const button: MouseButton = buttonStr === "right" ? "right" : buttonStr === "middle" ? "middle" : "left";
-      const doubleClick = String(params.doubleClick || "false") === "true";
-      try {
-        const size = await getValidScreenSize(backend, sessionId);
-        const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
-        await backend.mouseClick(x, y, button, doubleClick);
-        return { success: true, x, y, button, doubleClick };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_mouse_click");
-
-  // 工具 3：computer_mouse_move — 移动鼠标
-  executor.registerTool(
-    "computer_mouse_move",
-    {
-      name: "computer_mouse_move",
-      description: "移动鼠标到指定坐标（不点击）。",
-      parameters: {
-        x: { type: "number", description: "X 坐标（像素）" },
-        y: { type: "number", description: "Y 坐标（像素）" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const x = Number(params.x);
-      const y = Number(params.y);
-      try {
-        const size = await getValidScreenSize(backend, sessionId);
-        const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
-        await backend.mouseMove(x, y);
-        return { success: true, x, y };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_mouse_move");
-
-  // 工具 4：computer_mouse_drag — 拖拽
-  executor.registerTool(
-    "computer_mouse_drag",
-    {
-      name: "computer_mouse_drag",
-      description: "从起点拖拽鼠标到终点（按下→移动→释放）。",
-      parameters: {
-        fromX: { type: "number", description: "起点 X 坐标（像素）" },
-        fromY: { type: "number", description: "起点 Y 坐标（像素）" },
-        toX: { type: "number", description: "终点 X 坐标（像素）" },
-        toY: { type: "number", description: "终点 Y 坐标（像素）" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const fromX = Number(params.fromX);
-      const fromY = Number(params.fromY);
-      const toX = Number(params.toX);
-      const toY = Number(params.toY);
-      try {
-        const size = await getValidScreenSize(backend, sessionId);
-        const c1 = validateCoords(fromX, fromY, size);
-        if (!c1.ok) return { success: false, error: `起点${c1.error}` };
-        const c2 = validateCoords(toX, toY, size);
-        if (!c2.ok) return { success: false, error: `终点${c2.error}` };
-        await backend.mouseDrag(fromX, fromY, toX, toY);
-        return { success: true, from: { x: fromX, y: fromY }, to: { x: toX, y: toY } };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_mouse_drag");
-
-  // 工具 5：computer_mouse_scroll — 滚动
-  executor.registerTool(
-    "computer_mouse_scroll",
-    {
-      name: "computer_mouse_scroll",
-      description: "在指定坐标滚动鼠标滚轮。",
-      parameters: {
-        x: { type: "number", description: "X 坐标（像素）" },
-        y: { type: "number", description: "Y 坐标（像素）" },
-        direction: { type: "string", description: "滚动方向：up / down" },
-        amount: { type: "number", description: "滚动量（格数，默认 3）" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const x = Number(params.x);
-      const y = Number(params.y);
-      const directionStr = String(params.direction || "down");
-      const direction: ScrollDirection = directionStr === "up" ? "up" : "down";
-      // 安全：Number() 对非数字字符串返回 NaN，会传播到 PowerShell 导致异常行为。
-      // 使用 ?? 避免 0 被折叠为默认值，再用 Number.isFinite 防御 NaN/Infinity。
-      const amountRaw = Number(params.amount ?? 3);
-      const amount = Number.isFinite(amountRaw) ? amountRaw : 3;
-      try {
-        const size = await getValidScreenSize(backend, sessionId);
-        const coordCheck = validateCoords(x, y, size);
-        if (!coordCheck.ok) return { success: false, error: coordCheck.error };
-        await backend.mouseScroll(x, y, direction, amount);
-        return { success: true, x, y, direction, amount };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_mouse_scroll");
-
-  // 工具 6：computer_key_type — 输入文本
-  executor.registerTool(
-    "computer_key_type",
-    {
-      name: "computer_key_type",
-      description: "输入文本（逐字符，支持 Unicode/中文）。用于在输入框中输入内容。",
-      parameters: {
-        text: { type: "string", description: "要输入的文本" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const text = String(params.text || "");
-      if (!text) return { success: false, error: "text 不能为空" };
-      // 文本长度限制（防滥用）
-      const MAX_TEXT_LEN = 2000;
-      if (text.length > MAX_TEXT_LEN) {
-        return { success: false, error: `文本过长（${text.length} > ${MAX_TEXT_LEN}），请分段输入` };
-      }
-      try {
-        await backend.keyType(text);
-        return { success: true, length: text.length };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_key_type");
-
-  // 工具 7：computer_key_press — 按组合键
-  executor.registerTool(
-    "computer_key_press",
-    {
-      name: "computer_key_press",
-      description: '按组合键（如 "ctrl,c" 表示 Ctrl+C）。危险组合键（如 Ctrl+Alt+Del）会被拒绝。',
-      parameters: {
-        keys: { type: "string", description: '组合键，逗号分隔，如 "ctrl,c" 或 "enter"' },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const keysStr = String(params.keys || "");
-      const keys = keysStr.split(",").map((k) => k.trim()).filter(Boolean);
-      if (keys.length === 0) return { success: false, error: "keys 不能为空" };
-      // 按键白名单 + 危险组合黑名单校验
-      const keyCheck = validateKeySequence(keys);
-      if (!keyCheck.ok) return { success: false, error: keyCheck.error };
-      try {
-        await backend.keyPress(keys);
-        return { success: true, keys };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_key_press");
-
-  // 工具 8：computer_window_list — 列出窗口
-  executor.registerTool(
-    "computer_window_list",
-    {
-      name: "computer_window_list",
-      description: "列出当前可见的窗口（标题/ID/边界）。平台不支持时返回空数组。",
-      parameters: {
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      try {
-        if (!backend.windowList) {
-          return { windows: [], supported: false };
-        }
-        const windows = await backend.windowList();
-        return { windows, supported: true, count: windows.length };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_window_list");
-
-  // 工具 9：computer_window_focus — 聚焦窗口
-  executor.registerTool(
-    "computer_window_focus",
-    {
-      name: "computer_window_focus",
-      description: "聚焦到指定窗口（通过 windowId）。",
-      parameters: {
-        windowId: { type: "string", description: "窗口 ID（来自 computer_window_list）" },
-        sessionId: { type: "string", description: "会话 ID（用于隔离，可选）" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      if (!backend || !backend.isAvailable()) return { success: false, error: "ComputerBackend 不可用" };
-      const sessionId = String(params.sessionId || "default");
-      const rate = checkRateLimit(sessionId);
-      if (!rate.ok) return { success: false, error: rate.error };
-      const windowId = String(params.windowId || "");
-      if (!windowId) return { success: false, error: "windowId 不能为空" };
-      try {
-        if (!backend.windowFocus) {
-          return { success: false, error: "当前后端不支持窗口聚焦" };
-        }
-        await backend.windowFocus(windowId);
-        return { success: true, windowId };
-      } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
-      }
-    },
-    checkFn,
-  );
-  unregistered.push("computer_window_focus");
+  unregistered.push("computer_use");
 
   // 返回反注册函数
   return () => {

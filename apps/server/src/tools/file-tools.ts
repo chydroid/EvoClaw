@@ -186,85 +186,86 @@ export function registerFileTools(
   const permMgr = permissionManager;
   const permRelay = permissionRelay;
 
-  executor.registerTool(
-    "file_create",
-    {
-      name: "file_create",
-      description: "Create a new file at the specified path with the given content. If the file already exists and overwrite is true, the file will be replaced. After creating a file, always inform the user of the file path and that they can download it via /api/files/download/{path}.",
-      parameters: {
-        path: { type: "string", description: "Relative file path to create", required: true },
-        content: { type: "string", description: "Content to write to the file", required: true },
-        overwrite: { type: "boolean", description: "Whether to overwrite if file already exists (default: false)", required: false, default: false },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const filePath = String(params.path || "");
-      const content = String(params.content || "");
-      const overwrite = params.overwrite === true;
-      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pf = preflight(resolvedPath, fsBase, true);
-      if (!pf.ok) return { success: false, error: pf.error };
-      // 沙箱外的写操作在「一般安全」档需要用户确认
-      if (pf.needsConfirm) {
-        const cReq = permMgr.requestPermission("file_create", filePath, { size: content.length, outsideSandbox: true }, "tool");
-        if (cReq.status === "denied") {
-          return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${cReq.id}` };
-        }
-        if (cReq.status === "pending") {
-          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建沙箱外文件: ${filePath}`, params, category: "file" });
-          return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_create", description: "创建文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能创建: ${filePath}` };
-        }
-      } else if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
-        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
+  // ── file_write（create / modify 复合工具）─────────────────────────
+  // 合并自 file_create 与 file_modify。两者仅「新建还是覆盖」的语义不同，
+  // handler 逻辑体逐字保留，由 action 分发。旧工具名不再注册。
+
+  async function handleFileWriteCreate(params: Record<string, unknown>): Promise<unknown> {
+    const filePath = String(params.path || "");
+    const content = String(params.content || "");
+    const overwrite = params.overwrite === true;
+    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+    const pf = preflight(resolvedPath, fsBase, true);
+    if (!pf.ok) return { success: false, error: pf.error };
+    // 沙箱外的写操作在「一般安全」档需要用户确认
+    if (pf.needsConfirm) {
+      const cReq = permMgr.requestPermission("file_create", filePath, { size: content.length, outsideSandbox: true }, "tool");
+      if (cReq.status === "denied") {
+        return { success: false, error: `Permission denied for file_create on ${filePath}. Request ID: ${cReq.id}` };
       }
-      const doCreate = async () => {
-        const r = pf.insideSandbox
-          ? await fsMgr.createFile(fsPath, content, overwrite)
-          : await fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
-        // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
-        // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
-        // `...\data\workspace\data\workspace`，连踩两个坑。
-        return { ...(r as object), path: resolvedPath, workspaceRelative: display };
-      };
-      return await errRecovery.executeWithRetry("file_create", fsPath, doCreate);
+      if (cReq.status === "pending") {
+        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建沙箱外文件: ${filePath}`, params, category: "file" });
+        return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_create", description: "创建文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能创建: ${filePath}` };
+      }
+    } else if (permMgr.isPathAutoApproved(resolvedPath, "file_create")) {
+      permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_create", description: `创建文件: ${filePath}`, params, category: "file" });
     }
-  );
+    const doCreate = async () => {
+      const r = pf.insideSandbox
+        ? await fsMgr.createFile(fsPath, content, overwrite)
+        : await fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+      // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
+      // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
+      // `...\data\workspace\data\workspace`，连踩两个坑。
+      return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+    };
+    return await errRecovery.executeWithRetry("file_create", fsPath, doCreate);
+  }
+
+  async function handleFileWriteModify(params: Record<string, unknown>): Promise<unknown> {
+    const filePath = String(params.path || "");
+    const content = String(params.content || "");
+    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+    const pf = preflight(resolvedPath, fsBase, true);
+    if (!pf.ok) return { success: false, error: pf.error };
+    if (pf.needsConfirm) {
+      const cReq = permMgr.requestPermission("file_modify", filePath, { size: content.length, outsideSandbox: true }, "tool");
+      if (cReq.status === "denied") {
+        return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${cReq.id}` };
+      }
+      if (cReq.status === "pending") {
+        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改沙箱外文件: ${filePath}`, params, category: "file" });
+        return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_modify", description: "修改文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能修改: ${filePath}` };
+      }
+    } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
+      permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
+    }
+    const doModify = async () => {
+      const r = pf.insideSandbox
+        ? await fsMgr.modifyFile(fsPath, content)
+        : await fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
+      return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+    };
+    return await errRecovery.executeWithRetry("file_modify", fsPath, doModify);
+  }
 
   executor.registerTool(
-    "file_modify",
+    "file_write",
     {
-      name: "file_modify",
-      description: "Modify an existing file's content",
+      name: "file_write",
+      description: "Create a new file or overwrite an existing file's content. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。",
       parameters: {
-        path: { type: "string", description: "Relative file path to modify", required: true },
-        content: { type: "string", description: "New content for the file", required: true },
+        action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容", required: true, enum: ["create", "modify"] },
+        path: { type: "string", description: "Relative file path to create or modify", required: true },
+        content: { type: "string", description: "Content to write to the file", required: true },
+        overwrite: { type: "boolean", description: "Whether to overwrite if the file already exists（仅 action=create 生效，default: false）", required: false, default: false },
       },
     },
     async (params: Record<string, unknown>) => {
-      const filePath = String(params.path || "");
-      const content = String(params.content || "");
-      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
-      const pf = preflight(resolvedPath, fsBase, true);
-      if (!pf.ok) return { success: false, error: pf.error };
-      if (pf.needsConfirm) {
-        const cReq = permMgr.requestPermission("file_modify", filePath, { size: content.length, outsideSandbox: true }, "tool");
-        if (cReq.status === "denied") {
-          return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${cReq.id}` };
-        }
-        if (cReq.status === "pending") {
-          permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改沙箱外文件: ${filePath}`, params, category: "file" });
-          return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_modify", description: "修改文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能修改: ${filePath}` };
-        }
-      } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
-        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
-      }
-      const doModify = async () => {
-        const r = pf.insideSandbox
-          ? await fsMgr.modifyFile(fsPath, content)
-          : await fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
-        return { ...(r as object), path: resolvedPath, workspaceRelative: display };
-      };
-      return await errRecovery.executeWithRetry("file_modify", fsPath, doModify);
+      const action = String(params.action || "create");
+      if (action === "modify") return await handleFileWriteModify(params);
+      if (action === "create") return await handleFileWriteCreate(params);
+      return { success: false, error: `未知 file_write action: ${action}（仅支持 create / modify）` };
     }
   );
 

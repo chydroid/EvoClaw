@@ -100,8 +100,9 @@ function findFileRecursive(root: string, filename: string, maxDepth = 4): string
   return null;
 }
 
-/** Auto-discover Python installation paths for PATH extension */
-function findPythonPaths(): string[] {
+/** Auto-discover Python installation paths for PATH extension
+ *  （导出：web-tools 的 scrapling_fetch 与 video-tools 的 video_download 合并后复用） */
+export function findPythonPaths(): string[] {
   const paths: string[] = [];
 
   if (process.platform === "win32") {
@@ -176,8 +177,9 @@ function resolvePythonBin(): string {
 }
 
 /** 异步执行 Python 脚本，返回 stdout（替代 execSync 避免阻塞事件循环）。
- *  错误对象携带 stderr/stdout/code 属性，兼容原 execSync 错误处理代码。 */
-function runPythonScriptAsync(
+ *  错误对象携带 stderr/stdout/code 属性，兼容原 execSync 错误处理代码。
+ *  （导出：web-tools / video-tools 的下载类 action 复用本实现） */
+export function runPythonScriptAsync(
   scriptName: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -750,121 +752,58 @@ export function registerShellMediaTools(
     }
   );
 
-  // ── scrapling_fetch: 使用 Scrapling 框架进行高级抓取 ──
-  executor.registerTool(
-    "scrapling_fetch",
-    {
-      name: "scrapling_fetch",
-      description: "Fetch a URL using Scrapling's StealthyFetcher (bypasses Cloudflare, handles anti-bot). Returns page title, text content, and extracted links. Supports adaptive scraping that survives website redesigns.",
-      parameters: {
-        url: { type: "string", description: "The URL to fetch" },
-        selector: { type: "string", description: "Optional CSS selector to extract specific content" },
-        extractLinks: { type: "string", description: "Set to 'true' to extract all links from the page" },
-        headless: { type: "string", description: "Set to 'false' for faster non-headless mode (default: true)" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const url = String(params.url || "");
-      if (!url) return { success: false, error: "URL is required" };
-      const selector = params.selector ? String(params.selector) : "";
-      const extractLinks = String(params.extractLinks || "") === "true";
-      const headless = String(params.headless || "") !== "false";
+  // ── music：复合音乐工具（action 判别）──
+  // 合并自原 music_search（搜索歌手热门歌曲，播放意图）与 music_download
+  // （下载音乐）：一个工具 + action 字段，保持 schema 紧凑、降低每轮 token 成本。
 
-      // SSRF 防护：阻止访问内网/元数据端点
-      const ssrfReason = await checkSsrf(url);
+  /** 原 music_search */
+  const handleMusicSearch = async (params: Record<string, unknown>) => {
+    const artist = String(params.artist || "");
+    const limitRaw = Number(params.limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
+    if (!artist) return { success: false, error: "Artist name is required" };
+    // Return structured data that the LLM will format into a nice list
+    return JSON.stringify({
+      artist,
+      hint: `Search for ${artist}'s hit songs using web_search, then format the results as a numbered list with clickable links to NetEase Cloud Music (https://music.163.com/#/search/m/?s=${encodeURIComponent(artist)}+歌名&type=1). Do NOT download any files.`,
+      neteaseSearchUrl: `https://music.163.com/#/search/m/?s=${encodeURIComponent(artist)}&type=1`,
+      limit,
+    });
+  };
+
+  /** 原 music_download */
+  const handleMusicDownload = async (params: Record<string, unknown>) => {
+    const query = String(params.query || "");
+    if (!query) return { success: false, error: "Query (song name or URL) is required" };
+    const audioFormat = String(params.audioFormat || "mp3");
+    const quality = String(params.quality || "320");
+
+    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    const outputDir = path.join(workspaceDir, "downloads");
+    const pythonPaths = findPythonPaths();
+    const existingPath = process.env.PATH || process.env.Path || "";
+    const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
+
+    // Check if query is a URL — if so, use video_download with extractAudio
+    const isUrl = /^https?:\/\//i.test(query);
+
+    // SSRF 防护：当 query 是 URL 时阻止访问内网/元数据端点
+    if (isUrl) {
+      const ssrfReason = await checkSsrf(query);
       if (ssrfReason) {
-        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
-      }
-
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
-      const pythonPaths = findPythonPaths();
-      const existingPath = process.env.PATH || process.env.Path || "";
-      const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
-
-      const script = `#!/usr/bin/env python3
-import json, sys
-try:
-    from scrapling.fetchers import StealthyFetcher
-    page = StealthyFetcher.fetch(${JSON.stringify(url)}, headless=${headless ? "True" : "False"})
-    result = {
-        "title": page.css("title::text").get(""),
-        "url": str(page.url),
-        "status": page.status,
-        "text_preview": page.text_content()[:3000],
-    }
-    ${selector ? `result["selected"] = [el.text_content().strip()[:500] for el in page.css(${JSON.stringify(selector)})[:10]]` : ""}
-    ${extractLinks ? `result["links"] = [{"href": l.attrib.get("href", ""), "text": l.text_content().strip()[:100]} for l in page.css("a[href]")[:30]]` : ""}
-    print(json.dumps(result, ensure_ascii=False))
-except Exception as e:
-    print(json.dumps({"error": str(e)}, ensure_ascii=False))
-    sys.exit(1)
-`;
-
-      try {
-        // Write script to temp file instead of using python -c (which fails with multiline scripts)
-        const scriptPath = path.join(workspaceDir, `_scrapling_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
-        fs.writeFileSync(scriptPath, script, "utf-8");
-        try {
-          const result = await runPythonScriptAsync(
-            path.basename(scriptPath),
-            workspaceDir,
-            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-            60000,
-          );
-          const parsed = JSON.parse(result.trim());
-          return { success: true, ...parsed };
-        } catch (err: any) {
-          const stderr = err.stderr?.toString() || err.message || String(err);
-          return { success: false, error: stderr.slice(0, 5000) };
-        } finally {
-          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
-        }
-      } catch (err: any) {
-        const stderr = err.stderr?.toString() || err.message || String(err);
-        return { success: false, error: stderr.slice(0, 5000) };
+        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url: query };
       }
     }
-  );
 
-  // ── video_download: 下载视频（B站/抖音/YouTube/好看视频等1000+网站） ──
-  executor.registerTool(
-    "video_download",
-    {
-      name: "video_download",
-      description: "Download video from 1000+ websites using yt-dlp + ffmpeg. Supports Bilibili, Douyin, YouTube, Haokan, WeChat Channels, Kuaishou, Xigua, etc. Auto watermark removal for Douyin. Returns file path for download.",
-      parameters: {
-        url: { type: "string", description: "The video URL to download (Bilibili, Douyin, YouTube, etc.)" },
-        format: { type: "string", description: "Video quality: 'best', '720p', '1080p', '4k' (default: best)" },
-        noWatermark: { type: "string", description: "Set to 'true' to remove watermark (default: true for Douyin)" },
-      },
-    },
-    async (params: Record<string, unknown>) => {
-      const url = String(params.url || "");
-      if (!url) return { success: false, error: "URL is required" };
-      const format = String(params.format || "best");
-      const noWatermark = String(params.noWatermark || "true") === "true";
-
-      // SSRF 防护：阻止访问内网/元数据端点
-      const ssrfReason = await checkSsrf(url);
-      if (ssrfReason) {
-        return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
-      }
-
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
-      const outputDir = path.join(workspaceDir, "downloads");
-      const pythonPaths = findPythonPaths();
-      const existingPath = process.env.PATH || process.env.Path || "";
-      const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
-
-      // Generate download script using media-downloader bridge
+    if (isUrl) {
+      // Use video download script with extractAudio=true
       const script = generateVideoDownloadScript({
-        url,
+        url: query,
         outputDir,
-        format,
-        noWatermark,
+        extractAudio: true,
+        audioFormat,
       });
-
-      const scriptPath = path.join(workspaceDir, `_video_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
+      const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
       fs.writeFileSync(scriptPath, script, "utf-8");
 
       try {
@@ -872,19 +811,14 @@ except Exception as e:
           path.basename(scriptPath),
           workspaceDir,
           { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-          600000, // 10 minutes for large videos
+          300000,
         );
-
-        // Parse [RESULT]...[/RESULT] from output
         const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
         if (match) {
           try {
             const parsed = JSON.parse(match[1]);
             return { success: true, ...parsed };
           } catch (jsonErr) {
-            // 关键修复：原先 JSON.parse 抛错会冒泡到外层 catch，
-            // 且没有 [RESULT] 标记时仍返回 success:true —— 脚本报错也会
-            // 被当成"下载完成"，与此前邮箱伪造完成态同型。
             return {
               success: false,
               error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
@@ -892,8 +826,7 @@ except Exception as e:
             };
           }
         }
-        // 无 [RESULT] 标记 = 脚本未产出结果（可能中途报错/被 kill），
-        // 必须如实报告失败，绝不能返回 success:true。
+        // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
         return {
           success: false,
           error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
@@ -901,172 +834,87 @@ except Exception as e:
         };
       } catch (err: any) {
         const stderr = err.stderr?.toString() || err.message || String(err);
-        // Check if partial download exists
-        const resultMatch = stderr.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
-        if (resultMatch) {
+        return { success: false, error: stderr.slice(0, 5000) };
+      } finally {
+        try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
+      }
+    } else {
+      // Search and download music
+      const script = generateMusicDownloadScript({
+        query,
+        outputDir,
+        audioFormat,
+        quality,
+      });
+      const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
+      fs.writeFileSync(scriptPath, script, "utf-8");
+
+      try {
+        const result = await runPythonScriptAsync(
+          path.basename(scriptPath),
+          workspaceDir,
+          { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
+          300000,
+        );
+        const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
+        if (match) {
           try {
-            const parsed = JSON.parse(resultMatch[1]);
-            return { success: true, ...parsed, warning: "Download completed with warnings" };
+            const parsed = JSON.parse(match[1]);
+            return { success: true, ...parsed };
           } catch (jsonErr) {
-            console.warn(`[VideoDownload] Failed to parse yt-dlp JSON output: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`);
+            return {
+              success: false,
+              error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
+              output: result.slice(-2000),
+            };
           }
         }
+        // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
+        return {
+          success: false,
+          error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
+          output: result.slice(-2000),
+        };
+      } catch (err: any) {
+        const stderr = err.stderr?.toString() || err.message || String(err);
         return { success: false, error: stderr.slice(0, 5000) };
       } finally {
         try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
       }
     }
-  );
+  };
 
-  // ── music_search: 搜索歌手热门歌曲（播放意图，非下载） ──
   executor.registerTool(
-    "music_search",
+    "music",
     {
-      name: "music_search",
-      description: "Search for an artist's hit songs and return a formatted list with playable links. Use this when the user wants to LISTEN to music, not download it.",
+      name: "music",
+      description:
+        "复合音乐工具（composite music tool），通过 action 参数选择具体操作。" +
+        "actions: " +
+        "search（默认，搜索歌手热门歌曲并返回可播放链接列表；用于用户想听歌而非下载的场景） / " +
+        "download（搜索并下载音乐，用 yt-dlp + ffmpeg 从视频平台提取音频，支持歌名/歌手或直链 URL，返回 MP3 文件路径）。",
       parameters: {
-        artist: { type: "string", description: "Artist name (歌手名)" },
-        limit: { type: "number", description: "Number of songs to return (default: 10)" },
+        action: {
+          type: "string",
+          description: "音乐操作类型：search（默认，搜索歌曲）/ download（下载音乐）",
+          required: true,
+          enum: ["search", "download"],
+        },
+        artist: { type: "string", description: "歌手名（search 使用）" },
+        limit: { type: "number", description: "返回歌曲数量（默认 10）（search 使用）" },
+        query: { type: "string", description: "歌曲名、歌手，或音乐 URL（download 使用）" },
+        audioFormat: { type: "string", description: "音频格式：'mp3'、'flac'、'aac'（默认 mp3）（download 使用）" },
+        quality: { type: "string", description: "音频质量：'128'、'192'、'320' kbps（默认 320）（download 使用）" },
       },
     },
     async (params: Record<string, unknown>) => {
-      const artist = String(params.artist || "");
-      const limitRaw = Number(params.limit);
-      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10;
-      if (!artist) return { success: false, error: "Artist name is required" };
-      // Return structured data that the LLM will format into a nice list
-      return JSON.stringify({
-        artist,
-        hint: `Search for ${artist}'s hit songs using web_search, then format the results as a numbered list with clickable links to NetEase Cloud Music (https://music.163.com/#/search/m/?s=${encodeURIComponent(artist)}+歌名&type=1). Do NOT download any files.`,
-        neteaseSearchUrl: `https://music.163.com/#/search/m/?s=${encodeURIComponent(artist)}&type=1`,
-        limit,
-      });
-    }
-  );
-
-  // ── music_download: 下载音乐（从视频平台提取音频） ──
-  executor.registerTool(
-    "music_download",
-    {
-      name: "music_download",
-      description: "Download music by searching and extracting audio from video platforms using yt-dlp + ffmpeg. Supports any song name/artist. Returns MP3 file path for download. Falls back to YouTube search if direct URL not available.",
-      parameters: {
-        query: { type: "string", description: "Song name, artist, or URL (e.g. '周杰伦 晴天' or a music URL)" },
-        audioFormat: { type: "string", description: "Audio format: 'mp3', 'flac', 'aac' (default: mp3)" },
-        quality: { type: "string", description: "Audio quality: '128', '192', '320' kbps (default: 320)" },
-      },
+      const action = String(params.action || "search");
+      if (action === "search") return await handleMusicSearch(params);
+      if (action === "download") return await handleMusicDownload(params);
+      return { success: false, error: `未知 music action: ${action}（仅支持 search / download）` };
     },
-    async (params: Record<string, unknown>) => {
-      const query = String(params.query || "");
-      if (!query) return { success: false, error: "Query (song name or URL) is required" };
-      const audioFormat = String(params.audioFormat || "mp3");
-      const quality = String(params.quality || "320");
-
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
-      const outputDir = path.join(workspaceDir, "downloads");
-      const pythonPaths = findPythonPaths();
-      const existingPath = process.env.PATH || process.env.Path || "";
-      const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);
-
-      // Check if query is a URL — if so, use video_download with extractAudio
-      const isUrl = /^https?:\/\//i.test(query);
-
-      // SSRF 防护：当 query 是 URL 时阻止访问内网/元数据端点
-      if (isUrl) {
-        const ssrfReason = await checkSsrf(query);
-        if (ssrfReason) {
-          return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url: query };
-        }
-      }
-
-      if (isUrl) {
-        // Use video download script with extractAudio=true
-        const script = generateVideoDownloadScript({
-          url: query,
-          outputDir,
-          extractAudio: true,
-          audioFormat,
-        });
-        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
-        fs.writeFileSync(scriptPath, script, "utf-8");
-
-        try {
-          const result = await runPythonScriptAsync(
-            path.basename(scriptPath),
-            workspaceDir,
-            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-            300000,
-          );
-          const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
-          if (match) {
-            try {
-              const parsed = JSON.parse(match[1]);
-              return { success: true, ...parsed };
-            } catch (jsonErr) {
-              return {
-                success: false,
-                error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
-                output: result.slice(-2000),
-              };
-            }
-          }
-          // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
-          return {
-            success: false,
-            error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
-            output: result.slice(-2000),
-          };
-        } catch (err: any) {
-          const stderr = err.stderr?.toString() || err.message || String(err);
-          return { success: false, error: stderr.slice(0, 5000) };
-        } finally {
-          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
-        }
-      } else {
-        // Search and download music
-        const script = generateMusicDownloadScript({
-          query,
-          outputDir,
-          audioFormat,
-          quality,
-        });
-        const scriptPath = path.join(workspaceDir, `_music_dl_${Date.now()}_${crypto.randomBytes(4).toString("hex")}.py`);
-        fs.writeFileSync(scriptPath, script, "utf-8");
-
-        try {
-          const result = await runPythonScriptAsync(
-            path.basename(scriptPath),
-            workspaceDir,
-            { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
-            300000,
-          );
-          const match = result.match(/\[RESULT\](.*?)\[\/RESULT\]/s);
-          if (match) {
-            try {
-              const parsed = JSON.parse(match[1]);
-              return { success: true, ...parsed };
-            } catch (jsonErr) {
-              return {
-                success: false,
-                error: `下载脚本输出的 [RESULT] 标记不是合法 JSON：${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`,
-                output: result.slice(-2000),
-              };
-            }
-          }
-          // 无结果标记 = 未真正完成，如实报失败（勿再返回 success:true）
-          return {
-            success: false,
-            error: "下载脚本未产出 [RESULT] 结果标记，可能执行失败或超时；以下为原始输出尾部：",
-            output: result.slice(-2000),
-          };
-        } catch (err: any) {
-          const stderr = err.stderr?.toString() || err.message || String(err);
-          return { success: false, error: stderr.slice(0, 5000) };
-        } finally {
-          try { fs.unlinkSync(scriptPath); } catch { /* non-critical */ }
-        }
-      }
-    }
+    // checkFn: 原 music_search / music_download 均无 checkFn（始终可用）
+    () => true
   );
 
   // ── execute_code: 在沙箱中执行代码（一等公民工具） ──
@@ -1120,13 +968,56 @@ except Exception as e:
    *   返回明确错误而非静默失败
    */
 
-  /** 工具黑名单：脚本侧不允许直接调用的工具（shell/网络外发/审批/危险类） */
-  const PROGRAMMATIC_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set([
-    "shell_exec", "execute_code", "git_push", "git_commit",
-    "webhook_send", "email_send", "mcp_toggle_tool",
-    "approve", "reject", "device_pairing_approve",
-    "kill_task", "dlq_retry_batch",
-  ]);
+  /**
+   * 程序化脚本侧的禁用规则。
+   *
+   * 合并前黑名单按「工具名」精确匹配（只禁 email_send / git_push / git_commit /
+   * dlq_retry_batch 等个别工具）。工具合并为复合工具后，一个名字覆盖多个 action，
+   * 若仍按名字禁会**过度封禁**——例如禁掉整个 email 会让脚本无法列账户/读收件箱，
+   * 禁掉整个 git 会让脚本无法查 status/diff/log，属于功能回归。
+   * 故改为 (工具名, action) 二元规则，精确还原合并前的封禁语义。
+   */
+  type ProgrammaticForbiddenRule = { tool: string; action?: string };
+
+  const PROGRAMMATIC_FORBIDDEN_RULES: ReadonlyArray<ProgrammaticForbiddenRule> = [
+    { tool: "shell_exec" },
+    { tool: "execute_code" },
+    // git：合并前是 git_push / git_commit 两个工具，合并后是 git 复合工具的两个 action。
+    // 两条规则并存，避免合并落地前后出现封禁空窗。
+    { tool: "git_push" },
+    { tool: "git_commit" },
+    { tool: "git", action: "push" },
+    { tool: "git", action: "commit" },
+    // email：合并前是 email_send 单工具，合并后是 email 复合工具的 send action。
+    { tool: "email_send" },
+    { tool: "email", action: "send" },
+    // dlq_retry_batch：合并前是独立工具，合并后是 scheduler 复合工具的 retry_dlq action。
+    { tool: "dlq_retry_batch" },
+    { tool: "scheduler", action: "retry_dlq" },
+    { tool: "webhook_send" },
+    { tool: "mcp_toggle_tool" },
+    { tool: "approve" },
+    { tool: "reject" },
+    { tool: "device_pairing_approve" },
+    { tool: "kill_task" },
+  ];
+
+  /** 整体禁用的工具名（供生成脚本的 FORBIDDEN 集合与文档使用） */
+  const PROGRAMMATIC_FORBIDDEN_TOOLS: ReadonlySet<string> = new Set(
+    PROGRAMMATIC_FORBIDDEN_RULES.filter((r) => r.action === undefined).map((r) => r.tool)
+  );
+
+  /** 判断一次程序化工具调用是否被禁用（action 缺省表示该工具整体禁用） */
+  const isProgrammaticForbidden = (toolName: string, action?: unknown): boolean => {
+    const act = typeof action === "string" ? action : undefined;
+    return PROGRAMMATIC_FORBIDDEN_RULES.some(
+      (r) => r.tool === toolName && (r.action === undefined || r.action === act)
+    );
+  };
+
+  /** 某工具下被禁用的 action 列表（供文档标注） */
+  const forbiddenActionsOf = (toolName: string): string[] =>
+    PROGRAMMATIC_FORBIDDEN_RULES.filter((r) => r.tool === toolName && r.action).map((r) => r.action!);
 
   /** 程序化调用审计日志目录（data/logs/，与现有日志目录对齐） */
   const programmaticLogDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "logs");
@@ -1150,9 +1041,14 @@ except Exception as e:
   const buildProgrammaticApiDoc = (): string => {
     try {
       const defs = executor.getRegisteredTools();
-      const allowed = defs.filter((d) => !PROGRAMMATIC_FORBIDDEN_TOOLS.has(d.name));
-      return allowed
-        .map((d) => `- ${d.name}${d.description ? `: ${d.description.slice(0, 120)}` : ""}`)
+      return defs
+        .filter((d) => !PROGRAMMATIC_FORBIDDEN_TOOLS.has(d.name))
+        .map((d) => {
+          const blocked = forbiddenActionsOf(d.name);
+          const desc = d.description ? `: ${d.description.slice(0, 120)}` : "";
+          const note = blocked.length > 0 ? ` ⚠️ 禁用 action: ${blocked.join(", ")}` : "";
+          return `- ${d.name}${desc}${note}`;
+        })
         .join("\n");
     } catch {
       return "(tool list unavailable — see docs for the registered tool set)";
@@ -1179,13 +1075,24 @@ except Exception as e:
       })
       .filter((n): n is string => Boolean(n));
     const forbidden = Array.from(PROGRAMMATIC_FORBIDDEN_TOOLS);
+    // action 级禁用：合并后一个工具名覆盖多个 action，需按 (工具, action) 精确封禁，
+    // 否则会把「禁 email 发信」误扩成「禁整个 email 工具」，脚本侧功能回归。
+    const forbiddenActions: Record<string, string[]> = {};
+    try {
+      for (const d of executor.getRegisteredTools()) {
+        const acts = forbiddenActionsOf(d.name);
+        if (acts.length > 0) forbiddenActions[d.name] = acts;
+      }
+    } catch { /* 取不到注册表时退化为仅名字级封禁 */ }
     // 脚本内白名单：运行时对未知/禁用工具名返回错误，宿主侧再校验一次
     return [
       "// ── EvoClaw programmatic tool calling wrapper（生成代码，勿手改）──",
       `// 可用工具（${toolNames.length}）：${toolNames.join(", ")}`,
       `// 禁用工具（调用即失败）：${forbidden.join(", ")}`,
+      `// 禁用 action（该工具下这些 action 调用即失败）：${JSON.stringify(forbiddenActions)}`,
       "const ALLOWED = new Set(" + JSON.stringify(toolNames) + ");",
       "const FORBIDDEN = new Set(" + JSON.stringify(forbidden) + ");",
+      "const FORBIDDEN_ACTIONS = " + JSON.stringify(forbiddenActions) + ";",
       "const pending = new Map();",
       "let callSeq = 0;",
       // stdin 保持可读（宿主经此回传结果）；脚本结束后需主动关闭所有 handle，
@@ -1208,6 +1115,8 @@ except Exception as e:
       "const tools = {",
       "  call: async (name, params) => {",
       "    if (FORBIDDEN.has(String(name))) throw new Error('tool is forbidden in programmatic scripts: ' + name);",
+      "    const blockedActions = FORBIDDEN_ACTIONS[String(name)];",
+      "    if (blockedActions && blockedActions.indexOf((params && params.action) || '') >= 0) throw new Error('action is forbidden in programmatic scripts: ' + name + '.' + ((params && params.action) || ''));",
       "    if (!ALLOWED.has(String(name))) throw new Error('unknown tool: ' + name);",
       "    const id = ++callSeq;",
       "    const p = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));",
@@ -1234,8 +1143,9 @@ except Exception as e:
         "untrusted/user-provided code, supports Python and Node.js; returns a clear error if Docker is " +
         "unavailable. (2) programmatic=true — runs a Node.js ESM script in a local soft sandbox with an " +
         "injected `tools` API: call multiple registered tools from within one script and combine results " +
-        "(folds a multi-step tool pipeline into a single LLM turn). Forbidden tools (shell_exec, git_push, " +
-        "webhooks, approvals) are rejected; audit log written to data/logs/programmatic-calls.jsonl.",
+        "(folds a multi-step tool pipeline into a single LLM turn). Forbidden operations (shell_exec, " +
+        "email send, git push/commit, DLQ retry, webhooks, approvals) are rejected; audit log written to " +
+        "data/logs/programmatic-calls.jsonl.",
       parameters: {
         code: {
           type: "string",
@@ -1257,7 +1167,8 @@ except Exception as e:
           description:
             "When true, runs a Node.js ESM script with an injected `tools` API so one call can drive a multi-step " +
             "tool pipeline (call several tools in sequence/parallel and combine results). Only 'node' language is " +
-            "supported. Forbidden tools (shell_exec, git_push, webhooks, approvals, ...) are rejected. " +
+            "supported. Forbidden operations (shell_exec, email send, git push/commit, DLQ retry, webhooks, " +
+            "approvals) are rejected. " +
             "Prefer this over many separate tool calls for read-heavy pipelines.",
         },
       },
@@ -1343,8 +1254,17 @@ except Exception as e:
             void (async () => {
               let value: unknown;
               try {
+                const requested =
+                  call.params && typeof call.params.action === "string" ? call.params.action : undefined;
                 if (PROGRAMMATIC_FORBIDDEN_TOOLS.has(call.name)) {
+                  // 整工具禁用（shell_exec / execute_code / 审批类）
                   value = { success: false, error: `tool is forbidden in programmatic scripts: ${call.name}` };
+                  rejectedCalls++;
+                } else if (isProgrammaticForbidden(call.name, requested)) {
+                  // action 级禁用：合并后的工具一个名字覆盖多个 action，只禁其中的越权
+                  // action（如 email.send / git.push），其余照常放行，否则「禁发信」会被
+                  // 误扩成「禁整个 email」，脚本侧读收件箱等功能回归。
+                  value = { success: false, error: `action is forbidden in programmatic scripts: ${call.name}.${requested}` };
                   rejectedCalls++;
                 } else {
                   // 宿主侧执行：executeToolByName 跳过人工审批门禁（契约见 agent-model-executor），

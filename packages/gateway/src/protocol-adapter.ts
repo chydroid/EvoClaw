@@ -3197,7 +3197,7 @@ export class ProtocolAdapter {
                 sendSSE("progress_summary", { type: "search_progress", count: webSearchCount, detail: event.detail });
                 lastSearchReportRound = webSearchCount;
               }
-            } else if (event.type === "tool_result" && event.toolName === "fetch_node_page") {
+            } else if (event.type === "tool_result" && event.toolName === "web_fetch") {
               webFetchCount++;
               if (webFetchCount % 3 === 0 || webFetchCount === 1) {
                 sendSSE("progress_summary", { type: "fetch_progress", count: webFetchCount, detail: event.detail?.slice(0, 200) });
@@ -9279,7 +9279,7 @@ export class ProtocolAdapter {
       try {
         // BatchExecutor 通过 vision-batch-tools 按需实例化，无独立 service 注册
         const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
-        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "batch_execute");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "workflow");
         res.json({
           available: registered,
           serviceName: "BatchExecutor",
@@ -9305,7 +9305,7 @@ export class ProtocolAdapter {
       try {
         // WorkflowEngine 通过 vision-batch-tools 按需实例化，无独立 service 注册
         const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
-        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "workflow_execute");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "workflow");
         res.json({
           available: registered,
           serviceName: "WorkflowEngine",
@@ -9330,7 +9330,7 @@ export class ProtocolAdapter {
         // SessionCheckpointManager / DLQBatchRetry 通过 vision-batch-tools 按需实例化，无独立 service 注册
         const executor = this.registry.resolveService<{ getRegisteredTools?: () => Array<{ name: string }> }>("agentModelExecutor");
         const dlq = this.registry.resolveService<unknown>("deadLetterQueue");
-        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "checkpoint_save");
+        const registered = !!executor?.getRegisteredTools?.().some((t) => t.name === "checkpoint");
         res.json({
           available: registered,
           serviceName: "SessionCheckpointManager+DLQBatchRetry",

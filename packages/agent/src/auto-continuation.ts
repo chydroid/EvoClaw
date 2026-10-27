@@ -189,7 +189,7 @@ export function buildContinuationDirective(ctx: ContinuationContext): string {
   const lines: string[] = [];
 
   // ★ 2026-10-26 修复：创造性任务的续跑指令改为"直接输出文本"而非"继续执行"。
-  //   模型对"继续执行"的理解是"调工具"，导致 shell_exec/file_read/file_create
+  //   模型对"继续执行"的理解是"调工具"，导致 shell_exec/file_read/file_write
   //   等无关工具调用，5-9 轮 × 15-61s = 远超超时。创造性任务应直接在回复中
   //   输出完整内容，不创建文件、不搜索文件、不恢复检查点。
   const isCreativeTask = ctx.userMessage

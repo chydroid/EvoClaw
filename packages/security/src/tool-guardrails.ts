@@ -19,41 +19,60 @@ export const IDEMPOTENT_TOOL_NAMES = new Set([
   "skill_find",
   "skill_list",
   "skill_view",
-  "memory_search",
+  // memory 复合工具：search / stats 均只读
+  "memory",
   "memory_get",
   "session_list",
   "session_get",
-  "task_status",
+  // task_plan 复合工具：decompose / templates / status 均只读
+  "task_plan",
   "task_list",
   "health_check",
   "metrics_get",
+  // 其余只读复合工具（合并后名字不再带 _read/_get，需显式列入）
+  "code_search",
+  "classify_task",
+  "dev_check",
+  "vision_analyze",
+  "browser_get",
+  "browser_scroll",
+  "browser_extract_dom",
+  "browser_screenshot",
+  "browser_wait",
+  "browser_tabs",
+  "browser_js_eval",
 ]);
 
 /** 变异工具：有副作用，需谨慎 */
 export const MUTATING_TOOL_NAMES = new Set([
-  "file_create",
   "file_write",
-  "file_modify",
   "file_delete",
   "file_move",
   "file_copy",
-  "email_send",
-  "scheduler_create",
-  "scheduler_delete",
+  // email 复合工具：send / add_account 有副作用（list_* 只读但同一工具名下不拆分）
+  "email",
+  // scheduler 复合工具：create / update / delete / execute / retry_dlq
+  "scheduler",
   "browser_navigate",
-  "browser_click",
-  "browser_submit_form",
+  // browser_act 复合工具：click / fill / submit 等交互
+  "browser_act",
   "browser_download",
   "shell_execute",
-  "git_commit",
-  "git_push",
-  "skill_install",
-  "skill_uninstall",
+  // git 复合工具：commit / push / add 有副作用
+  "git",
+  // skill_manage 复合工具：create / install / uninstall / execute
+  "skill_manage",
   "memory_store",
   "memory_delete",
   "session_delete",
   "session_archive",
   "config_update",
+  // 其余有副作用的复合工具
+  "music",
+  "video",
+  "document",
+  "kanban",
+  "apply_patch",
 ]);
 
 export type ToolGuardrailAction = "allow" | "warn" | "block" | "halt";

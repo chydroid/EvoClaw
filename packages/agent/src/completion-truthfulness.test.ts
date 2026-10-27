@@ -225,12 +225,12 @@ describe("reconcileCompletionTruthfulness — 工具失败却声称完成（回�
 });
 
 describe("extractEmptyResult / looksLikeDetailedReport — 空结果却产出详细报告（回归）", () => {
-  it("★ email_analyze 返回 totalEmails=0 必须被判定为空结果", () => {
+  it("★ email(action=analyze) 返回 totalEmails=0 必须被判定为空结果", () => {
     // 真实事故：工具返回 0 封，模型却输出「共 30+ 封邮件 + 分类数量表」
     const raw = { success: true, totalEmails: 0, categories: {}, topSenders: [], topKeywords: [], actionItems: [] };
-    const e = extractEmptyResult("email_analyze", raw);
+    const e = extractEmptyResult("email", raw);
     expect(e).toBeTruthy();
-    expect(e!.name).toBe("email_analyze");
+    expect(e!.name).toBe("email");
   });
 
   it("★ 空结果 + 产出精确数量明细 → 必须在没有完成声明时也触发更正", () => {

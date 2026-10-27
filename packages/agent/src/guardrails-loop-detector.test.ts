@@ -78,17 +78,27 @@ describe("ToolCallLoopDetector — web_search_cap（hermes LoopCapConfig 对齐�
     expect(over).toMatchObject({ detection: "web_search_cap", action: "halt", count: 51, threshold: 50 });
   });
 
-  it("计数按工具名归并（web_fetch / scrapling_fetch 共享硬顶）", () => {
+  it("计数按工具名归并（web_search 与 web_fetch 共享硬顶）", () => {
     const d = new ToolCallLoopDetector({ maxWebSearchesPerTurn: 3 });
     const steps: Step[] = [
       ["web_search", true, "a"],
       ["web_fetch", true, "b"],
-      ["scrapling_fetch", true, "c"],
+      ["web_fetch", true, "c"],
     ];
     const results = run(d, steps);
     expect(results.every(r => r.detection === "none")).toBe(true);
-    const over = d.check("browser_search", {}, true, "d");
+    // 第 4 次检索（无论叫 web_search 还是 web_fetch）超限阻断
+    const over = d.check("web_search", {}, true, "d");
     expect(over).toMatchObject({ detection: "web_search_cap", action: "halt" });
+  });
+
+  it("已合并的检索工具不再单独计数（scrapling_fetch / browser_search 已不存在）", () => {
+    // 合并后抓取类能力并入 web_fetch（action=fetch/stealth/json）、
+    // 浏览器搜索并入 web_search（action=browser）——硬顶只看工具名，
+    // 因此旧名字既不会出现，也不会被重复计数。
+    const d = new ToolCallLoopDetector({ maxWebSearchesPerTurn: 1 });
+    expect(d.check("web_fetch", {}, true, "a").detection).toBe("none");
+    expect(d.check("web_fetch", {}, true, "b").detection).toBe("web_search_cap");
   });
 
   it("maxWebSearchesPerTurn=0 表示不限制", () => {
@@ -121,18 +131,26 @@ describe("ToolCallLoopDetector — 成功 mutation 进度重置（hermes PROGRES
     const steps: Step[] = [
       ["read_tool", true, same],
       ["read_tool", true, same], // 连续相同 1 次
-      ["file_create", true, "wrote"], // PROGRESS_RESET：清空停滞状态
+      ["file_write", true, "wrote"], // PROGRESS_RESET：清空停滞状态
       ["read_tool", true, same], // 计数重新开始，不构成 no_progress
     ];
     const results = run(d, steps);
     expect(results.every(r => r.detection === "none")).toBe(true);
   });
 
-  it("PROGRESS_RESET_TOOLS 覆盖文件/shell/办公文档/浏览器动作", () => {
+  it("PROGRESS_RESET_TOOLS 覆盖文件/shell/办公文档/浏览器动作与复合工具", () => {
     expect(PROGRESS_RESET_TOOLS.has("shell_exec")).toBe(true);
-    expect(PROGRESS_RESET_TOOLS.has("file_create")).toBe(true);
-    expect(PROGRESS_RESET_TOOLS.has("pptx_create")).toBe(true);
-    expect(PROGRESS_RESET_TOOLS.has("browser_click")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("file_write")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("document")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("browser_act")).toBe(true);
+    // 复合工具：任一 action 成功都意味着世界状态可能已改变
+    expect(PROGRESS_RESET_TOOLS.has("email")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("scheduler")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("git")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("kanban")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("skill_manage")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("music")).toBe(true);
+    expect(PROGRESS_RESET_TOOLS.has("video")).toBe(true);
     // 只读工具不在重置集合（重复读不应清空失败证据）
     expect(PROGRESS_RESET_TOOLS.has("file_read")).toBe(false);
     expect(PROGRESS_RESET_TOOLS.has("web_search")).toBe(false);

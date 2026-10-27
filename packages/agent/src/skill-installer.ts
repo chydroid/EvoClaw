@@ -88,7 +88,7 @@ export async function handleSkillInstall(
 
     // ── If message contains URLs but we couldn't extract them, fall through to LLM ──
     // Regex-based parsing is fragile for natural language; the LLM can understand
-    // complex intent and use skill_search/skill_install tools to handle it properly.
+    // complex intent and use skill_list/skill_manage tools to handle it properly.
     if (/https?:\/\//i.test(message)) {
       process.stdout.write(`[AgentModelExecutor] Skill install request contains URLs but extraction failed, falling through to LLM\n`);
       return null;

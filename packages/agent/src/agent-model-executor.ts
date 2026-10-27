@@ -1189,15 +1189,15 @@ export class AgentModelExecutor {
   }
 
   /**
-   * 按名称执行已注册的工具。供 batch_execute / workflow_execute 等外部调用方使用，
+   * 按名称执行已注册的工具。供 workflow（batch / execute）等外部调用方使用，
    * 避免直接访问内部 registeredTools Map。
    *
    * ⚠️ **安全警告：本方法直接调用 handler，不经过 humanApprovalManager 审批门禁。**
    * 审批逻辑位于 llm-caller 的 executeSingleToolCall 中、entry.handler 之前；
    * 走这里等于跳过审批。
    *
-   * 真实事故：skill_execute 曾用它把「被误当成技能的工具名」自动转发到真工具，
-   * 结果 git_push / shell_exec 等 high风险工具可以借 skill_execute 逃掉人工确认。
+   * 真实事故：skill_manage 曾用它把「被误当成技能的工具名」自动转发到真工具，
+   * 结果 git / shell_exec 等 high风险工具可以借 skill_manage 逃掉人工确认。
    * 该转发已改为「只指引、不执行」。**新增调用方前请自行确认审批是否已在上游完成**，
    * 绝不要把它当成"少一轮往返"的快捷通道。
    */
@@ -1211,7 +1211,7 @@ export class AgentModelExecutor {
 
   /**
    * 判断指定名称的工具是否已注册。
-   * 供 skill_execute 等工具识别「模型把内置工具误当成技能调用」的情况。
+   * 供 skill_manage 等工具识别「模型把内置工具误当成技能调用」的情况。
    */
   hasTool(name: string): boolean {
     return this.registeredTools.has(name);
@@ -1219,7 +1219,7 @@ export class AgentModelExecutor {
 
   /**
    * 列出全部已注册工具名。
-   * 供 skill_find_and_install 在「安装外部技能之前」确认内置工具是否已覆盖该能力。
+   * 供 skill_manage 在「安装外部技能之前」确认内置工具是否已覆盖该能力。
    */
   listToolNames(): string[] {
     return Array.from(this.registeredTools.keys());
@@ -2508,7 +2508,7 @@ export class AgentModelExecutor {
     // ★ P0-5：传入当前消息 + sessionId 启用 skill 按需选择（>阈值时相关性 + 粘性）。
     const skillsPrompt = await this.buildSkillsPromptForRun(agentSkillAllowlist, effectiveMessage, sessionId);
     const skillsMessage = skillsPrompt
-      ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_execute** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${PromptRegistry.getInstance().format("web.tool_strategy", {})}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_execute to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\nWhen you need a skill's full instructions, call skill_view with level 2 before executing it.\nSkills not listed here can still be discovered via skill_search or skill_index_list.\n${skillsPrompt}`
+      ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_manage** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${PromptRegistry.getInstance().format("web.tool_strategy", {})}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_manage to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\nWhen you need a skill's full instructions, call skill_view with level 2 before executing it.\nSkills not listed here can still be discovered via skill_list.\n${skillsPrompt}`
       : "";
 
     let contextEngineResult: import("./context-engine").LayeredContextResult | null = null;
@@ -4166,10 +4166,9 @@ export class AgentModelExecutor {
     // Map tool hints to agent capabilities
     const capabilityMap: Record<string, string> = {
       "web_search": "web-search", "web_fetch": "web-fetch", "browser_navigate": "browser-navigate",
-      "browser_click": "browser-click", "browser_fill_form": "browser-fill-form",
-      "browser_select": "browser-select", "browser_check": "browser-check",
+      "browser_act": "browser-act",
       "browser_wait": "browser-wait", "browser_screenshot": "browser-screenshot",
-      "shell_exec": "shell-exec", "file_create": "file-create", "file_modify": "file-modify",
+      "shell_exec": "shell-exec", "file_write": "file-write",
       "file_read": "file-read", "file_delete": "file-delete",
     };
 

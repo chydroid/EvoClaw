@@ -80,8 +80,8 @@ const NEVER_PARALLEL_TOOLS = new Set([
   // shell/命令执行
   "shell_exec", "shellExec", "exec", "execute", "bash", "sh", "cmd", "command",
   "terminal", "run_command", "runCommand",
-  // 版本控制
-  "git", "git_commit", "gitCommit", "git_push", "gitPush", "git_reset", "gitReset",
+  // 版本控制（git_commit / git_push 已合并为 git，此处仅保留 git 及驼峰别名）
+  "git", "gitCommit", "gitPush", "git_reset", "gitReset",
   // 包管理
   "npm", "pnpm", "yarn", "pip", "cargo", "go_mod",
   // 系统操作

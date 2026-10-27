@@ -219,7 +219,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(生成|创建).*(模板|template|样式|style|布局|layout|结构|structure)/i,
       /(重构|优化|修复|fix|refactor|optimize).*(代码|code|bug|问题)/i,
     ],
-    tools: ["file_create", "file_modify", "browser_js_eval"],
+    tools: ["file_write", "browser_js_eval"],
     skills: ["code-generator", "web-dev", "template-engine"],
   },
   {
@@ -232,7 +232,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(保存|另存为|save|store).*(文件|file)/i,
       /(上传|下载|upload|download).*(文件|file)/i,
     ],
-    tools: ["file_create", "file_read", "file_list", "file_delete", "file_modify"],
+    tools: ["file_write", "file_read", "file_list", "file_delete"],
     skills: ["file-manager", "data-migration"],
   },
   {
@@ -244,7 +244,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(最新的|最近的|latest|recent|news|trending)/i,
       /(百度|谷歌|必应|google|bing|搜索)/i,
     ],
-    tools: ["browser_search", "browser_navigate"],
+    tools: ["web_search", "browser_navigate"],
     skills: ["web-researcher", "news-aggregator"],
   },
   {
@@ -255,7 +255,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(抓取|爬取|采集|scrape|crawl|extract).*(数据|内容|信息|data|content|info)/i,
       /(监控|monitor|watch).*(网页|网站|页面|价格|库存|web|site|page|price|stock)/i,
     ],
-    tools: ["browser_launch", "browser_navigate", "browser_screenshot", "browser_login", "browser_click", "browser_fill_form", "browser_get_html", "browser_js_eval"],
+    tools: ["browser_launch", "browser_navigate", "browser_screenshot", "browser_login", "browser_act", "browser_get", "browser_js_eval"],
     skills: ["web-automator", "login-bot", "price-tracker"],
   },
   {
@@ -267,7 +267,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(邮件|email).*(摘要|分析|分类|整理|summary|analysis|digest|categorize)/i,
       /(添加|配置|add|configure|setup).*(邮箱|邮件|账户|email|mail|account)/i,
     ],
-    tools: ["email_send", "email_analyze", "email_summarize", "email_add_account", "email_list_accounts"],
+    tools: ["email"],
     skills: ["email-assistant", "inbox-organizer"],
   },
   {
@@ -279,7 +279,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(趋势|模式|异常|pattern|trend|anomaly|insight)/i,
       /(最大|最小|平均|总和|总数|max|min|average|sum|total|count)/i,
     ],
-    tools: ["file_read", "email_analyze", "report_generate"],
+    tools: ["file_read", "email", "report"],
     skills: ["data-analyzer", "chart-builder", "spreadsheet-processor"],
   },
   {
@@ -291,7 +291,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(定时|计划|调度|schedule|cron|定时任务|scheduled.*task)/i,
       /(备份|恢复|迁移|backup|restore|migrate)/i,
     ],
-    tools: ["scheduler_create", "scheduler_list", "scheduler_execute"],
+    tools: ["scheduler"],
     skills: ["system-monitor", "backup-manager"],
   },
   {
@@ -316,7 +316,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(运行|执行|run|execute|launch).*(技能|skill|脚本|script)/i,
       /(管理|配置|manage|configure).*(技能|skill|插件|plugin)/i,
     ],
-    tools: ["skill_search", "skill_find_and_install"],
+    tools: ["skill_list", "skill_manage"],
     skills: [],
   },
   {
@@ -327,7 +327,7 @@ const CATEGORY_PATTERNS: CategoryPattern[] = [
       /(导出|保存|export|save).*(报告|报表|PDF|HTML|report)/i,
       /(总结|汇总|归纳|summarize|aggregate|recap).*(工作|进度|成果|work|progress|result)/i,
     ],
-    tools: ["report_generate", "report_templates", "report_email_digest", "report_weekly"],
+    tools: ["report"],
     skills: ["report-builder", "document-generator"],
   },
 ];

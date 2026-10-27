@@ -16,14 +16,11 @@
 
 /** 文件写类工具——中断后需验证写入是否落地 */
 export const FILE_MUTATING_TOOL_NAMES = new Set([
-  "file_create",
-  "file_modify",
+  "file_write",
   "file_delete",
   "file_rename",
   "file_copy",
-  "docx_create",
-  "xlsx_create",
-  "pptx_create",
+  "document",
   "write_file",
   "patch",
 ]);
@@ -84,7 +81,7 @@ export function fileMutationResultLanded(toolName: string, result: unknown): boo
   try {
     const data = JSON.parse(result.trim()) as Record<string, unknown>;
     if (data.error) return false;
-    if (toolName === "write_file" || toolName === "file_create" || toolName === "file_modify") {
+    if (toolName === "write_file" || toolName === "file_write") {
       return "bytes_written" in data || "size" in data;
     }
     if (toolName === "patch" || toolName === "file_copy") {

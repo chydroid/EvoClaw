@@ -64,9 +64,7 @@ import {
   registerSchedulerTools,
   registerShellMediaTools,
   registerSkillIndexTools,
-  registerDocxTools,
-  registerXlsxTools,
-  registerPptxTools,
+  registerDocumentTools,
   registerVideoTools,
   registerImageTools,
   registerCodeIntelTools,
@@ -476,7 +474,7 @@ export class EvoClawServer {
     // ── Permission Relay (ACP: centralized permission control) ──
     this.permissionRelay = new PermissionRelay(
       {
-        autoApprovePatterns: ["file_read", "file_list", "task_status", "skill_search", "error_stats", "permission_status"],
+        autoApprovePatterns: ["file_read", "file_list", "task_plan", "skill_search", "error_stats", "permission_status"],
         autoDenyPatterns: [],
         defaultTimeoutMs: 30_000,
         maxPending: 50,
@@ -1275,9 +1273,7 @@ export class EvoClawServer {
     const fsBase = path.resolve(__dirname, "..", "..", "..");
     this.fileSystemManager.setBasePath(fsBase);
     this.registerFileTools(fsBase);
-    this.registerDocxTools(fsBase);
-    this.registerXlsxTools(fsBase);
-    this.registerPptxTools(fsBase);
+    this.registerDocumentTools(fsBase);
     this.registerAutoSkillTool();
     this.registerSkillIndexTools();
     this.registerTaskPlannerTool();
@@ -1618,29 +1614,16 @@ export class EvoClawServer {
     );
   }
 
-  private registerDocxTools(fsBase: string): void {
-    this.registerOfficeTools(fsBase, "docx");
-  }
-
-  private registerXlsxTools(fsBase: string): void {
-    this.registerOfficeTools(fsBase, "xlsx");
-  }
-
-  private registerPptxTools(fsBase: string): void {
-    this.registerOfficeTools(fsBase, "pptx");
-  }
-
   /**
-   * docx/xlsx/pptx 创建工具与 file_* 一样：相对路径基准 = workspace
-   * （与 shell_exec 的 cwd 一致），避免产物污染仓库根目录。
+   * Word/Excel/PPT 生成工具统一走 `document` 复合工具
+   * （action: create_docx / create_xlsx / create_pptx）。
+   * 相对路径基准 = workspace（与 shell_exec 的 cwd 一致），避免产物污染仓库根目录。
    * 实例任务真实事故：docx_create 相对路径落在仓库根 inst_eval2/，
    * 模型误判「/home/chy/test 下旧成品已更新」，任务对账为「未完成」。
    */
-  private registerOfficeTools(fsBase: string, kind: "docx" | "xlsx" | "pptx"): void {
+  private registerDocumentTools(fsBase: string): void {
     const workspaceBase = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
-    if (kind === "docx") registerDocxTools(this.agentModelExecutor, fsBase, workspaceBase);
-    if (kind === "xlsx") registerXlsxTools(this.agentModelExecutor, fsBase, workspaceBase);
-    if (kind === "pptx") registerPptxTools(this.agentModelExecutor, fsBase, workspaceBase);
+    registerDocumentTools(this.agentModelExecutor, fsBase, workspaceBase);
   }
 
   /**
@@ -1713,59 +1696,99 @@ export class EvoClawServer {
   private registerTaskPlannerTool(): void {
     const planner = this.taskPlanner;
 
-    this.agentModelExecutor.registerTool(
-      "task_decompose",
-      {
-        name: "task_decompose",
-        description: "Decompose a complex task into executable subtasks with dependency ordering",
-        parameters: {
-          task: { type: "string", description: "The task description to decompose" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        const task = String(params.task || "");
-        const plan = planner.decompose(task);
-        return {
-          planId: plan.id,
-          task: plan.task,
-          subtaskCount: plan.subtasks.length,
-          subtasks: plan.subtasks.map((s) => ({
-            id: s.id,
-            description: s.description,
-            tool: s.tool,
-            dependencies: s.dependencies,
-            status: s.status,
-          })),
-        };
-      }
-    );
+    // 原 task_decompose handler，逻辑逐字保留
+    const handleTaskDecompose = async (params: Record<string, unknown>) => {
+      const task = String(params.task || "");
+      const plan = planner.decompose(task);
+      return {
+        planId: plan.id,
+        task: plan.task,
+        subtaskCount: plan.subtasks.length,
+        subtasks: plan.subtasks.map((s) => ({
+          id: s.id,
+          description: s.description,
+          tool: s.tool,
+          dependencies: s.dependencies,
+          status: s.status,
+        })),
+      };
+    };
+
+    // 原 task_status handler，逻辑逐字保留
+    const handleTaskStatus = async (params: Record<string, unknown>) => {
+      const planId = String(params.planId || "");
+      const plan = planner.getPlan(planId);
+      if (!plan) return { error: "Plan not found" };
+      return {
+        planId: plan.id,
+        status: plan.status,
+        progress: plan.progress,
+        subtasks: plan.subtasks.map((s) => ({
+          id: s.id,
+          description: s.description,
+          status: s.status,
+          result: s.result,
+          error: s.error,
+          retryCount: s.retryCount,
+        })),
+      };
+    };
+
+    // 原 task_templates handler，逻辑逐字保留
+    const handleTaskTemplates = async () => {
+      const templates = planner.getAvailableTemplates();
+      return { success: true, templates, count: templates.length };
+    };
+
+    // 原 task_decompose_with_template handler，逻辑逐字保留
+    const handleTaskDecomposeWithTemplate = async (params: Record<string, unknown>) => {
+      const task = String(params.task || "");
+      const template = String(params.template || "");
+      const plan = planner.decomposeWithTemplate(task, template);
+      return {
+        planId: plan.id,
+        task: plan.task,
+        subtaskCount: plan.subtasks.length,
+        subtasks: plan.subtasks.map((s) => ({
+          id: s.id,
+          description: s.description,
+          tool: s.tool,
+          dependencies: s.dependencies,
+        })),
+        structure: planner.getTemplateStructure(template),
+      };
+    };
 
     this.agentModelExecutor.registerTool(
-      "task_status",
+      "task_plan",
       {
-        name: "task_status",
-        description: "Get the status of a task plan",
+        name: "task_plan",
+        description:
+          "复合任务规划工具（composite task planning tool），通过 action 参数选择具体操作，默认 decompose。" +
+          "actions: " +
+          "decompose（默认，将复杂任务分解为带依赖顺序的可执行子任务）； " +
+          "status（查看任务计划状态、进度与子任务结果）； " +
+          "templates（列出可用的项目任务分解模板）； " +
+          "decompose_with_template（使用指定项目模板分解任务，并返回模板结构）。",
         parameters: {
-          planId: { type: "string", description: "The plan ID to check" },
+          action: {
+            type: "string",
+            description: "要执行的任务规划操作。action to perform: decompose (default) / status / templates / decompose_with_template",
+            enum: ["decompose", "status", "templates", "decompose_with_template"],
+            required: true,
+          },
+          task: { type: "string", description: "The task description to decompose（decompose / decompose_with_template 用）", required: false },
+          planId: { type: "string", description: "The plan ID to check（status 用）", required: false },
+          template: { type: "string", description: "Template name: static_website, react_app, api_server, cli_tool, fullstack_app, data_pipeline（decompose_with_template 用）", required: false },
         },
       },
       async (params: Record<string, unknown>) => {
-        const planId = String(params.planId || "");
-        const plan = planner.getPlan(planId);
-        if (!plan) return { error: "Plan not found" };
-        return {
-          planId: plan.id,
-          status: plan.status,
-          progress: plan.progress,
-          subtasks: plan.subtasks.map((s) => ({
-            id: s.id,
-            description: s.description,
-            status: s.status,
-            result: s.result,
-            error: s.error,
-            retryCount: s.retryCount,
-          })),
-        };
+        const action = String(params.action || "decompose");
+        if (action === "decompose") return await handleTaskDecompose(params);
+        if (action === "status") return await handleTaskStatus(params);
+        if (action === "templates") return await handleTaskTemplates();
+        if (action === "decompose_with_template") return await handleTaskDecomposeWithTemplate(params);
+        return { success: false, error: `未知 task_plan action: ${action}（仅支持 decompose / status / templates / decompose_with_template）` };
       }
     );
   }
@@ -1870,7 +1893,8 @@ export class EvoClawServer {
       this.eventBus,
       this.reportGenerator,
       this.playwrightBrowser,
-      this.registry
+      this.registry,
+      this.createDlqHandler()
     );
   }
   private registerReportingTools(): void {
@@ -1903,215 +1927,210 @@ export class EvoClawServer {
       return null;
     };
 
-    this.agentModelExecutor.registerTool(
-      "report_generate",
-      {
-        name: "report_generate",
-        description: "Generate an HTML report from data sections",
-        parameters: {
-          title: { type: "string", description: "Report title" },
-          templateName: { type: "string", description: "Template name: default-report, email-digest, weekly-report" },
-          sections: { type: "string", description: "JSON array of report sections" },
-          summary: { type: "string", description: "JSON object for summary {totalItems, highlights[], recommendations[]}" },
-          outputPath: { type: "string", description: "File path to save the report HTML" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        const title = String(params.title || "Report");
-        const templateName = String(params.templateName || "default-report");
-        let sections: ReportSection[] = [];
-        try {
-          sections = JSON.parse(String(params.sections || "[]"));
-        } catch {
-          return { error: "sections must be a valid JSON array" };
+    // 原 report_generate handler，逻辑逐字保留
+    const handleReportGenerate = async (params: Record<string, unknown>) => {
+      const title = String(params.title || "Report");
+      const templateName = String(params.templateName || "default-report");
+      let sections: ReportSection[] = [];
+      try {
+        sections = JSON.parse(String(params.sections || "[]"));
+      } catch {
+        return { error: "sections must be a valid JSON array" };
+      }
+      let summary: ReportData["summary"] | undefined;
+      try {
+        if (params.summary) {
+          summary = JSON.parse(String(params.summary));
         }
-        let summary: ReportData["summary"] | undefined;
-        try {
-          if (params.summary) {
-            summary = JSON.parse(String(params.summary));
-          }
-        } catch {
-          return { error: "summary must be valid JSON" };
+      } catch {
+        return { error: "summary must be valid JSON" };
+      }
+      const outputPath = String(params.outputPath || "");
+      // 路径穿越防护
+      const pathError = validateOutputPath(outputPath);
+      if (pathError) {
+        return { success: false, error: pathError };
+      }
+      try {
+        const html = reportGen.generateReport(
+          { title, generatedAt: new Date().toLocaleString("zh-CN"), sections, summary },
+          { templateName, outputPath: outputPath || undefined }
+        );
+        if (outputPath) {
+          return { success: true, outputPath, length: html.length };
         }
-        const outputPath = String(params.outputPath || "");
-        // 路径穿越防护
-        const pathError = validateOutputPath(outputPath);
-        if (pathError) {
-          return { success: false, error: pathError };
-        }
-        try {
-          const html = reportGen.generateReport(
-            { title, generatedAt: new Date().toLocaleString("zh-CN"), sections, summary },
-            { templateName, outputPath: outputPath || undefined }
-          );
-          if (outputPath) {
-            return { success: true, outputPath, length: html.length };
-          }
-          return { success: true, html: html.substring(0, 5000) + (html.length > 5000 ? "... [truncated]" : ""), length: html.length };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        return { success: true, html: html.substring(0, 5000) + (html.length > 5000 ? "... [truncated]" : ""), length: html.length };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    };
+
+    // 原 report_templates handler，逻辑逐字保留
+    const handleReportTemplates = async () => {
+      const names = reportGen.getTemplateNames();
+      const templates = names.map((n) => {
+        const t = reportGen.getTemplate(n);
+        return { name: t?.name, title: t?.title, description: t?.description };
+      });
+      return { success: true, templates };
+    };
+
+    // 原 report_email_digest handler，逻辑逐字保留
+    const handleReportEmailDigest = async (params: Record<string, unknown>) => {
+      let emails: unknown[] = [];
+      try {
+        emails = JSON.parse(String(params.emails || "[]"));
+      } catch {
+        return { error: "emails must be a valid JSON array" };
+      }
+      const dateRange = String(params.dateRange || "");
+      const outputPath = String(params.outputPath || "");
+      // 路径穿越防护
+      const pathError = validateOutputPath(outputPath);
+      if (pathError) {
+        return { success: false, error: pathError };
+      }
+
+      const categoriesBreakdown: Record<string, number> = {};
+      for (const e of emails as Array<{ categories?: string[] }>) {
+        for (const cat of e.categories || []) {
+          categoriesBreakdown[cat] = (categoriesBreakdown[cat] || 0) + 1;
         }
       }
-    );
 
-    this.agentModelExecutor.registerTool(
-      "report_templates",
-      {
-        name: "report_templates",
-        description: "List available report templates",
-        parameters: {},
-      },
-      async () => {
-        const names = reportGen.getTemplateNames();
-        const templates = names.map((n) => {
-          const t = reportGen.getTemplate(n);
-          return { name: t?.name, title: t?.title, description: t?.description };
-        });
-        return { success: true, templates };
-      }
-    );
+      const templateData = {
+        title: "邮件摘要报告",
+        totalEmails: emails.length,
+        dateRange: dateRange || undefined,
+        categoriesBreakdown: Object.entries(categoriesBreakdown).map(([name, count]) => ({ name, count })),
+        emails,
+        generatedAt: new Date().toLocaleString("zh-CN"),
+      };
 
-    this.agentModelExecutor.registerTool(
-      "report_email_digest",
-      {
-        name: "report_email_digest",
-        description: "Generate an email digest report from email data",
-        parameters: {
-          emails: { type: "string", description: "JSON array of email summaries with from, subject, date, snippet, categories, priority, hasAttachments" },
-          dateRange: { type: "string", description: "Date range label for the report" },
-          outputPath: { type: "string", description: "File path to save the report HTML" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        let emails: unknown[] = [];
-        try {
-          emails = JSON.parse(String(params.emails || "[]"));
-        } catch {
-          return { error: "emails must be a valid JSON array" };
-        }
-        const dateRange = String(params.dateRange || "");
-        const outputPath = String(params.outputPath || "");
-        // 路径穿越防护
-        const pathError = validateOutputPath(outputPath);
-        if (pathError) {
-          return { success: false, error: pathError };
-        }
-
-        const categoriesBreakdown: Record<string, number> = {};
-        for (const e of emails as Array<{ categories?: string[] }>) {
-          for (const cat of e.categories || []) {
-            categoriesBreakdown[cat] = (categoriesBreakdown[cat] || 0) + 1;
-          }
-        }
-
-        const templateData = {
-          title: "邮件摘要报告",
-          totalEmails: emails.length,
-          dateRange: dateRange || undefined,
-          categoriesBreakdown: Object.entries(categoriesBreakdown).map(([name, count]) => ({ name, count })),
-          emails,
-          generatedAt: new Date().toLocaleString("zh-CN"),
-        };
-
-        try {
-          const html = reportGen.generateReport(
-            {
-              title: "邮件摘要报告",
-              generatedAt: new Date().toLocaleString("zh-CN"),
-              sections: [
-                {
-                  id: "overview",
-                  title: "概览",
-                  type: "table" as const,
-                  data: {
-                    headers: ["指标", "值"],
-                    rows: [
-                      ["邮件总数", String(templateData.totalEmails)],
-                      ["时间范围", templateData.dateRange || "全部"],
-                      ["分类数", String(templateData.categoriesBreakdown.length)],
-                    ],
-                  },
+      try {
+        const html = reportGen.generateReport(
+          {
+            title: "邮件摘要报告",
+            generatedAt: new Date().toLocaleString("zh-CN"),
+            sections: [
+              {
+                id: "overview",
+                title: "概览",
+                type: "table" as const,
+                data: {
+                  headers: ["指标", "值"],
+                  rows: [
+                    ["邮件总数", String(templateData.totalEmails)],
+                    ["时间范围", templateData.dateRange || "全部"],
+                    ["分类数", String(templateData.categoriesBreakdown.length)],
+                  ],
                 },
-                {
-                  id: "categories",
-                  title: "分类统计",
-                  type: "table" as const,
-                  data: {
-                    headers: ["分类", "数量"],
-                    rows: templateData.categoriesBreakdown.map(c => [c.name, String(c.count)]),
-                  },
+              },
+              {
+                id: "categories",
+                title: "分类统计",
+                type: "table" as const,
+                data: {
+                  headers: ["分类", "数量"],
+                  rows: templateData.categoriesBreakdown.map(c => [c.name, String(c.count)]),
                 },
-              ],
-            },
-            { templateName: "email-digest", outputPath: outputPath || undefined }
-          );
-          return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
-        }
+              },
+            ],
+          },
+          { templateName: "email-digest", outputPath: outputPath || undefined }
+        );
+        return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
-    );
+    };
+
+    // 原 report_weekly handler，逻辑逐字保留
+    const handleReportWeekly = async (params: Record<string, unknown>) => {
+      const title = String(params.title || "周报");
+      const periodStart = String(params.periodStart || "");
+      const periodEnd = String(params.periodEnd || "");
+      let metrics: unknown[] = [];
+      try {
+        metrics = JSON.parse(String(params.metrics || "[]"));
+      } catch {
+        return { error: "metrics must be valid JSON array" };
+      }
+      let sections: ReportSection[] = [];
+      try {
+        sections = JSON.parse(String(params.sections || "[]"));
+      } catch {
+        return { error: "sections must be valid JSON array" };
+      }
+      const outputPath = String(params.outputPath || "");
+      // 路径穿越防护
+      const pathError = validateOutputPath(outputPath);
+      if (pathError) {
+        return { success: false, error: pathError };
+      }
+
+      try {
+        const html = reportGen.generateReport(
+          {
+            title: title,
+            generatedAt: new Date().toLocaleString("zh-CN"),
+            sections: [
+              ...(metrics.length > 0
+                ? [{
+                    id: "key-metrics",
+                    title: "关键指标",
+                    type: "metrics" as const,
+                    data: { metrics, periodStart, periodEnd },
+                  }]
+                : []),
+              ...sections,
+            ],
+          },
+          { templateName: "weekly-report", outputPath: outputPath || undefined }
+        );
+        return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
+      } catch (err) {
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    };
 
     this.agentModelExecutor.registerTool(
-      "report_weekly",
+      "report",
       {
-        name: "report_weekly",
-        description: "Generate a weekly summary report with metrics and table data",
+        name: "report",
+        description:
+          "复合报告工具（composite report tool），通过 action 参数选择具体操作，默认 generate。" +
+          "actions: " +
+          "generate（默认，从数据 sections 生成 HTML 报告，可指定模板与输出路径）； " +
+          "templates（列出可用报告模板）； " +
+          "email_digest（从邮件数据生成邮件摘要报告）； " +
+          "weekly（生成带关键指标与表格数据的周报）。",
         parameters: {
-          title: { type: "string", description: "Report title" },
-          periodStart: { type: "string", description: "Period start date string" },
-          periodEnd: { type: "string", description: "Period end date string" },
-          metrics: { type: "string", description: "JSON array of metric items: {label, value, change?, trend?, unit?}" },
-          sections: { type: "string", description: "JSON array of sections: {title, tableData?, content?}" },
-          outputPath: { type: "string", description: "File path to save the report HTML" },
+          action: {
+            type: "string",
+            description: "要执行的报告操作。action to perform: generate (default) / templates / email_digest / weekly",
+            enum: ["generate", "templates", "email_digest", "weekly"],
+            required: true,
+          },
+          title: { type: "string", description: "Report title（generate / weekly 用）", required: false },
+          templateName: { type: "string", description: "Template name: default-report, email-digest, weekly-report（generate 用）", required: false },
+          sections: { type: "string", description: "JSON array of report sections（generate / weekly 用）", required: false },
+          summary: { type: "string", description: "JSON object for summary {totalItems, highlights[], recommendations[]}（generate 用）", required: false },
+          outputPath: { type: "string", description: "File path to save the report HTML（generate / email_digest / weekly 用）", required: false },
+          emails: { type: "string", description: "JSON array of email summaries with from, subject, date, snippet, categories, priority, hasAttachments（email_digest 用）", required: false },
+          dateRange: { type: "string", description: "Date range label for the report（email_digest 用）", required: false },
+          periodStart: { type: "string", description: "Period start date string（weekly 用）", required: false },
+          periodEnd: { type: "string", description: "Period end date string（weekly 用）", required: false },
+          metrics: { type: "string", description: "JSON array of metric items: {label, value, change?, trend?, unit?}（weekly 用）", required: false },
         },
       },
       async (params: Record<string, unknown>) => {
-        const title = String(params.title || "周报");
-        const periodStart = String(params.periodStart || "");
-        const periodEnd = String(params.periodEnd || "");
-        let metrics: unknown[] = [];
-        try {
-          metrics = JSON.parse(String(params.metrics || "[]"));
-        } catch {
-          return { error: "metrics must be valid JSON array" };
-        }
-        let sections: ReportSection[] = [];
-        try {
-          sections = JSON.parse(String(params.sections || "[]"));
-        } catch {
-          return { error: "sections must be valid JSON array" };
-        }
-        const outputPath = String(params.outputPath || "");
-        // 路径穿越防护
-        const pathError = validateOutputPath(outputPath);
-        if (pathError) {
-          return { success: false, error: pathError };
-        }
-
-        try {
-          const html = reportGen.generateReport(
-            {
-              title: title,
-              generatedAt: new Date().toLocaleString("zh-CN"),
-              sections: [
-                ...(metrics.length > 0
-                  ? [{
-                      id: "key-metrics",
-                      title: "关键指标",
-                      type: "metrics" as const,
-                      data: { metrics, periodStart, periodEnd },
-                    }]
-                  : []),
-                ...sections,
-              ],
-            },
-            { templateName: "weekly-report", outputPath: outputPath || undefined }
-          );
-          return { success: true, outputPath: outputPath || "(not saved)", length: html.length };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
-        }
+        const action = String(params.action || "generate");
+        if (action === "generate") return await handleReportGenerate(params);
+        if (action === "templates") return await handleReportTemplates();
+        if (action === "email_digest") return await handleReportEmailDigest(params);
+        if (action === "weekly") return await handleReportWeekly(params);
+        return { success: false, error: `未知 report action: ${action}（仅支持 generate / templates / email_digest / weekly）` };
       }
     );
   }
@@ -2335,171 +2354,96 @@ export class EvoClawServer {
 
   private registerIntelligenceTools(): void {
     const classifier = this.taskClassifier;
-    const orchestrator = this.skillOrchestrator;
-    const planner = this.taskPlanner;
+
+    // 原 classify_task handler，逻辑逐字保留
+    const handleClassifyTask = async (params: Record<string, unknown>) => {
+      const task = String(params.task || "");
+      const result = classifier.classify(task);
+      return {
+        success: true,
+        primaryCategory: result.primaryCategory,
+        categories: result.categories,
+        confidence: result.confidence,
+        complexity: result.complexity,
+        suggestedTools: result.suggestedTools,
+        suggestedSkills: result.suggestedSkills,
+        keywords: result.keywords,
+        estimatedSteps: result.estimatedSteps,
+        language: result.language,
+        hasCode: result.hasCode,
+        requiresAuth: result.requiresAuth,
+        entities: result.entities,
+      };
+    };
+
+    // 原 classification_stats handler，逻辑逐字保留
+    const handleClassificationStats = async (params: Record<string, unknown>) => {
+      let tasks: string[] = [];
+      try {
+        tasks = JSON.parse(String(params.tasks || "[]"));
+      } catch {
+        return { error: "tasks must be a valid JSON array of strings" };
+      }
+
+      const results = tasks.map((t) => classifier.classify(t));
+      const categoryStats: Record<string, number> = {};
+      const complexityStats: Record<string, number> = { simple: 0, medium: 0, complex: 0 };
+
+      for (const r of results) {
+        categoryStats[r.primaryCategory] = (categoryStats[r.primaryCategory] || 0) + 1;
+        complexityStats[r.complexity] = (complexityStats[r.complexity] || 0) + 1;
+      }
+
+      return {
+        success: true,
+        totalTasks: tasks.length,
+        categoryDistribution: categoryStats,
+        complexityDistribution: complexityStats,
+        averageConfidence: results.length > 0 ? results.reduce((sum, r) => sum + r.confidence, 0) / results.length : 0,
+      };
+    };
 
     this.agentModelExecutor.registerTool(
       "classify_task",
       {
         name: "classify_task",
-        description: "Classify a user task to determine category, complexity, and suggest tools/skills",
+        description:
+          "Classify a user task to determine category, complexity, and suggest tools/skills. " +
+          "复合分类工具，通过 action 参数选择具体操作，默认 classify。" +
+          "actions: " +
+          "classify（默认，分类单个任务并返回类别、复杂度、建议工具/技能等）； " +
+          "stats（批量任务分类统计：类别分布、复杂度分布、平均置信度）。",
         parameters: {
-          task: { type: "string", description: "The task description to classify" },
+          action: {
+            type: "string",
+            description: "要执行的分类操作。action to perform: classify (default) / stats",
+            enum: ["classify", "stats"],
+            required: true,
+          },
+          task: { type: "string", description: "The task description to classify（classify 用）", required: false },
+          tasks: { type: "string", description: "JSON array of task descriptions（stats 用）", required: false },
         },
       },
       async (params: Record<string, unknown>) => {
-        const task = String(params.task || "");
-        const result = classifier.classify(task);
-        return {
-          success: true,
-          primaryCategory: result.primaryCategory,
-          categories: result.categories,
-          confidence: result.confidence,
-          complexity: result.complexity,
-          suggestedTools: result.suggestedTools,
-          suggestedSkills: result.suggestedSkills,
-          keywords: result.keywords,
-          estimatedSteps: result.estimatedSteps,
-          language: result.language,
-          hasCode: result.hasCode,
-          requiresAuth: result.requiresAuth,
-          entities: result.entities,
-        };
+        const action = String(params.action || "classify");
+        if (action === "classify") return await handleClassifyTask(params);
+        if (action === "stats") return await handleClassificationStats(params);
+        return { success: false, error: `未知 classify_task action: ${action}（仅支持 classify / stats）` };
       }
     );
 
-    this.agentModelExecutor.registerTool(
-      "classification_stats",
-      {
-        name: "classification_stats",
-        description: "Get task classification statistics for a batch of tasks",
-        parameters: {
-          tasks: { type: "string", description: "JSON array of task descriptions" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        let tasks: string[] = [];
-        try {
-          tasks = JSON.parse(String(params.tasks || "[]"));
-        } catch {
-          return { error: "tasks must be a valid JSON array of strings" };
-        }
-
-        const results = tasks.map((t) => classifier.classify(t));
-        const categoryStats: Record<string, number> = {};
-        const complexityStats: Record<string, number> = { simple: 0, medium: 0, complex: 0 };
-
-        for (const r of results) {
-          categoryStats[r.primaryCategory] = (categoryStats[r.primaryCategory] || 0) + 1;
-          complexityStats[r.complexity] = (complexityStats[r.complexity] || 0) + 1;
-        }
-
-        return {
-          success: true,
-          totalTasks: tasks.length,
-          categoryDistribution: categoryStats,
-          complexityDistribution: complexityStats,
-          averageConfidence: results.length > 0 ? results.reduce((sum, r) => sum + r.confidence, 0) / results.length : 0,
-        };
-      }
-    );
-
-    this.agentModelExecutor.registerTool(
-      "orchestrate_skills",
-      {
-        name: "orchestrate_skills",
-        description: "Create and execute a skill orchestration plan with multiple skills in pipeline",
-        parameters: {
-          name: { type: "string", description: "Plan name" },
-          description: { type: "string", description: "Plan description" },
-          steps: { type: "string", description: "JSON array of steps: [{name, skillName, dependsOn[], params{}, mergeStrategy}]" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        const name = String(params.name || "orchestration");
-        const description = String(params.description || "");
-        let steps: Array<{
-          name: string;
-          skillName: string;
-          dependsOn?: string[];
-          params?: Record<string, unknown>;
-          mergeStrategy?: "replace" | "merge" | "append" | "none";
-        }> = [];
-        try {
-          steps = JSON.parse(String(params.steps || "[]"));
-        } catch {
-          return { error: "steps must be a valid JSON array" };
-        }
-        try {
-          const plan = orchestrator.createPlan({ name, description, steps });
-          const result = await orchestrator.execute(plan.id);
-          return {
-            success: result.success,
-            planId: result.planId,
-            totalDuration: result.totalDuration,
-            resultCount: result.results.length,
-            aggregatedOutput: result.aggregatedOutput,
-            results: result.results.map((r) => ({
-              stepId: r.stepId,
-              skillName: r.skillName,
-              success: r.success,
-              duration: r.duration,
-              error: r.error,
-            })),
-          };
-        } catch (err) {
-          return { success: false, error: err instanceof Error ? err.message : String(err) };
-        }
-      }
-    );
-
-    this.agentModelExecutor.registerTool(
-      "task_templates",
-      {
-        name: "task_templates",
-        description: "List available project templates for task decomposition",
-        parameters: {},
-      },
-      async () => {
-        const templates = planner.getAvailableTemplates();
-        return { success: true, templates, count: templates.length };
-      }
-    );
-
-    this.agentModelExecutor.registerTool(
-      "task_decompose_with_template",
-      {
-        name: "task_decompose_with_template",
-        description: "Decompose a task using a specific project template",
-        parameters: {
-          task: { type: "string", description: "The task description to decompose" },
-          template: { type: "string", description: "Template name: static_website, react_app, api_server, cli_tool, fullstack_app, data_pipeline" },
-        },
-      },
-      async (params: Record<string, unknown>) => {
-        const task = String(params.task || "");
-        const template = String(params.template || "");
-        const plan = planner.decomposeWithTemplate(task, template);
-        return {
-          planId: plan.id,
-          task: plan.task,
-          subtaskCount: plan.subtasks.length,
-          subtasks: plan.subtasks.map((s) => ({
-            id: s.id,
-            description: s.description,
-            tool: s.tool,
-            dependencies: s.dependencies,
-          })),
-          structure: planner.getTemplateStructure(template),
-        };
-      }
-    );
+    // orchestrate_skills 已迁入 skill_manage(action=orchestrate)（见 skill-tools.ts），
+    // 此处不再单独注册，避免与 skill_manage 的 orchestrate action 并存。
+    // task_templates / task_decompose_with_template 已并入 task_plan 复合工具
+    // （见 registerTaskPlannerTool），此处不再单独注册。
   }
 
   private registerSkillIndexTools(): void {
     registerSkillIndexTools(
       this.agentModelExecutor,
-      this.skillIndex
+      this.skillIndex,
+      this.autoSkillManager,
+      this.skillManager
     );
     registerShellMediaTools(
       this.agentModelExecutor,

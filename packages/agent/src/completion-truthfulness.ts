@@ -1,7 +1,7 @@
 /**
  * 完成声明真实性校验（Completion Truthfulness Reconciliation）
  *
- * 背景：agent 曾出现「声称『✅ 添加邮箱完成』但实际从未调用 email_add_account」
+ * 背景：agent 曾出现「声称『✅ 添加邮箱完成』但实际从未调用 email」
  * 的伪造完成态。根因是系统提示词缺少真实性约束，且最终回复返回前
  * 没有任何机制把「模型的完成声明」与「实际发生的工具执行 / 未决权限」对账。
  *
@@ -34,7 +34,7 @@ export interface FailedTool {
 /**
  * 本回合执行过、但返回**空/零结果**的工具。
  *
- * 真实事故：email_analyze 返回 `{totalEmails: 0, categories: {}, topSenders: []}`，
+ * 真实事故：email 返回 `{totalEmails: 0, categories: {}, topSenders: []}`，
  * 模型却输出了一份「共 30+ 封邮件、GitHub 通知 4 封 / 安全 5 封 / 账单 1 封…」
  * 精确到个位数的数据报告——全部是凭空编造。
  */
@@ -155,7 +155,7 @@ export function hasActionIntent(text: string): boolean {
  * 需要处理的真实形态（都是本次事故里出现过的）：
  *   - `{ success: false, error: "..." }`
  *   - `{ success: false, errors: ["Skill not found"] }`
- *   - `{ success: true, result: { success: false, errors: ["Skill not found"] } }`  ← skill_execute 的外层包装，
+ *   - `{ success: true, result: { success: false, errors: ["Skill not found"] } }`  ← skill_manage 的外层包装，
  *     外层 success 为 true 极易被模型误读为成功
  *   - 序列化后的 JSON 字符串
  *
@@ -222,7 +222,7 @@ function pickError(o: Record<string, unknown>): string | null {
 /**
  * 数据检索类工具白名单：只有这些工具的空结果才触发「empty_but_detailed」对账。
  *
- * 执行类工具（shell_exec / file_create / sequential_thinking / todo_list 等）
+ * 执行类工具（shell_exec / file_write / sequential_thinking / todo_list 等）
  * 返回空输出是正常行为——「find 没找到文件」不等于「没有数据可查」。
  * 若不区分，创造性任务（API 设计、PRD、商业计划书）中模型先 shell_exec
  * 查文件（返回空），再基于自身知识生成带编号的设计文档，就会被误判为
@@ -230,11 +230,11 @@ function pickError(o: Record<string, unknown>): string | null {
  * （每轮 60K+ tokens，120s 超时内根本无法完成）。
  */
 const DATA_RETRIEVAL_TOOLS = new Set([
-  "web_search", "tavily_search", "scrapling_fetch", "web_fetch",
+  "web_search", "tavily_search", "web_fetch",
   "email_search", "email_list", "email_fetch",
-  "email_analyze", "email_summarize", // 邮件数据/分析工具：totalEmails=0 等空结果同样意味着"无数据可查"
+  "email", // 邮件数据/分析工具：totalEmails=0 等空结果同样意味着"无数据可查"
   "file_read", "file_search",
-  "skill_execute", // skill 可能返回数据
+  "skill_manage", // skill 可能返回数据
   "knowledge_search", "semantic_search",
 ]);
 
@@ -379,7 +379,7 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
   }
 
   // 情况二：声称完成，但本回合有工具**执行了却返回失败**。
-  // 真实事故：调用 skill_execute("email_add_account") 返回 errors:["Skill not found"]
+  // 真实事故：调用 skill_manage("email") 返回 errors:["Skill not found"]
   // （外层 success 仍为 true，模型误读为成功），随后回复「✅ 添加邮箱完成」。
   if (failedTools.length > 0) {
     const list = failedTools.map((f) => `- \`${f.name}\`：${f.error}`).join("\n");
@@ -408,7 +408,7 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
   // 情况四：声称**写文件类完成**（已修改/已创建/已写入…），但本回合没有任何
   // 变更类工具真正执行过。
   // 真实事故（2026-10-15 eval15 t11）：只跑了 file_list/file_read 两个只读工具，
-  // 模型却把未执行的 file_modify 以**文本形式**写在正文里（"[工具运行详情] {…}"）
+  // 模型却把未执行的 file_write 以**文本形式**写在正文里（"[工具运行详情] {…}"）
   // 并声称「已就地修改」。文件根本没变。只读工具的调用不构成写操作证据，
   // 必须单独识别——否则被情况三的 toolsExecuted 快速路径放行。
   const writeOps = input.writeOps ?? [];
@@ -416,7 +416,7 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
     const notice =
       "\n\n---\n" +
       "⚠️ **更正**：上面的「已修改/已创建」并不成立——本回合**没有执行任何写文件类工具**" +
-      "（只做了文件读取/列表等只读操作）。请真正调用 file_create/file_modify 等工具完成操作，" +
+      "（只做了文件读取/列表等只读操作）。请真正调用 file_write 等工具完成操作，" +
       "并在拿到工具的成功返回后再汇报结果。";
     return { needsCorrection: true, reason: "write_claimed_not_executed", notice };
   }
