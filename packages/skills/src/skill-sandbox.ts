@@ -129,10 +129,21 @@ export class SkillSandbox {
 
       // 判定技能脚本自身是否通过输出声明失败（约定：_result = { success:false, error }）。
       // 缺了这层判定，脚本级失败会被包成 success:true 的假成功（模型据此误判「这条路是通的」）。
+      // result 可能是字符串化的 JSON（脚本直接 return JSON.stringify(...) 时），先归一化再取 error 消息。
       if (this.isScriptReportedFailure(result)) {
-        const out = result as Record<string, unknown>;
+        let out: Record<string, unknown> | null = null;
+        if (typeof result === "string") {
+          try {
+            const parsed = JSON.parse(result);
+            if (parsed && typeof parsed === "object") out = parsed as Record<string, unknown>;
+          } catch {
+            // 解析失败则退化为通用消息
+          }
+        } else if (typeof result === "object" && result !== null) {
+          out = result as Record<string, unknown>;
+        }
         const errMsg =
-          typeof out.error === "string" && out.error.length > 0
+          out && typeof out.error === "string" && out.error.length > 0
             ? out.error
             : `Skill "${skill.name}" reported failure without an error message`;
         return {
@@ -666,7 +677,19 @@ export class SkillSandbox {
       clearVmTimeout();
 
       if (typeof context._result !== "undefined") {
-        return context._result;
+        // 脚本常把 _result 设为 JSON 字符串。原样返回时，字符串里的
+        // success:false 会被外层 isScriptReportedFailure 漏判 → 假成功
+        // （2026-10-28 hash-computer "require is not a function" 事故）。
+        // 能解析就先解析成对象，让失败判定与下游消费都看到真实结构。
+        let value = context._result;
+        if (typeof value === "string") {
+          try {
+            value = JSON.parse(value);
+          } catch {
+            // 非 JSON 字符串原样透传
+          }
+        }
+        return value;
       }
 
       if (result !== undefined) {
@@ -736,7 +759,7 @@ export class SkillSandbox {
       process: undefined,
       global: undefined,
       globalThis: undefined,
-      require: undefined,
+      require: this.createSafeRequire(),
       module: undefined,
       exports: undefined,
       __dirname: undefined,
@@ -760,6 +783,33 @@ export class SkillSandbox {
     }
 
     return sandbox;
+  }
+
+  /**
+   * 沙箱内安全 require：仅放行纯计算型 Node 内置模块。
+   *
+   * 背景（2026-10-28 事故）：bundled hash-computer 脚本依赖 require("crypto")，
+   * 而沙箱上下文原为 require: undefined，执行直接抛 "require is not a function"；
+   * 脚本自身的 try/catch 把错误 JSON 字符串塞进 _result，外层
+   * isScriptReportedFailure 又只认对象形态，于是被包装成 success:true 的假成功。
+   *
+   * 这里白名单仅放行纯计算内置模块；fs / child_process / os / module /
+   * worker_threads / http 等可触达宿主文件系统、子进程、模块系统的一律拒绝。
+   */
+  private createSafeRequire(): (id: string) => unknown {
+    const SAFE_BUILTINS = new Set([
+      "assert", "buffer", "crypto", "events", "stream", "string_decoder",
+      "util", "url", "querystring", "zlib",
+    ]);
+    const hostRequire = require;
+    return (id: string): unknown => {
+      if (!SAFE_BUILTINS.has(id)) {
+        throw new Error(
+          `require("${id}") is blocked in skill sandbox (only safe builtin modules allowed)`
+        );
+      }
+      return hostRequire(id);
+    };
   }
 
   private createSandboxConsole(): Record<string, (...args: unknown[]) => void> {
@@ -937,11 +987,20 @@ export class SkillSandbox {
    * 仅检查普通对象，不误伤非对象输出与无 success 字段的输出（如 { raw, text }）。
    */
   private isScriptReportedFailure(result: unknown): boolean {
-    return (
-      typeof result === "object" &&
-      result !== null &&
-      (result as Record<string, unknown>).success === false
-    );
+    if (typeof result === "object" && result !== null) {
+      return (result as Record<string, unknown>).success === false;
+    }
+    // 兜底：脚本可能直接返回 JSON 字符串（_result 未在 executeInSandbox 内被解析时）。
+    // 只认对象会漏判字符串里的 success:false → 假成功。
+    if (typeof result === "string") {
+      try {
+        const parsed = JSON.parse(result);
+        return !!parsed && typeof parsed === "object" && (parsed as Record<string, unknown>).success === false;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   private measureResourceUsage(

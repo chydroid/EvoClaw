@@ -18,12 +18,18 @@ export type { VisionBatchToolDeps } from "./vision-batch-tools";
 // v0.70: 开发体验工具集
 export { registerDevTools } from "./dev-tools";
 export { registerMemoryTools } from "./memory-tools";
+export { registerSessionSearchTools } from "./session-search-tools";
+export { registerClarifyTools } from "./clarify-tools";
+export { registerTtsTools, checkTtsRequirements } from "./tts-tools";
 // Kanban 多 Agent 工作队列工具集
 export { registerKanbanTools } from "./kanban-tools";
 export type { KanbanToolDeps } from "./kanban-tools";
 // Todo 任务跟踪工具（对标 hermes-agent tools/todo_tool.py）
 export { registerTodoTools, getTodoStore, clearTodoStore } from "./todo-tools";
 export type { TodoToolDeps } from "./todo-tools";
+// delegate_task 子代理派发工具（对标 hermes-agent tools/delegate_tool.py）
+export { registerDelegateTools } from "./delegate-tools";
+export type { DelegateToolDeps } from "./delegate-tools";
 // Computer Use 桌面控制工具集（截图/鼠标/键盘/窗口管理）
 export { registerComputerUseTools } from "./computer-use-tools";
 export type { ComputerUseToolDeps } from "./computer-use-tools";

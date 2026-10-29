@@ -9,6 +9,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import { taskCheckpointManager } from "./task-checkpoint-manager";
 import { collapseNewlines as collapseNewlinesImpl } from "./text-processor";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
+import { detectPrematureStop } from "./auto-continuation";
 
 // ── Types ──
 
@@ -118,6 +119,80 @@ export interface TaskAnalyzerDeps {
  */
 export function isSubtaskHardFailure(reply: string): boolean {
   return typeof reply === "string" && reply.includes("迭代预算已耗尽");
+}
+
+/**
+ * 判定子任务回复是否含「完成声明对账 / 磁盘文件核验」的更正脚注。
+ *
+ * v5 Task 1 实测（2026-10-28）：子任务回复声称「测试代码已写入
+ * test_fixed.py」但文件从未落盘，tryCallLLM 的磁盘核验追加了
+ * 「⚠️ 任务未完成」脚注——但旧逻辑只看 isSubtaskHardFailure（仅匹配
+ * 「迭代预算已耗尽」），把带更正脚注的回复照样标 completed/✅，
+ * 汇总头显示「🎉 所有 4 个子任务已成功完成」。更正脚注是
+ * tryCallLLM 已经做出的确定性判定，子任务层必须尊重。
+ */
+export function hasCorrectionFootnote(reply: string): boolean {
+  return typeof reply === "string" &&
+    (reply.includes("⚠️ 任务未完成") || reply.includes("⚠️ 更正"));
+}
+
+/**
+ * 从回复中提取更正脚注片段（用于重试 prompt 回灌失败原因）。
+ */
+export function extractCorrectionExcerpt(reply: string): string {
+  if (typeof reply !== "string") return "";
+  const markers = ["⚠️ 任务未完成", "⚠️ 更正"];
+  for (const m of markers) {
+    const idx = reply.indexOf(m);
+    if (idx >= 0) return reply.slice(idx).trim();
+  }
+  return "";
+}
+
+/**
+ * 判定子任务回复是否为「计划式停顿」——只承诺后续动作、未实际执行。
+ *
+ * v5 Task 1 实测（2026-10-28）：子任务回复为
+ * 「我先把 `test_fixed.py` 写入文件…再运行 `python3 -m unittest` 验证」
+ * 这类纯计划声明，无任何工具执行痕迹，却被旧逻辑标 completed/✅。
+ * detectPrematureStop 是 tryCallLLM 自动续跑用的同一套判定——子任务层
+ * 复用它做防御性核验（自动续跑预算耗尽时 tryCallLLM 会把计划声明原样返回）。
+ *
+ * 防误伤：回复含完成标记（已运行/测试通过等）或过长（>800 字符，
+ * 可能是含过程叙述的完整交付）时不视为计划式停顿。
+ */
+export function isPlanOnlyReply(reply: string): boolean {
+  if (!reply || reply.length > 800) return false;
+  if (/已完成|已成功|已全部|全部通过|测试通过|验证通过|已运行|已执行|完成✅/.test(reply)) return false;
+  return detectPrematureStop(reply, { toolCallsThisRound: false }) !== null;
+}
+
+/**
+ * 判定子任务回复是否为「交还用户」话术——内容给了但没落盘/没执行。
+ *
+ * v5 Task 8 实测（2026-10-28）：子任务「编写 /tmp/v5-kvstore/kvstore.js」
+ * 的回复是「主人，我把两个文件的完整内容整理如下，可直接复制保存后运行
+ * `node --test` 验证」——文件没写、测试没跑，只是把内容贴在回复里让用户
+ * 自己保存。旧逻辑只看 isSubtaskHardFailure，照样标 completed/✅。
+ */
+export function hasHandBackPattern(reply: string): boolean {
+  return typeof reply === "string" &&
+    /(?:复制保存|整理如下|可直接保存|请保存|保存后运行|另存为|复制到|可自行保存|自行保存)/.test(reply);
+}
+
+/**
+ * 生成子任务重试反馈：说明上一次为什么没通过（更正脚注 / 计划式停顿 /
+ * 交还用户话术），供重试 prompt 回灌，避免用同样的 prompt 原样重跑。
+ */
+function buildRetryFeedback(reply: string): string {
+  if (hasCorrectionFootnote(reply)) return extractCorrectionExcerpt(reply);
+  if (isPlanOnlyReply(reply)) {
+    return "上一次尝试仅给出计划声明、未实际执行。请直接调用工具完成该子任务，不要复述计划。";
+  }
+  if (hasHandBackPattern(reply)) {
+    return "上一次尝试把内容贴在回复里交还用户（如「整理如下、可直接复制保存」），文件并未落盘、验证并未执行。请直接调用 file_write 等工具把文件写入指定路径，并运行验证命令确认通过后再汇报。";
+  }
+  return "";
 }
 
 /**
@@ -608,8 +683,17 @@ export async function executeSubtasksFromCheckpoint(
       process.stderr.write(`[TaskAnalyzer] Subtask "${subtask.description}" failed:` + " " + err + "\n");
     }
 
-    // 首跑拿到硬失败占位文案（如「迭代预算已耗尽」）视同失败 → 进重试循环
-    const firstAttemptResult = subtaskResult && !isSubtaskHardFailure(subtaskResult) ? subtaskResult : null;
+    // 首跑拿到硬失败占位文案（如「迭代预算已耗尽」）、完成声明对账/磁盘核验
+    // 的更正脚注、纯计划式停顿回复、或「交还用户」话术（内容贴在回复里
+    // 让用户自己保存），均视同失败 → 进重试循环
+    // （v5 Task 1/8 实测：带「⚠️ 任务未完成」脚注或「整理如下、可直接复制
+    //   保存」话术的回复曾被标 completed）
+    const firstAttemptResult =
+      subtaskResult && !isSubtaskHardFailure(subtaskResult)
+        && !hasCorrectionFootnote(subtaskResult)
+        && !isPlanOnlyReply(subtaskResult)
+        && !hasHandBackPattern(subtaskResult)
+        ? subtaskResult : null;
     if (firstAttemptResult) {
       taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", firstAttemptResult.slice(0, 2000));
       subtaskResults.push(`✅ **${subtask.description}**:\n${firstAttemptResult}`);
@@ -618,6 +702,9 @@ export async function executeSubtasksFromCheckpoint(
     } else {
       let retryCount = 0;
       let retrySucceeded = false;
+      // 重试 prompt 回灌上一次的失败原因（更正脚注 / 计划式停顿 / 交还用户
+      // 话术），让模型知道「为什么没通过」，而不是用同样的 prompt 原样重跑
+      let retryFeedback = buildRetryFeedback(subtaskResult || "");
       while (retryCount < 2) {
         retryCount++;
         // 非最后一次重试时添加指数退避延迟，避免立即重试加重上游负担
@@ -630,8 +717,11 @@ export async function executeSubtasksFromCheckpoint(
         process.stdout.write(`[TaskAnalyzer] Retrying subtask "${subtask.description}" (attempt ${retryCount + 1})\n`);
         try {
           deps.resetIterationBudget?.(sessionId);
+          const retryPrompt = retryFeedback
+            ? `${subtaskPrompt}\n\n## 上一次尝试未通过，请修复后重做\n${retryFeedback}`
+            : subtaskPrompt;
           const retryPromise = deps.tryCallLLM(
-            subtaskPrompt, systemPrompt, installedSkills, enabledProviders,
+            retryPrompt, systemPrompt, installedSkills, enabledProviders,
             startTime, sessionId, pendingPermissions, attachments, onProgress, false, channel
           );
           retryPromise.catch(() => {}); // 防止超时后 unhandledRejection
@@ -642,7 +732,10 @@ export async function executeSubtasksFromCheckpoint(
           });
           try {
             const retryResult = await Promise.race([retryPromise, retryTimeoutPromise]);
-            if (retryResult && !isSubtaskHardFailure(retryResult.reply)) {
+            if (retryResult && !isSubtaskHardFailure(retryResult.reply)
+                && !hasCorrectionFootnote(retryResult.reply)
+                && !isPlanOnlyReply(retryResult.reply)
+                && !hasHandBackPattern(retryResult.reply)) {
               taskCheckpointManager.updateSubtask(sessionId, subtask.id, "completed", retryResult.reply.slice(0, 2000));
               subtaskResults.push(`✅ **${subtask.description}** (重试成功):\n${retryResult.reply}`);
               totalTokensUsed += retryResult.tokensUsed;
@@ -650,6 +743,11 @@ export async function executeSubtasksFromCheckpoint(
               onProgress?.({ type: "subtask_done", phase: "subtask_executing", detail: `子任务 ${i + 1} 重试成功: ${subtask.description}`, progress: baseProgress + Math.floor(70 / checkpoint.totalSubtasks) });
               retrySucceeded = true;
               break;
+            }
+            // 重试仍未通过：更新 feedback 供下一次重试回灌
+            if (retryResult) {
+              const newFeedback = buildRetryFeedback(retryResult.reply) || retryFeedback;
+              if (newFeedback) retryFeedback = newFeedback;
             }
           } finally {
             if (retryTimeoutHandle) clearTimeout(retryTimeoutHandle);

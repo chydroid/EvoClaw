@@ -463,7 +463,7 @@ export async function runBackgroundReview(opts: {
   try {
     const reviewMessages = await opts.chatFn({
       messages: history,
-      systemPrompt: undefined, // 继承父级 prompt（由 chatFn 实现）
+      systemPrompt: prompt,
       model: runtime.model,
       provider: runtime.provider,
       toolWhitelist,

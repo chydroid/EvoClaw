@@ -191,6 +191,12 @@ export class AgentModelExecutor {
    * 仅在首次有新组被激活时前移一次分叉点；clearChatHistory 时清空。
    */
   private sessionToolGroups = new Map<string, Set<string>>();
+  // ★ P0-6 缓存稳定化（2026-10-28）：动态尾（记忆/画像检索结果）会话粘性缓存。
+  // 旧行为每轮重新检索 → memoryContext/personaContext 随查询漂移 → 动态尾字节
+  // 逐轮变化 → 网关前缀缓存在动态尾处断掉，history 段永远无法命中。
+  // 现在：检索结果按会话缓存，每 refreshEvery 轮（EVOCLAW_TAIL_MEMORY_REFRESH_EVERY，
+  // 默认 4）才刷新一次；1 = 旧行为（每轮刷新）。clearChatHistory 时清空。
+  private _tailMemoryCache = new Map<string, { memory: string; persona: string; refreshEvery: number; turn: number }>();
   private pluginManager: import("@evoclaw/core").PluginManager | null = null;
   // ChannelManager integration — avoids cross-package import using any
   private channelManager: { getDMPolicy?: (...args: unknown[]) => unknown; getAllStatuses?: () => Array<unknown> } | null = null;
@@ -981,8 +987,8 @@ export class AgentModelExecutor {
     return needsCompactionFn(this.getSessionPersistenceDeps(), sessionId, systemPrompt, maxTokens);
   }
 
-  private compactConversationHistory(sessionId: string, keepRecentTurns: number = 3): void {
-    compactConversationHistoryFn(this.getSessionPersistenceDeps(), sessionId, keepRecentTurns);
+  private async compactConversationHistory(sessionId: string, keepRecentTurns: number = 3): Promise<void> {
+    await compactConversationHistoryFn(this.getSessionPersistenceDeps(), sessionId, keepRecentTurns);
   }
 
   /** Build the deps object for session persistence module */
@@ -997,6 +1003,22 @@ export class AgentModelExecutor {
       lifecycleManager: this.lifecycleManager,
       sessionManager: this.sessionManager,
       memoryHub: this.memoryHub,
+      // LLM 摘要生成器：调用 callLLMOnce 用第一个 provider 生成摘要。
+      // 对标 Hermes ContextCompressor 的辅助 LLM 调用。
+      llmSummarizer: async (prompt: string): Promise<string> => {
+        const provider = this.providers[0];
+        if (!provider) return "";
+        const result = await callLLMOnceFn(
+          provider,
+          [{ role: "user", content: prompt }],
+          [],
+          "none",
+          undefined,
+          this.getLLMCallerDeps(),
+        );
+        if (result?.message?.content) return result.message.content;
+        return "";
+      },
     };
   }
 
@@ -1019,6 +1041,8 @@ export class AgentModelExecutor {
       pendingApprovalCommands: this.pendingApprovalCommands,
       toolResultCache: this.toolResultCache,
       sessionDataDir: this.sessionDataDir,
+      // 磁盘文件核验用它把回复中声称的相对路径解析到工作区根目录下验证存在性
+      workspacePath: this.workspacePath,
       sessionPersistenceEnabled: this.sessionPersistenceEnabled,
       autoCompactionEnabled: this.autoCompactionEnabled,
       compactionTokenThreshold: this.compactionTokenThreshold,
@@ -1553,6 +1577,7 @@ export class AgentModelExecutor {
       this._contextEngineResults.delete(sessionId);
       this.sessionAbortControllers.delete(sessionId);
       this.sessionToolGroups.delete(sessionId);
+      this._tailMemoryCache.delete(sessionId);
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
@@ -2186,16 +2211,29 @@ export class AgentModelExecutor {
       listSkills(): unknown[];
       executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
     }>("skillManager");
-    
+
     // installKeywords: detects "安装技能", "下载技能", "安装 weather", etc.
     const installKeywords = /(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*(?:技能|skill|skills?)/i;
     const installRequest = /(?:给我|帮我|需要|想要|如果).*?(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*.*?(?:技能|skill|skills?)/i;
-    const installSpecificSkill = /(?:安装|下载|添加|配置|装)\s+([a-zA-Z][\w\-]{1,})/i;
+    // ★ 2026-10-28 修复（v5 Task 7 事故）：去掉「配置」——"logging 配置 max-size"
+    //   这类名词性搭配会被误判为"安装 max-size"技能请求，整个 docker-compose
+    //   任务被技能安装助手劫持（0 token、0 工具调用，只返回技能列表）。
+    //   "配置 weather 技能"类请求仍由 installKeywords（配置…技能）兜住。
+    const installSpecificSkill = /(?:安装|下载|添加|装)\s+([a-zA-Z][\w\-]{1,})/i;
     const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
     // findAndInstallSkill: "查找可以查询股市行情的技能并安装"、"找一个能翻译的技能装上"
     // 必须同时包含"查找类动词+技能+安装类动词"，避免误匹配普通"找技能"浏览请求
     const findAndInstallSkill = /(?:查找?|找一下|搜索|查一下|看看|有没有).{0,30}?(?:技能|skill).{0,15}?(?:并\s*)?(?:安装|下载|添加|装(?:上|一下)?)/i;
-    if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
+    // ★ 2026-10-27 修复：复合多步任务不走 skill install 快速路径。
+    //   Task 6 压测中，"用 skill_list 搜索...安装一个合适的技能...然后用 skill_manage 执行"
+    //   被 installKeywords 匹配到"安装一个合适的技能"，走了 0-token 快速路径，
+    //   只返回技能列表但未安装/执行。当消息包含多步操作指示词时，走 LLM 完整流程。
+    const skillInstallCompoundIndicators = /(?:然后|接着|之后|其次|最后|首先|再|之后用|然后用|执行一次|执行一个)/;
+    const isSkillInstallCompound = (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message))
+      && skillInstallCompoundIndicators.test(message);
+    if (isSkillInstallCompound) {
+      process.stdout.write(`[AgentModelExecutor] Skill install compound task detected — skipping early path, going to LLM\n`);
+    } else if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
       process.stdout.write(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
       const skillInstallerDeps: SkillInstallerDeps = { registry: this.registry, workspacePath: this.workspacePath };
       const installResult = await handleSkillInstallFn(skillInstallerDeps, message, skillManager, startTime, sessionId);
@@ -2237,7 +2275,14 @@ export class AgentModelExecutor {
     if (userProvidedUrl) {
       process.stdout.write(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM\n`);
     }
-    if (this.hasActionIntent(message) && !isExplicitToolCall && !userProvidedUrl) {
+    // ★ 2026-10-27 修复：复合多步任务不走 SkillDispatcher 快速路径。
+    //   实测 10 任务压测中，Task 6（安装+执行技能）走了 SkillDispatcher
+    //   快速路径（tokensUsed=0），只返回技能列表但未安装/执行。
+    //   当消息包含多步操作指示词（然后/再/接着/首先…）时，说明是复合任务，
+    //   应走 LLM 完整流程而非快速路径。
+    const compoundStepIndicators = /(?:然后|接着|之后|其次|最后|首先|再|之后用|然后用)/;
+    const hasCompoundIntent = this.hasActionIntent(message) && compoundStepIndicators.test(message);
+    if (this.hasActionIntent(message) && !isExplicitToolCall && !userProvidedUrl && !hasCompoundIntent) {
       const skillDispatchFn = async () => {
         try {
         const skillDispatcher = this.registry?.resolveService<{
@@ -2408,7 +2453,20 @@ export class AgentModelExecutor {
     // 2. 若分层记忆未启用或无结果，再无 type 限制地检索 LongTermMemory
     let memoryContext = "";
     let personaContext = "";
-    if (this.memoryHub) {
+    // ★ P0-6 缓存稳定化（2026-10-28）：记忆/画像检索结果**会话粘性**。
+    // 检索结果随查询漂移，直接注入动态尾会让 tail 字节逐轮变化 → 网关前缀缓存
+    // 在 tail 处断掉（实测：chitchat 会话 history 段永远不命中，hit 恒为 sys+tools）。
+    // 现在按会话缓存检索结果，每 refreshEvery 轮才真正刷新一次，其余轮次复用
+    // 缓存字节。EVOCLAW_TAIL_MEMORY_REFRESH_EVERY=1 恢复旧行为（每轮刷新）。
+    const refreshEvery = Math.max(1, Number(process.env.EVOCLAW_TAIL_MEMORY_REFRESH_EVERY ?? 4) || 4);
+    const tailCache = this._tailMemoryCache.get(sessionId);
+    const nextTurn = (tailCache?.turn ?? 0) + 1;
+    if (tailCache && nextTurn % refreshEvery !== 0) {
+      // 非刷新轮：复用缓存字节，跳过检索（检索本身是本地搜索，省的是 tail 稳定性）
+      memoryContext = tailCache.memory;
+      personaContext = tailCache.persona;
+      tailCache.turn = nextTurn;
+    } else if (this.memoryHub) {
       const memorySearchFn = async () => {
         try {
           // 0. 归档层读回：把已卸载到长期记忆的旧轮次按当前问题召回，
@@ -2466,14 +2524,16 @@ export class AgentModelExecutor {
       } else {
         await memorySearchFn();
       }
-    }
 
-    // Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像注入系统提示尾部，
-    // 与 L3 画像（personaContext）并列；空模型返回 ""，零成本降级。
-    if (this.memoryHub) {
+      // Honcho dialectic 用户建模（Hermes 对标 P2）：跨会话辩证画像注入系统提示尾部，
+      // 与 L3 画像（personaContext）并列；空模型返回 ""，零成本降级。
+      // ★ 必须在刷新轮内完成并随结果一起缓存——否则非刷新轮复用旧画像时
+      //   又拼上新的 dialectic 前缀，tail 照样漂移。
       try {
         personaContext = (this.memoryHub.getDialecticContext?.() ?? "") + personaContext;
       } catch { /* best-effort */ }
+
+      this._tailMemoryCache.set(sessionId, { memory: memoryContext, persona: personaContext, refreshEvery, turn: nextTurn });
     }
 
     // P0-3 缓存稳定化（2026-10-16）：system 主体保持**逐轮字节恒定**——
@@ -2587,7 +2647,23 @@ export class AgentModelExecutor {
     }
 
     // ── Planning: generate explicit execution plan for complex tasks ──
-    if (this.planningEngine && this.hasActionIntent(effectiveMessage)) {
+    // ★ P0-6 缓存稳定化（2026-10-28）：计划**会话粘性**。
+    // 旧行为：每个 action-intent 轮都重新 generatePlan → plan.id 是
+    // 「时间戳+随机数」，formatPlanForContext 里的 Plan ID 行逐轮变化 →
+    // 动态尾字节漂移 → 前缀缓存在 tail 处断掉，history 段无法命中。
+    // 现在：有未耗尽的 active plan 就直接复用（并且每轮都注入 tail，
+    // 包括非 action-intent 轮，避免 plan 块在 tail 里时隐时现）；
+    // 只有没有计划或计划已耗尽（全部 completed/failed/skipped）才生成新计划。
+    const activePlan = this.activePlans.get(sessionId);
+    const planExhausted =
+      activePlan !== undefined &&
+      activePlan.steps.every(
+        (s) => s.status === "completed" || s.status === "failed" || s.status === "skipped",
+      );
+    if (activePlan && !planExhausted && this.planningEngine) {
+      planContext = this.planningEngine.formatPlanForContext(activePlan);
+    }
+    if (this.planningEngine && this.hasActionIntent(effectiveMessage) && (!activePlan || planExhausted)) {
       const toolNames = Array.from(this.registeredTools.keys());
       try {
         const plan = await this.planningEngine.generatePlan(effectiveMessage, toolNames, sessionId);
@@ -2683,8 +2759,17 @@ export class AgentModelExecutor {
     ].filter(Boolean).join("");
 
     // ── Structured Output: inject schema instruction if applicable ──
+    // ★ 2026-10-28 修复（v5 Task 5/8/10 事故）：旧触发词（格式/format/json/
+    //   structured/schema/表格/table）过于宽泛——复杂任务里"用表格呈现"
+    //   "返回 JSON 格式"等交付物/验证要求会把整个对话劫持成"只输出 JSON
+    //   总结"模式（实测 0 工具调用、纯 JSON 总结声称写文件成功、文件从未
+    //   落盘）。现在只认明确的结构化输出请求：JSON 后必须跟 格式/形式/总结/
+    //   结果/数据/回复/呈现 等"输出形态"词，避免 "验证返回 JSON 且字段完整"
+    //   这类服务行为描述误触发。
     if (this.structuredOutputParser && this.schemaRegistry) {
-      const structuredHint = effectiveMessage.match(/(?:格式|format|json|structured|schema|表格|table)/i);
+      const structuredHint = effectiveMessage.match(
+        /(?:以|用|输出|返回|给我)\s*(?:json|JSON)\s*(?:格式|形式|总结|结果|数据|回复|呈现)|structured\s*output|结构化输出/i,
+      );
       if (structuredHint) {
         const schema = this.schemaRegistry.get("task-result");
         if (schema) {
@@ -2767,7 +2852,7 @@ export class AgentModelExecutor {
     if (routedProviders.length > 0) {
       const primaryProvider = routedProviders[0];
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
-      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined, skillsMessage || undefined);
+      const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined, skillsMessage || undefined, message);
       if (result) {
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
@@ -3470,6 +3555,7 @@ export class AgentModelExecutor {
     channel?: string,
     dynamicSystemTail?: string,
     skillsMessage?: string,
+    rawUserMessage?: string,
   ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
     // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
     this.ensureToolResultCacheV2();
@@ -3508,6 +3594,7 @@ export class AgentModelExecutor {
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,
       abortSignal: sessionController?.signal,
+      rawUserMessage,
     });
   }
 

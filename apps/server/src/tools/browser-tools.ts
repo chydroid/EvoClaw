@@ -206,7 +206,7 @@ export function registerBrowserTools(
       name: "browser_navigate",
       description: "Navigate to a URL and retrieve page content, links, and forms",
       parameters: {
-        url: { type: "string", description: "The URL to navigate to" },
+        url: { type: "string", description: "The URL to navigate to", required: true },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -286,7 +286,7 @@ export function registerBrowserTools(
           required: true,
           enum: ["text", "html", "elements"],
         },
-        selector: { type: "string", description: "CSS 选择器（text / elements 使用；text 缺省为 'body'）" },
+        selector: { type: "string", description: "CSS 选择器（text / elements 使用；text 缺省为 'body'）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -305,8 +305,8 @@ export function registerBrowserTools(
       name: "browser_tabs",
       description: "Manage browser tabs (list, new, switch, close)",
       parameters: {
-        action: { type: "string", description: "Action: list, new, switch, or close" },
-        tabId: { type: "string", description: "Tab ID for switch/close actions" },
+        action: { type: "string", description: "Action: list, new, switch, or close", required: true },
+        tabId: { type: "string", description: "Tab ID for switch/close actions", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -360,7 +360,7 @@ export function registerBrowserTools(
       name: "browser_launch",
       description: "Launch a real Chromium browser via Playwright for advanced web automation",
       parameters: {
-        headless: { type: "string", description: "Run headless (true/false, default true)" },
+        headless: { type: "string", description: "Run headless (true/false, default true)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -399,9 +399,9 @@ export function registerBrowserTools(
       name: "browser_screenshot",
       description: "Take a screenshot of the current page or specific element",
       parameters: {
-        selector: { type: "string", description: "CSS selector for element screenshot (optional)" },
-        fullPage: { type: "string", description: "Capture full page (true/false, default true)" },
-        filename: { type: "string", description: "File path to save screenshot (optional, saves as .png)" },
+        selector: { type: "string", description: "CSS selector for element screenshot (optional)", required: false },
+        fullPage: { type: "string", description: "Capture full page (true/false, default true)", required: false },
+        filename: { type: "string", description: "File path to save screenshot (optional, saves as .png)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -443,13 +443,13 @@ export function registerBrowserTools(
       name: "browser_login",
       description: "Automatically log into a website with credentials",
       parameters: {
-        url: { type: "string", description: "Login page URL" },
-        usernameSelector: { type: "string", description: "CSS selector for username input" },
-        passwordSelector: { type: "string", description: "CSS selector for password input" },
-        username: { type: "string", description: "Username/email to login with" },
-        password: { type: "string", description: "Password to login with" },
-        submitSelector: { type: "string", description: "CSS selector for submit button" },
-        successUrl: { type: "string", description: "URL fragment that indicates successful login" },
+        url: { type: "string", description: "Login page URL", required: true },
+        usernameSelector: { type: "string", description: "CSS selector for username input", required: true },
+        passwordSelector: { type: "string", description: "CSS selector for password input", required: true },
+        username: { type: "string", description: "Username/email to login with", required: true },
+        password: { type: "string", description: "Password to login with", required: true },
+        submitSelector: { type: "string", description: "CSS selector for submit button", required: true },
+        successUrl: { type: "string", description: "URL fragment that indicates successful login (optional)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -481,7 +481,7 @@ export function registerBrowserTools(
       name: "browser_js_eval",
       description: "Execute JavaScript on the current page and return the result",
       parameters: {
-        expression: { type: "string", description: "JavaScript expression to evaluate" },
+        expression: { type: "string", description: "JavaScript expression to evaluate", required: true },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -650,16 +650,16 @@ export function registerBrowserTools(
           required: true,
           enum: ["click", "hover", "check", "select", "fill", "submit"],
         },
-        selector: { type: "string", description: "CSS 选择器（click / hover / check / select / fill 使用）" },
-        index: { type: "string", description: "元素索引（click / fill 使用；来自 browser_extract_dom 的 [index]）" },
-        value: { type: "string", description: "选项值或标签（select 使用）" },
-        checked: { type: "string", description: "true 勾选，false 取消（默认 true）（check 使用）" },
-        fields: { type: "string", description: "JSON 字符串：fill 时为 [{selector,value,delay,submitAfter}] 数组；submit 时为 {name:value} 对象" },
-        text: { type: "string", description: "要输入的文本（fill 且使用 index 时使用）" },
-        clear_first: { type: "string", description: "输入前先清空字段（'true' 默认，'false' 跳过）（fill 且使用 index 时使用）" },
-        delay: { type: "string", description: "按键间隔毫秒（fill 且使用 index 时使用）" },
-        formAction: { type: "string", description: "表单 action URL（submit 使用；原参数名为 action，因与本字段冲突改名）" },
-        method: { type: "string", description: "HTTP 方法 get 或 post（submit 使用）" },
+        selector: { type: "string", description: "CSS 选择器（click / hover / check / select / fill 使用）", required: false },
+        index: { type: "string", description: "元素索引（click / fill 使用；来自 browser_extract_dom 的 [index]）", required: false },
+        value: { type: "string", description: "选项值或标签（select 使用）", required: false },
+        checked: { type: "string", description: "true 勾选，false 取消（默认 true）（check 使用）", required: false },
+        fields: { type: "string", description: "JSON 字符串：fill 时为 [{selector,value,delay,submitAfter}] 数组；submit 时为 {name:value} 对象", required: false },
+        text: { type: "string", description: "要输入的文本（fill 且使用 index 时使用）", required: false },
+        clear_first: { type: "string", description: "输入前先清空字段（'true' 默认，'false' 跳过）（fill 且使用 index 时使用）", required: false },
+        delay: { type: "string", description: "按键间隔毫秒（fill 且使用 index 时使用）", required: false },
+        formAction: { type: "string", description: "表单 action URL（submit 使用；原参数名为 action，因与本字段冲突改名）", required: false },
+        method: { type: "string", description: "HTTP 方法 get 或 post（submit 使用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -692,9 +692,9 @@ export function registerBrowserTools(
       name: "browser_wait",
       description: "Wait for an element to appear, disappear, or reach a specific state on the page. Essential for dynamic content and SPA pages.",
       parameters: {
-        selector: { type: "string", description: "CSS selector to wait for" },
-        state: { type: "string", description: "State to wait for: visible (default), hidden, attached, detached" },
-        timeout: { type: "string", description: "Maximum wait time in milliseconds (default: 30000)" },
+        selector: { type: "string", description: "CSS selector to wait for", required: true },
+        state: { type: "string", description: "State to wait for: visible (default), hidden, attached, detached", required: false },
+        timeout: { type: "string", description: "Maximum wait time in milliseconds (default: 30000)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -767,10 +767,10 @@ export function registerBrowserTools(
           required: true,
           enum: ["scroll"],
         },
-        selector: { type: "string", description: "CSS 选择器（滚动目标元素，缺省滚动整页）" },
-        index: { type: "string", description: "元素索引（来自 browser_extract_dom；传入时按索引滚动）" },
-        direction: { type: "string", description: "方向：up、down、left、right（默认 down）" },
-        amount: { type: "string", description: "滚动像素数（默认 300）" },
+        selector: { type: "string", description: "CSS 选择器（滚动目标元素，缺省滚动整页）", required: false },
+        index: { type: "string", description: "元素索引（来自 browser_extract_dom；传入时按索引滚动）", required: false },
+        direction: { type: "string", description: "方向：up、down、left、right（默认 down）", required: false },
+        amount: { type: "string", description: "滚动像素数（默认 300）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -841,7 +841,7 @@ export function registerBrowserTools(
           required: true,
           enum: ["extract", "clear"],
         },
-        max_elements: { type: "string", description: "提取的最大交互元素数量（默认 200）（extract 使用）" },
+        max_elements: { type: "string", description: "提取的最大交互元素数量（默认 200）（extract 使用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

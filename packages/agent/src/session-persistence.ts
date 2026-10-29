@@ -38,6 +38,14 @@ export interface SessionPersistenceDeps {
   lifecycleManager: AgentLifecycleManager | null;
   sessionManager: SessionManager | null;
   memoryHub: SessionMemoryHub | null;
+  /**
+   * LLM 摘要生成器（可选）。
+   * 对标 Hermes ContextCompressor._generate_summary：用辅助 LLM 生成结构化摘要，
+   * 而非规则提取。定义 buildLLMSummaryPrompt 但此前从未调用（死代码），现接入活路径。
+   * 调用方传入 (prompt) => Promise<string>，compactConversationHistory 在
+   * compactionManager 可用时优先使用 LLM 摘要，失败则回退规则提取。
+   */
+  llmSummarizer?: (prompt: string) => Promise<string>;
 }
 
 /** Compute the file path for a session's JSONL persistence file */
@@ -286,11 +294,11 @@ export function needsCompaction(
 }
 
 /** Compact conversation history by summarizing older turns and keeping recent ones */
-export function compactConversationHistory(
+export async function compactConversationHistory(
   deps: SessionPersistenceDeps,
   sessionId: string,
   keepRecentTurns: number = 3,
-): void {
+): Promise<void> {
   const history = deps.conversationHistory.get(sessionId);
   if (!history || history.length <= keepRecentTurns * 2) return;
 
@@ -301,10 +309,29 @@ export function compactConversationHistory(
   let summary = "";
   let successorId = sessionId;
   if (deps.compactionManager) {
-    const compaction = deps.compactionManager.buildSummary(
-      sessionId,
-      olderEntries.map((e) => ({ role: e.role, content: e.content })),
-    );
+    const olderTurnData = olderEntries.map((e) => ({ role: e.role, content: e.content }));
+
+    // ── LLM 摘要（优先）──
+    // 对标 Hermes ContextCompressor._generate_summary：用辅助 LLM 生成结构化摘要。
+    // buildLLMSummaryPrompt 此前是死代码（定义但从未调用），现接入活路径。
+    // LLM 调用失败时回退规则提取（buildSummary），保证不中断压缩流程。
+    let compaction = deps.compactionManager.buildSummary(sessionId, olderTurnData);
+    if (deps.llmSummarizer) {
+      try {
+        const llmPrompt = deps.compactionManager.buildLLMSummaryPrompt(olderTurnData);
+        const llmSummaryText = await deps.llmSummarizer(llmPrompt);
+        if (llmSummaryText && llmSummaryText.trim()) {
+          // 用 LLM 摘要替换规则摘要的 summary 字段
+          compaction = {
+            ...compaction,
+            summary: llmSummaryText.trim(),
+          };
+        }
+      } catch (err) {
+        process.stderr.write(`[SessionPersistence] LLM summarizer failed, falling back to rule-based: ${err}\n`);
+      }
+    }
+
     summary = deps.compactionManager.buildSuccessorPrompt(compaction);
     successorId = compaction.successorSessionId;
 

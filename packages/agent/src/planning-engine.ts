@@ -7,6 +7,7 @@
  */
 
 import type { PersonaConfig } from "@evoclaw/core";
+import { buildChatCompletionsUrl } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
 import { nativeFetch } from "./llm-caller";
 import * as crypto from "crypto";
@@ -184,14 +185,7 @@ async function callLLMForPlan(
   const provider = enabledProviders[0];
 
   const baseURL = provider.baseURL || "";
-  let apiURL = baseURL;
-  if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-    apiURL = apiURL.replace(/\/+$/, "");
-    if (!apiURL.endsWith("/v1")) {
-      apiURL = `${apiURL}/v1`;
-    }
-    apiURL = `${apiURL}/chat/completions`;
-  }
+  let apiURL = buildChatCompletionsUrl(baseURL);
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {

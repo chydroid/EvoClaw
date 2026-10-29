@@ -5,7 +5,7 @@
  * 借鉴 Claude Code 的 LLM 交互模式：System Prompt → Context → Task → Response → Verify
  */
 
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, buildChatCompletionsUrl } from "@evoclaw/core";
 import type { SubTask, SubTaskResult, TaskType } from "./task-decomposer";
 
 // ── Types ──────────────────────────────────────────────────
@@ -567,14 +567,7 @@ export class LLMDispatcher {
   ): Promise<LLMDispatchResponse> {
     const startTime = Date.now();
 
-    let apiURL = provider.baseURL || "";
-    if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-      apiURL = apiURL.replace(/\/+$/, "");
-      if (!apiURL.endsWith("/v1")) {
-        apiURL = `${apiURL}/v1`;
-      }
-      apiURL = `${apiURL}/chat/completions`;
-    }
+    let apiURL = buildChatCompletionsUrl(provider.baseURL || "");
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (provider.apiKey) {

@@ -460,7 +460,7 @@ export function registerDocumentTools(executor: AgentModelExecutor, fsBase: stri
           required: true,
           enum: ["create_docx", "create_xlsx", "create_pptx"],
         },
-        path: { type: "string", description: "Relative file path to create（如 outputs/report.docx / report.xlsx / slides.pptx，全部 action 使用）", required: false },
+        path: { type: "string", description: "Relative file path to create（如 outputs/report.docx / report.xlsx / slides.pptx，全部 action 必填）", required: true },
         title: { type: "string", description: "Document/presentation title（create_docx / create_pptx 使用）", required: false },
         paragraphs: {
           type: "array",

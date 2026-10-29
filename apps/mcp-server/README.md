@@ -105,8 +105,8 @@ export EVOCLAW_GATEWAY_URL=http://localhost:27788
 - **lint** — 代码检查（eslint/prettier）
 - **codebase_search** — 语义代码搜索
 - **shell_exec** — 安全 shell 命令执行
-- **file_read / file_create / file_modify** — 文件操作
-- **git_status / git_diff / git_log** — Git 操作
+- **file_read / file_write / file_delete** — 文件操作（file_write 复合工具：action=create/modify）
+- **git** — Git 操作（action=status/diff/log/blame/commit/push/...）
 - **apply_patch** — SEARCH/REPLACE 补丁应用
 - **web_search / web_fetch** — 网络搜索与抓取
 - **browser_navigate / browser_screenshot** — 浏览器自动化

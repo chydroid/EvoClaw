@@ -234,26 +234,36 @@ export function registerEmailTools(
           type: "string",
           description: "要执行的邮箱操作。action to perform: send (default) / add_account / list_accounts / list_inbox / get_email / analyze / summarize / inbox_summary",
           enum: ["send", "add_account", "list_accounts", "list_inbox", "get_email", "analyze", "summarize", "inbox_summary"],
+          required: true,
         },
-        email: { type: "string", description: "Email address（add_account 用）" },
-        password: { type: "string", description: "邮箱授权码（app-specific password），非登录密码（add_account 用）" },
-        provider: { type: "string", description: "Email provider: gmail, qq, 163, outlook, or custom（add_account 用）" },
-        displayName: { type: "string", description: "Display name for outgoing emails（add_account 用）" },
-        accountId: { type: "string", description: "Email account ID（send / list_inbox / get_email / inbox_summary 用，缺省时用第一个可用账户）" },
-        to: { type: "string", description: "Recipient email(s), comma-separated（send 用）" },
-        subject: { type: "string", description: "Email subject（send 用）" },
-        body: { type: "string", description: "Plain text email body（send 用）" },
-        html: { type: "string", description: "HTML email body (optional)（send 用）" },
-        rawEmails: { type: "string", description: "JSON array of raw email content strings（analyze 用，最多 100 条）" },
-        rawEmail: { type: "string", description: "Raw email content（summarize 用）" },
-        uid: { type: "string", description: "Email uid, as returned by list_inbox（get_email 用）" },
-        limit: { type: "number", description: "Maximum number of emails to fetch (default: 50, max 500)（list_inbox 用）" },
-        unreadOnly: { type: "boolean", description: "Only show unread emails (default: false)（list_inbox 用）" },
-        since: { type: "string", description: "Only return emails on or after this ISO date (e.g. 2026-09-06)（list_inbox / inbox_summary 用）" },
+        email: { type: "string", description: "Email address（add_account 用）", required: false },
+        password: { type: "string", description: "邮箱授权码（app-specific password），非登录密码（add_account 用）", required: false },
+        provider: { type: "string", description: "Email provider: gmail, qq, 163, outlook, or custom（add_account 用）", required: false },
+        displayName: { type: "string", description: "Display name for outgoing emails（add_account 用）", required: false },
+        accountId: { type: "string", description: "Email account ID（send / list_inbox / get_email / inbox_summary 用，缺省时用第一个可用账户）", required: false },
+        to: { type: "string", description: "Recipient email(s), comma-separated（send 用）", required: false },
+        subject: { type: "string", description: "Email subject（send 用）", required: false },
+        body: { type: "string", description: "Plain text email body（send 用）", required: false },
+        html: { type: "string", description: "HTML email body (optional)（send 用）", required: false },
+        rawEmails: { type: "string", description: "JSON array of raw email content strings（analyze 用，最多 100 条）", required: false },
+        rawEmail: { type: "string", description: "Raw email content（summarize 用）", required: false },
+        uid: { type: "string", description: "Email uid, as returned by list_inbox（get_email 用）", required: false },
+        limit: { type: "number", description: "Maximum number of emails to fetch (default: 50, max 500)（list_inbox 用）", required: false },
+        unreadOnly: { type: "boolean", description: "Only show unread emails (default: false)（list_inbox 用）", required: false },
+        since: { type: "string", description: "Only return emails on or after this ISO date (e.g. 2026-09-06)（list_inbox / inbox_summary 用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
       const action = String(params.action || "send");
+      // 纵深防御：非 add_account 操作一律剥离 password 字段。
+      // 账户凭据已加密存储在服务端，list/send/analyze 等操作不需要明文授权码；
+      // 即使 schema 已将其标为可选，模型仍可能在其他 action 里回填凭据，
+      // 剥离可避免明文密码进入工具结果、会话日志与出站模型请求。
+      if (action !== "add_account" && "password" in params) {
+        const { password: _stripped, ...cleanParams } = params;
+        void _stripped;
+        params = cleanParams;
+      }
       if (action === "add_account") return await handleEmailAddAccount(params);
       if (action === "send") return await handleEmailSend(params);
       if (action === "list_accounts") return await handleEmailListAccounts();

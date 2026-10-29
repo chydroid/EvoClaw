@@ -285,12 +285,13 @@ export function registerShellMediaTools(
     "shell_exec",
     {
       name: "shell_exec",
-      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation).",
+      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution.",
       parameters: {
-        command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'" },
-        cwd: { type: "string", description: "Optional working directory for the command (default: workspace)" },
-        timeout: { type: "string", description: "Optional timeout in seconds (default: 120, max: 1200). Use higher values for crawler tasks." },
-        sandbox: { type: "boolean", description: "Optional. When true, execute via LocalSandboxBackend with a restrictive SandboxPolicy (enforces timeout, memory, path allowlist). Default: false (direct spawn)." },
+        command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'", required: true },
+        cwd: { type: "string", description: "Optional working directory for the command (default: workspace)", required: false },
+        timeout: { type: "string", description: "Optional timeout in seconds (default: 120, max: 1200). Use higher values for crawler tasks.", required: false },
+        sandbox: { type: "boolean", description: "Optional. When true, execute via LocalSandboxBackend with a restrictive SandboxPolicy (enforces timeout, memory, path allowlist). Default: false (direct spawn).", required: false },
+        backend: { type: "string", description: "Optional sandbox backend: process (default), docker, ssh, singularity, modal, daytona, vercel_sandbox. Cloud backends route through SandboxManager for remote isolated execution.", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -363,7 +364,7 @@ export function registerShellMediaTools(
               error:
                 `Windows 下 \`${lang.name}\` 内联多行/含分号的代码会因 cmd.exe 引号处理而报语法错误` +
                 `（Unterminated string / Invalid or unexpected token）。` +
-                ` 请把代码写入 .${lang.ext} 文件再执行（先 file_create 创建脚本，再 \`${lang.name.split(" ")[0]} script.${lang.ext}\`）。`,
+                ` 请把代码写入 .${lang.ext} 文件再执行（先 file_write 创建脚本，再 \`${lang.name.split(" ")[0]} script.${lang.ext}\`）。`,
               command,
               cwd,
               hint: `改用脚本文件（工作目录见 cwd 字段）。注意：相对路径会落在 workspace 下。`,
@@ -477,7 +478,7 @@ export function registerShellMediaTools(
         // 多次尝试 heredoc 均被拦）。给出可执行替代路径——把多行脚本
         // 写成文件再执行，或用 execute_code 工具（沙箱内无此限制）。
         const hint = risk.rule === "newline_injection"
-          ? " 多行脚本请改用 file_create 写成 .py/.js 文件后用 shell_exec 执行文件，或直接用 execute_code 工具执行（沙箱内支持多行代码）。"
+          ? " 多行脚本请改用 file_write 写成脚本文件（如 .sh/.py/.js）后用 shell_exec 执行文件，或直接用 execute_code 工具执行（沙箱内支持多行代码）。"
           : "";
         return {
           success: false,
@@ -543,6 +544,16 @@ export function registerShellMediaTools(
       // 且与 execute_code 的沙箱语义分叉。现在统一走 manager（会话创建/销毁 +
       // 策略贯通）；manager 不可用时才回退旧旁路，保证行为不回退。
       if (params.sandbox === true) {
+        // ── 解析 backend 参数（默认 process；支持 cloud 后端）──
+        // 对标 hermes-agent 的 7 后端沙箱路由：process/docker/ssh/
+        // singularity/modal/daytona/vercel_sandbox。此前 backend 硬编码
+        // "process"，cloud 后端实现但无工具面路由（VERIFY-FAIL 修复）。
+        const requestedBackend = String(params.backend || "process") as
+          | "process" | "docker" | "ssh" | "singularity" | "modal" | "daytona" | "vercel_sandbox";
+        const VALID_BACKENDS: string[] = ["process", "docker", "ssh", "singularity", "modal", "daytona", "vercel_sandbox"];
+        if (!VALID_BACKENDS.includes(requestedBackend)) {
+          return { success: false, error: `Invalid backend "${requestedBackend}". Must be one of: ${VALID_BACKENDS.join(", ")}` };
+        }
         const SANDBOX_POLICY: SandboxPolicy = {
           allowNetwork: false,
           allowFileSystem: true, // 脚本需读写工作区
@@ -559,7 +570,7 @@ export function registerShellMediaTools(
         if (sandboxManager) {
           try {
             const session = await sandboxManager.createSession({
-              backend: "process",
+              backend: requestedBackend,
               timeoutMs: timeoutSec * 1000,
               policy: SANDBOX_POLICY,
             });
@@ -900,11 +911,11 @@ export function registerShellMediaTools(
           required: true,
           enum: ["search", "download"],
         },
-        artist: { type: "string", description: "歌手名（search 使用）" },
-        limit: { type: "number", description: "返回歌曲数量（默认 10）（search 使用）" },
-        query: { type: "string", description: "歌曲名、歌手，或音乐 URL（download 使用）" },
-        audioFormat: { type: "string", description: "音频格式：'mp3'、'flac'、'aac'（默认 mp3）（download 使用）" },
-        quality: { type: "string", description: "音频质量：'128'、'192'、'320' kbps（默认 320）（download 使用）" },
+        artist: { type: "string", description: "歌手名（search 使用）", required: false },
+        limit: { type: "number", description: "返回歌曲数量（默认 10）（search 使用）", required: false },
+        query: { type: "string", description: "歌曲名、歌手，或音乐 URL（download 使用）", required: false },
+        audioFormat: { type: "string", description: "音频格式：'mp3'、'flac'、'aac'（默认 mp3）（download 使用）", required: false },
+        quality: { type: "string", description: "音频质量：'128'、'192'、'320' kbps（默认 320）（download 使用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -925,7 +936,7 @@ export function registerShellMediaTools(
   // 自动管理会话生命周期：首次调用创建会话，后续复用；空闲 10 分钟后自动销毁。
   const sandboxManager = registry?.resolveService<{
     createSession(config: {
-      backend: "docker" | "ssh" | "process";
+      backend: "docker" | "ssh" | "process" | "singularity" | "modal" | "daytona" | "vercel_sandbox";
       timeoutMs?: number;
       /** P3-5：process 软沙箱会话携带 SandboxPolicy（尽力执行） */
       policy?: SandboxPolicy;
@@ -947,7 +958,7 @@ export function registerShellMediaTools(
 
   // 沙箱会话缓存：executor 进程内复用同一个沙箱会话（P3-5：后端可配置，docker 缺失时降级 process）
   let sandboxSessionId: string | null = null;
-  let sandboxSessionBackend: "docker" | "ssh" | "process" | null = null;
+  let sandboxSessionBackend: "docker" | "ssh" | "process" | "singularity" | "modal" | "daytona" | "vercel_sandbox" | null = null;
   let sandboxSessionCreatedAt = 0;
   const SANDBOX_SESSION_TTL_MS = 10 * 60 * 1000; // 10 分钟空闲后销毁
   // 会话创建互斥锁：串行化会话创建，防止并发调用各自创建会话产生孤儿
@@ -1153,14 +1164,17 @@ export function registerShellMediaTools(
             "The code to execute. For Python: 'print(\"hello\")'. For Node.js: plain script — " +
             "CommonJS (require) 与 ESM (import) 均可，模块形态自动识别（本地软沙箱下自动选 .cjs/.mjs 临时文件）。 " +
             "Use tools.call(name, params) when programmatic=true to invoke other tools from within the script.",
+          required: true,
         },
         language: {
           type: "string",
           description: "Interpreter: 'python' or 'node' (default: 'node'). Programmatic tool calling requires 'node'.",
+          required: false,
         },
         timeout: {
           type: "string",
           description: "Optional timeout in seconds (default: 30, max: 120).",
+          required: false,
         },
         programmatic: {
           type: "boolean",
@@ -1170,6 +1184,12 @@ export function registerShellMediaTools(
             "supported. Forbidden operations (shell_exec, email send, git push/commit, DLQ retry, webhooks, " +
             "approvals) are rejected. " +
             "Prefer this over many separate tool calls for read-heavy pipelines.",
+          required: false,
+        },
+        backend: {
+          type: "string",
+          description: "Optional sandbox backend: docker (default), ssh, process, singularity, modal, daytona, vercel_sandbox. Cloud backends route through SandboxManager for remote isolated execution.",
+          required: false,
         },
       },
     },
@@ -1415,16 +1435,27 @@ export function registerShellMediaTools(
         // 标注 backend（弱隔离提示，走既有 SandboxPolicy）。工具结果属
         // prompt-cache 不敏感面（元数据，非工具集本身），无需延迟失效。
         const backends = await sandboxManager.listBackends();
-        const explicit = (process.env.SANDBOX_BACKEND || "").trim().toLowerCase();
-        const pick = (type: "docker" | "ssh" | "process") =>
+        const ALL_BACKENDS = ["docker", "ssh", "process", "singularity", "modal", "daytona", "vercel_sandbox"] as const;
+        type BackendType = typeof ALL_BACKENDS[number];
+        const pick = (type: BackendType) =>
           backends.some((b) => b.type === type && b.available);
-        let chosen: "docker" | "ssh" | "process";
-        if (explicit === "ssh" && pick("ssh")) {
-          chosen = "ssh";
-        } else if (explicit === "docker" && pick("docker")) {
-          chosen = "docker";
-        } else if (explicit === "process" && pick("process")) {
-          chosen = "process";
+
+        // backend 参数优先（工具面显式指定）→ SANDBOX_BACKEND 环境变量 → 默认 docker → process 降级
+        const paramBackend = String(params.backend || "").trim().toLowerCase() as BackendType;
+        const explicit = (process.env.SANDBOX_BACKEND || "").trim().toLowerCase();
+        let chosen: BackendType;
+        if (paramBackend && ALL_BACKENDS.includes(paramBackend) && pick(paramBackend)) {
+          chosen = paramBackend;
+        } else if (paramBackend) {
+          // 工具面指定了 backend 但不可用 → 明确报错而非静默降级
+          return {
+            success: false,
+            error: `Sandbox backend "${paramBackend}" is not available on the host.`,
+            hint: `Available backends: ${backends.filter(b => b.available).map(b => b.type).join(", ") || "none"}. Use shell_exec for non-sandboxed execution.`,
+            backends,
+          };
+        } else if (explicit && ALL_BACKENDS.includes(explicit as BackendType) && pick(explicit as BackendType)) {
+          chosen = explicit as BackendType;
         } else if (pick("docker")) {
           chosen = "docker";
         } else {

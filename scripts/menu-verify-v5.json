@@ -1,0 +1,185 @@
+{
+  "report": {
+    "sessions": {
+      "total": 520,
+      "baseline": 495,
+      "delta": 25,
+      "v5TaskSessions": 35,
+      "v5Ids": "1,1,1,1,2,2,3,3,3,3,3,4,4,4,4,5,5,5,5,6,6,7,7,7,8,8,8,8,8,9,9,10,10,10,10",
+      "sample": [
+        {
+          "id": "v5-task-10-1793197213064",
+          "title": ""
+        },
+        {
+          "id": "v5-task-9-1793197128494",
+          "title": ""
+        }
+      ]
+    },
+    "skills": {
+      "total": 21,
+      "baseline": 21,
+      "delta": 0,
+      "names": [
+        "codebase-migrate",
+        "deploy-pipeline",
+        "domain-name-brainstormer",
+        "file-organizer",
+        "gzh-design",
+        "mcp-builder",
+        "sentry-triage",
+        "skill-creator",
+        "tailored-resume-generator",
+        "webapp-testing",
+        "base64-codec",
+        "brooks-lint",
+        "calculator",
+        "codebase-recon",
+        "color-tools",
+        "hash-computer",
+        "regex-tester",
+        "text-utils",
+        "timestamp-converter",
+        "unit-converter",
+        "uuid-generator"
+      ]
+    },
+    "memories": {
+      "total": 2610,
+      "baseline": 2547,
+      "delta": 63
+    },
+    "evolution": {
+      "records": 1,
+      "baseline": 1,
+      "delta": 0,
+      "recent": [
+        {
+          "skillName": "meeting-insights-analyzer",
+          "type": "archive",
+          "ts": "2026-10-20T03:06:50.183Z"
+        }
+      ]
+    },
+    "tokenUsage": {
+      "totalTokens": 214706436,
+      "baseline": 203219407,
+      "delta": 11487029,
+      "totalCalls": 5638,
+      "baselineCalls": 5189,
+      "deltaCalls": 449,
+      "cacheHitRate": 0.5530869861360216,
+      "baselineHit": 0.5303910406752065,
+      "recentCalls": 20
+    },
+    "events": {
+      "seq": 1834,
+      "recentTypes": [
+        "session_end",
+        "session_start",
+        "session_end",
+        "session_start",
+        "session_end",
+        "session_end",
+        "session_end",
+        "session_end",
+        "session_end",
+        "session_start"
+      ],
+      "v5Events": 50
+    },
+    "scheduler": {
+      "total": 19,
+      "names": [
+        "health-check-5min",
+        "health-log",
+        "eval10-hourly",
+        "eval10-hourly",
+        "eval22-backup",
+        "eval23-backup",
+        "eval23-backup",
+        "eval23-backup",
+        "eval15-echo",
+        "eval30-backup",
+        "counter-increment",
+        "系统状态检查",
+        "每日日报生成",
+        "weekly-retro-reminder",
+        "daily-report",
+        "hourly-system-status-check",
+        "daily-report",
+        "hourly-status-check",
+        "daily-report"
+      ]
+    },
+    "workboard": {
+      "status": 404,
+      "total": 0
+    },
+    "kanban": {
+      "status": 200,
+      "boards": 5
+    },
+    "metrics": {
+      "httpRequests": null,
+      "errorRate": null
+    },
+    "sessionDetail": {
+      "sessionId": "v5-task-10-1793197213064",
+      "messages": 2,
+      "preview": "完成一个复合任务：1）调研常见开源健康检查聚合方案（如 UptimeRobot、Freshping 的架构思路，简述即可）；2）用 Node.js 编写一个 HTTP 健康检查聚合服务 /tmp/v5"
+    }
+  },
+  "checks": [
+    [
+      "v5 会话总数 ≥ 基线 + 重跑任务数（≥17）",
+      true
+    ],
+    [
+      "会话总数较基线增长（重跑 6 任务 ≥ +5）",
+      true
+    ],
+    [
+      "技能菜单可访问且数量 ≥ 基线",
+      true
+    ],
+    [
+      "记忆存储增长 ≥ 0（允许不变，任务不强制记忆）",
+      true
+    ],
+    [
+      "Token 用量增长 > 0",
+      true
+    ],
+    [
+      "Token 调用次数增长 > 0",
+      true
+    ],
+    [
+      "缓存命中率保持在 0.4-0.95 合理区间",
+      true
+    ],
+    [
+      "事件流包含 v5 事件",
+      true
+    ],
+    [
+      "调度任务菜单可访问",
+      true
+    ],
+    [
+      "工作台接口可用",
+      true
+    ],
+    [
+      "看板接口可用",
+      true
+    ],
+    [
+      "v5 会话详情含消息记录",
+      true
+    ]
+  ],
+  "ts": "2026-10-28T14:21:20.328Z"
+}

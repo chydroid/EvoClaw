@@ -306,6 +306,23 @@ export function registerSchedulerTools(
     return { success: true, history, count: history.length };
   };
 
+  /** Cron 运行间学习：召回指定 job 的最近 N 次运行结果 */
+  const handleSchedulerRecallRuns = async (params: Record<string, unknown>) => {
+    const jobId = String(params.taskId || "");
+    if (!jobId) return { success: false, error: "taskId is required (action=recall_runs)" };
+    const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "3"), 10) || 3, 20));
+    const memoryHub = registry.resolveService("memoryHub") as { recallCronRuns?: (jobId: string, limit: number) => Promise<string[]> } | null;
+    if (!memoryHub?.recallCronRuns) {
+      return { success: false, error: "Memory service not available" };
+    }
+    try {
+      const runs = await memoryHub.recallCronRuns(jobId, limit);
+      return { success: true, jobId, runs, count: runs.length };
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  };
+
   /** 原 dlq_retry_batch（从 vision-batch-tools.ts 搬来；仅 deps.dlqHandler → dlqHandler 适配） */
   const handleSchedulerRetryDlq = async (params: Record<string, unknown>) => {
     try {
@@ -347,12 +364,13 @@ export function registerSchedulerTools(
         "delete（删除任务，区分任务不存在与删除成功）； " +
         "execute（立即执行指定任务）； " +
         "history（查看执行历史，可按 taskId 过滤，limit 默认 20）； " +
+        "recall_runs（召回指定 job 的最近 N 次运行结果，用于运行间学习继承经验）； " +
         "retry_dlq（死信队列批量重试：并发上限、指数退避、失败隔离，返回统计）。",
       parameters: {
         action: {
           type: "string",
-          description: "要执行的定时任务操作。action to perform: create / list (default) / update / delete / execute / history / retry_dlq",
-          enum: ["create", "list", "update", "delete", "execute", "history", "retry_dlq"],
+          description: "要执行的定时任务操作。action to perform: create / list (default) / update / delete / execute / history / recall_runs / retry_dlq",
+          enum: ["create", "list", "update", "delete", "execute", "history", "recall_runs", "retry_dlq"],
           required: true,
         },
         name: { type: "string", description: "Task name（create 用）", required: false },
@@ -360,7 +378,7 @@ export function registerSchedulerTools(
         description: { type: "string", description: "Task description（create 用）", required: false },
         handlerType: { type: "string", description: "Handler type: email_check, report_generate, browser_action, system_cleanup, custom, shell. For shell handler, handlerConfig should be {\"command\":\"pnpm test\",\"cwd\":\"/path\",\"timeout\":60000}（create 用）", required: false },
         handlerConfig: { type: "string", description: "JSON config for handler（create / update 用）", required: false },
-        taskId: { type: "string", description: "Task ID（update / delete / execute / history 用）", required: false },
+        taskId: { type: "string", description: "Task ID（update / delete / execute / history / recall_runs 用）", required: false },
         enabled: { type: "string", description: "Enable (true) or disable (false)（update 用）", required: false },
         limit: { type: "number", description: "Max results (default 20)（history 用）", required: false },
         entries: { type: "array", description: "Array of DLQ entries to retry（retry_dlq 用）", required: false },
@@ -377,8 +395,9 @@ export function registerSchedulerTools(
       if (action === "delete") return await handleSchedulerDelete(params);
       if (action === "execute") return await handleSchedulerExecute(params);
       if (action === "history") return await handleSchedulerHistory(params);
+      if (action === "recall_runs") return await handleSchedulerRecallRuns(params);
       if (action === "retry_dlq") return await handleSchedulerRetryDlq(params);
-      return { success: false, error: `未知 scheduler action: ${action}（仅支持 create / list / update / delete / execute / history / retry_dlq）` };
+      return { success: false, error: `未知 scheduler action: ${action}（仅支持 create / list / update / delete / execute / history / recall_runs / retry_dlq）` };
     }
   );
 }

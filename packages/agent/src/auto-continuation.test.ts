@@ -137,3 +137,22 @@ describe("detectPrematureStop — 不得把「劝用户继续」当成停顿（�
     expect(detectPrematureStop("请告诉我是否继续处理剩下的文件")).not.toBeNull();
   });
 });
+
+describe("detectPrematureStop — 序数承诺（v4 Task 7 回归）", () => {
+  it("★「接下来是第三个文件」应判定为停顿", () => {
+    expect(
+      detectPrematureStop(
+        "已创建完成。在 /tmp/v4-monitor/ 目录下，已生成 monitor.sh 和 notify.sh。接下来是第三个文件（systemd service）以及部署验证说明。",
+        { toolCallsThisRound: false },
+      ),
+    ).toBe("promise_future_action");
+  });
+
+  it("本轮已调用工具时不判为停顿（过程叙述）", () => {
+    expect(
+      detectPrematureStop("已创建完成。接下来是第三个文件（systemd service）。", {
+        toolCallsThisRound: true,
+      }),
+    ).toBeNull();
+  });
+});

@@ -339,9 +339,12 @@ triggers:
 _result = {
   hasProcess: typeof process !== "undefined",
   hasGlobal: typeof global !== "undefined",
-  hasRequire: typeof require !== "undefined",
-  hasFetch: typeof fetch !== "undefined",
   hasEval: typeof eval !== "undefined",
+  hasFetch: typeof fetch !== "undefined",
+  // require 改为白名单安全版：纯计算内置模块可用，危险模块必须被拒
+  cryptoWorks: (() => { try { return typeof require("crypto").createHash === "function"; } catch (e) { return false; } })(),
+  fsBlocked: (() => { try { require("fs"); return false; } catch (e) { return true; } })(),
+  childProcessBlocked: (() => { try { require("child_process"); return false; } catch (e) { return true; } })(),
 };
 \`\`\`
 `;
@@ -361,8 +364,14 @@ _result = {
       const output = result.output as Record<string, boolean>;
       expect(output.hasProcess).toBe(false);
       expect(output.hasGlobal).toBe(false);
-      expect(output.hasRequire).toBe(false);
       expect(output.hasEval).toBe(false);
+      expect(output.hasFetch).toBe(false);
+      // 2026-10-28 修复：沙箱 require 从"完全禁用"改为"白名单安全版"——
+      // bundled hash-computer 等脚本依赖 require("crypto")，完全禁用导致
+      // "require is not a function" 假失败。危险模块仍必须被拒。
+      expect(output.cryptoWorks).toBe(true);
+      expect(output.fsBlocked).toBe(true);
+      expect(output.childProcessBlocked).toBe(true);
     }
 
     await fs.rm(skillDir, { recursive: true, force: true }).catch(() => {});

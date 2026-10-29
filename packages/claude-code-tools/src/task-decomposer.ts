@@ -5,7 +5,7 @@
  * 借鉴 Claude Code 的任务规划理念：Plan → Decompose → Schedule → Execute → Verify
  */
 
-import { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, buildChatCompletionsUrl } from "@evoclaw/core";
 import { randomUUID } from "crypto";
 import { assertSafeLlmUrl } from "./llm-dispatcher";
 
@@ -632,14 +632,7 @@ export class TaskDecomposer {
     },
     userPrompt: string,
   ): Promise<{ content: string }> {
-    let apiURL = provider.baseURL || "";
-    if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-      apiURL = apiURL.replace(/\/+$/, "");
-      if (!apiURL.endsWith("/v1")) {
-        apiURL = `${apiURL}/v1`;
-      }
-      apiURL = `${apiURL}/chat/completions`;
-    }
+    let apiURL = buildChatCompletionsUrl(provider.baseURL || "");
 
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (provider.apiKey) {

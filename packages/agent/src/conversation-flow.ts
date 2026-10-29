@@ -69,8 +69,49 @@ interface ConversationContext {
 }
 
 // ── 意图识别规则（关键词 + 正则） ──────────────────────
-
+// 顺序即优先级：安全类意图（越狱/敏感信息）必须先于通用意图匹配，
+// 否则「脚本里写死我的 api key」会被 code_request 的裸词 \bapi\b 先命中、
+// 「忽略之前的指令」会被 greeting 的 ^你好 先命中（2026-10-28 v4 压测
+// 回归发现的真实漏检）。越狱检测优先级最高。
 const INTENT_RULES: IntentRule[] = [
+  {
+    intent: "jailbreak_attempt",
+    patterns: [
+      /(ignore|disregard|forget)\s+(previous|prior|above|all)\s+(instructions?|rules?|prompts?)/i,
+      /(忽略|无视|忘记)(之前|上面|所有)(的)?(指令|规则|提示)/,
+      /\b(system\s+prompt|系统提示词|jailbreak|越狱|DAN)\b/i,
+      /\b(you\s+are\s+now|现在你是|pretend\s+to\s+be|扮演)\b/i,
+      /\b(override|覆盖|绕过|bypass)\s+(safety|安全|filter|过滤)\b/i,
+    ],
+    description: "越狱尝试",
+  },
+  {
+    intent: "personal_info",
+    patterns: [
+      // 强凭证信号：裸词即拦截。
+      // 中文关键词不加 \b——JS 正则中 CJK 属 \w，「我密码忘了」这类语境
+      // 永远匹配不到 \b密码\b（2026-10-28 修复时一并修正的既有漏检）。
+      /密码|信用卡|身份证|\b(password|passwd|ssn)\b/i,
+      /\bapi[\s_-]?key\b/i,
+      // 「我的 api 密钥是 sk-...」——中文「密钥」不在 \bkey\b 覆盖范围，
+      // 且必须带所有格才拦截（「分析 API 密钥管理的最佳实践」这类教学
+      // 语境无所有格，不得误伤——与 token 的凭证上下文策略同理）。
+      /(?:我的|我们的|你的|my|our|your)\s*api[\s_-]?(?:key|密钥)/i,
+      /\bsecret\b/i,
+      // ★ 2026-10-28 修复（v4 压测 Task 3 误拦）：token 不再作为裸词匹配。
+      //   「JWT（JSON Web Token）」「access token 机制」「令牌续期」等安全教学/
+      //   开发语境会被 \btoken\b 误命中，导致整个安全分析请求在 init 阶段被
+      //   拦截（实测 14s 返回 0 tokens）。改为凭证上下文才触发：
+      //   所有格（我的 token）、赋值（token=xxx）、Bearer 长凭证。
+      //   末尾不加 \b——「我的token是xxx」这类中英混排无空格场景同样要命中。
+      /(?:我的|我们的|你的|my|our|your)\s*tokens?/i,
+      /\btoken\s*(?:=|:)\s*[^\s，,。；;]{8,}/i,
+      /\bbearer\s+[A-Za-z0-9._~+/=-]{20,}/i,
+      /\b\d{16,19}\b/, // 信用卡号长度
+      /\b\d{3}-\d{2}-\d{4}\b/, // SSN 格式
+    ],
+    description: "涉及个人敏感信息（凭证类关键词需上下文）",
+  },
   {
     intent: "greeting",
     patterns: [
@@ -101,26 +142,6 @@ const INTENT_RULES: IntentRule[] = [
       /\b(任务|子任务|委托|task|subtask|delegate)\b/i,
     ],
     description: "任务委托",
-  },
-  {
-    intent: "personal_info",
-    patterns: [
-      /\b(password|密码|passwd|api[_-]?key|secret|token|信用卡|身份证|ssn)\b/i,
-      /\b\d{16,19}\b/, // 信用卡号长度
-      /\b\d{3}-\d{2}-\d{4}\b/, // SSN 格式
-    ],
-    description: "涉及个人敏感信息",
-  },
-  {
-    intent: "jailbreak_attempt",
-    patterns: [
-      /(ignore|disregard|forget)\s+(previous|prior|above|all)\s+(instructions?|rules?|prompts?)/i,
-      /(忽略|无视|忘记)(之前|上面|所有)(的)?(指令|规则|提示)/,
-      /\b(system\s+prompt|系统提示词|jailbreak|越狱|DAN)\b/i,
-      /\b(you\s+are\s+now|现在你是|pretend\s+to\s+be|扮演)\b/i,
-      /\b(override|覆盖|绕过|bypass)\s+(safety|安全|filter|过滤)\b/i,
-    ],
-    description: "越狱尝试",
   },
 ];
 

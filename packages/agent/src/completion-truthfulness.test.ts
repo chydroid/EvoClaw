@@ -6,6 +6,7 @@ import {
   extractEmptyResult,
   looksLikeDetailedReport,
   extractToolFailure,
+  extractClaimedCommands,
   type PendingPermission,
 } from "./completion-truthfulness";
 
@@ -157,6 +158,22 @@ describe("extractToolFailure — 识别「执行了但失败」的工具返回�
   it("识别 { success:false, error } 与 { success:false, errors:[...] }", () => {
     expect(extractToolFailure("t", { success: false, error: "boom" })).toBe("boom");
     expect(extractToolFailure("t", { success: false, errors: ["a", "b"] })).toBe("a; b");
+  });
+
+  it("★ 结构化 errors 对象必须拼出可读文案（不得出现 [object Object]）", () => {
+    // 真实事故（2026-10-28 v4 复测 Task 7）：apply_patch 返回
+    // { success:false, errors:[{ path, reason }] }，旧实现 errors.map(String)
+    // 把对象拼成 "[object Object]"，模型看到无意义错误后放弃写文件，
+    // 把内容以文本形式写进回复（浪费 151K tokens）。
+    const raw = {
+      success: false,
+      errors: [{ path: "evoclaw-monitor.service", reason: "File not found: evoclaw-monitor.service" }],
+    };
+    const failure = extractToolFailure("apply_patch", raw);
+    expect(failure).toBeTruthy();
+    expect(failure).not.toContain("[object Object]");
+    expect(failure).toContain("evoclaw-monitor.service");
+    expect(failure).toContain("File not found");
   });
 
   it("识别 JSON 字符串形态", () => {
@@ -408,5 +425,81 @@ describe("write_claimed_not_executed — 声称已修改但没跑写文件工具
     expect(claimsWriteCompletion("文件已创建成功")).toBe(true);
     expect(claimsWriteCompletion("已运行脚本，结果正常")).toBe(false);
     expect(claimsWriteCompletion("")).toBe(false);
+  });
+});
+
+// ── 声称执行过验证命令，但工具日志无执行记录（v4 Task 8 事故，2026-10-28）──
+describe("claimed_command_not_executed — 声称运行测试但无执行记录（回归）", () => {
+  it("★ v4 Task 8 实录：声称 node --test 验证通过，但只跑过 node -e → 更正", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply:
+        "✅ 所有 5 个子任务已完成。运行 `node --test` 验证全部通过。",
+      toolsExecuted: true,
+      lastUserMessage: "实现令牌桶限流器并运行 node --test 验证",
+      writeOps: [
+        { name: "file_write", args: '{"path":"/tmp/v4-ratelimit/ratelimit.js"}' },
+      ],
+      executedShellCommands: [
+        'node -e "const {TokenBucket}=require(\'/tmp/v4-ratelimit/ratelimit.js\')"',
+      ],
+    });
+    expect(v.needsCorrection).toBe(true);
+    expect(v.reason).toBe("claimed_command_not_executed");
+    expect(v.notice).toContain("node --test");
+  });
+
+  it("真正执行过 node --test → 不误报", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 完成。运行 `node --test` 验证全部通过。",
+      toolsExecuted: true,
+      lastUserMessage: "跑测试",
+      executedShellCommands: ["node --test /tmp/v4-ratelimit/ratelimit.test.js"],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("命令以更长形态执行过（子串包含）→ 不误报", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 完成。运行 `jest` 检查。",
+      toolsExecuted: true,
+      lastUserMessage: "检查测试",
+      executedShellCommands: ["npx jest --runInBand /tmp/x/ratelimit.test.js"],
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("无执行上下文的示例引用不触发", () => {
+    const v = reconcileCompletionTruthfulness({
+      finalReply: "✅ 文档已完成。文档中示例：vitest 是常用测试框架。",
+      toolsExecuted: false,
+      lastUserMessage: "写文档",
+    });
+    expect(v.needsCorrection).toBe(false);
+  });
+
+  it("已成功完成措辞也算完成声明（v4 Task 8 回复措辞）", () => {
+    expect(claimsCompletion("✅ 所有 5 个子任务已成功完成！")).toBe(true);
+  });
+});
+
+describe("extractClaimedCommands", () => {
+  it("提取引号内验证命令", () => {
+    expect(extractClaimedCommands("✅ 运行 `node --test` 验证全部通过")).toEqual(["node --test"]);
+    expect(extractClaimedCommands("执行 \"npm test\" 后检查")).toEqual(["npm test"]);
+  });
+
+  it("散文句式：运行/执行/跑 + 命令", () => {
+    expect(extractClaimedCommands("我运行 node --test 验证通过")).toEqual(["node --test"]);
+    expect(extractClaimedCommands("已执行 pnpm test，全部通过")).toEqual(["pnpm test"]);
+  });
+
+  it("无执行上下文的句子不提取（示例引用不算声称）", () => {
+    expect(extractClaimedCommands("示例：vitest 是常用测试框架")).toEqual([]);
+    expect(extractClaimedCommands("jest 是一个 JavaScript 测试框架")).toEqual([]);
+  });
+
+  it("非命令形态（文件名/路径）不算", () => {
+    expect(extractClaimedCommands("运行 node-test.js 检查输出")).toEqual([]);
+    expect(extractClaimedCommands("运行 /tmp/tests/foo.test.js 检查")).toEqual([]);
   });
 });

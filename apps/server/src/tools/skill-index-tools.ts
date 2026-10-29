@@ -23,8 +23,8 @@ export function registerSkillIndexTools(
       name: "skill_view",
       description: "View a skill at a specific detail level. Level 0 = brief (~20 tokens), Level 1 = detailed (~200 tokens), Level 2 = full instructions (~1000+ tokens). Default: Level 1.",
       parameters: {
-        skill: { type: "string", description: "Skill name or ID to view" },
-        level: { type: "number", description: "Detail level: 0 (brief), 1 (detailed), 2 (full). Default: 1" },
+        skill: { type: "string", description: "Skill name or ID to view", required: true },
+        level: { type: "number", description: "Detail level: 0 (brief), 1 (detailed), 2 (full). Default: 1", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

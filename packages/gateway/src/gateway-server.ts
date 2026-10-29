@@ -1421,12 +1421,13 @@ export class GatewayServer {
       const { name, config } = (req.body || {}) as {
         name: string;
         config: {
-          type: "stdio" | "sse";
+          type: "stdio" | "sse" | "streamable-http";
           command?: string;
           args?: string[];
           env?: Record<string, string>;
           cwd?: string;
           url?: string;
+          headers?: Record<string, string>;
           enabled?: boolean;
         };
       };

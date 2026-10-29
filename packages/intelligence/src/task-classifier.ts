@@ -644,11 +644,12 @@ export class TaskClassifier {
     
     // 需要排除的意图类别（这些操作不需要网络搜索）
     const excludedCategories: TaskCategory[] = [
-      "email_handling",  // 邮件操作不需要网络搜索
-      "file_operation",  // 文件操作不需要网络搜索
-      "code_generation", // 代码生成不需要网络搜索
-      "skill_execution",  // 技能执行不需要网络搜索
-      "system_operation", // 系统操作不需要网络搜索
+      "email_handling",     // 邮件操作不需要网络搜索
+      "file_operation",     // 文件操作不需要网络搜索
+      "code_generation",    // 代码生成不需要网络搜索
+      "skill_execution",    // 技能执行不需要网络搜索
+      "system_operation",   // 系统操作不需要网络搜索
+      "question_answering", // 问答类（含创意写作）不需要网络搜索
     ];
     
     // 如果主要意图是排除的类别，不触发搜索

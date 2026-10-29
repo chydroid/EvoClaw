@@ -18,6 +18,8 @@ export type { DialecticClaim, SynthesizedBelief, DialecticModelFile, ClaimStatus
 export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";
 export { FTS5SearchEngine } from "./fts5-search";
 export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";
+export { SessionSearch } from "./session-search";
+export type { SessionSearchResult, SessionInfoProvider, SessionInfoLike, SessionTurnLike } from "./session-search";
 export { MemoryCurator } from "./memory-curator";
 export type { CurationDecision, MemorySnapshot } from "./memory-curator";
 export { MemoryCuratorV2 } from "./memory-curator-v2";

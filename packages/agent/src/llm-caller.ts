@@ -7,7 +7,9 @@
  */
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
-import { Semaphore } from "@evoclaw/core";
+import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "@evoclaw/core";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
@@ -28,6 +30,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
+import { getToolOutputPruner } from "./tool-output-pruner";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
@@ -38,6 +41,7 @@ import { getStreamingRecoveryManager } from "./streaming-recovery";
 import { getVerificationEvidenceStore, classifyVerificationCommand } from "./verification-evidence";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
+import { getErrorRecoveryExecutor, type RecoveryMessage } from "./error-recovery-executor";
 
 /**
  * 从 CallLLMOnceResult.usageDetails 提取缓存命中/写入 token（provider 侧真值）。
@@ -841,6 +845,8 @@ export interface LLMCallerDeps {
   toolResultCache: Map<string, ToolResultCacheEntry>;
   // Session persistence deps
   sessionDataDir: string;
+  /** 工作区根目录（agent-model-executor 的 workspacePath）。磁盘文件核验用它解析相对路径。 */
+  workspacePath?: string;
   sessionPersistenceEnabled: boolean;
   autoCompactionEnabled: boolean;
   compactionTokenThreshold: number;
@@ -1131,19 +1137,88 @@ const TOOL_RESULT_MAX_CHARS = 4_000;
 /**
  * 截断过大的工具结果，避免单个返回值吃掉大量上下文。
  *
- * 事故：email / list_inbox 单次返回 6920 字节，同一轮被重复调用 3 次，
- * 仅这一个工具就占了约 20KB 上下文。截断时保留一个明确标记，
- * 让模型知道内容被截断了，而不是误以为工具只返回了这么点数据。
+ * 事故（2026-10-28）：email / list_inbox 返回 22K 字符，旧的"首尾拼接"
+ * 截断让模型只能看到头尾两段邮件，中间整段丢失，整理摘要因此不完整。
+ * 改为 JSON 结构感知截断：保留前 N 条**完整**元素 + 总数，截断后仍是
+ * 结构清晰的 JSON，模型可直接消费；非 JSON 输出（shell/日志）保留头部主干。
  */
 export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_MAX_CHARS): string {
   if (typeof text !== "string" || text.length <= maxChars) return text;
-  const head = Math.floor(maxChars * 0.75);
-  const tail = maxChars - head;
-  return (
-    text.slice(0, head) +
-    `\n\n...[结果过长已截断：原文 ${text.length} 字符，仅保留首尾]...\n\n` +
-    text.slice(text.length - tail)
-  );
+
+  const note = (extra: string) =>
+    `\n\n...[结果过长已截断：原文 ${text.length} 字符${extra}]...\n\n`;
+
+  // JSON 结构感知截断
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const jsonResult = truncateJsonResult(text, maxChars);
+    if (jsonResult !== null) {
+      return jsonResult + note("，已按结构保留前段完整条目");
+    }
+  }
+
+  // 非 JSON 输出：保留头部（主干信息密度最高），尾部丢弃并如实告知
+  const budget = Math.max(0, maxChars - 160);
+  return text.slice(0, budget) + note(`，尾部 ${text.length - budget} 字符已丢弃`);
+}
+
+/**
+ * 对 JSON 结果做结构感知截断：找到第一个超预算的数组字段，保留前 N 条完整元素，
+ * 并在数组末尾插入总数标记。返回 null 表示不适合 JSON 截断（解析失败 / 无超预算数组）。
+ */
+function truncateJsonResult(text: string, maxChars: number): string | null {
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return null; // 非法 JSON（shell 输出等）——回退普通截断
+  }
+
+  const MAX_ARRAY_CHARS = Math.floor(maxChars * 0.7);
+
+  // root 本身就是数组
+  if (Array.isArray(data)) {
+    const t = truncateJsonArray(data, MAX_ARRAY_CHARS);
+    return t ? JSON.stringify(t) : null;
+  }
+
+  if (!data || typeof data !== "object") return null;
+
+  const obj = data as Record<string, unknown>;
+  for (const key of Object.keys(obj)) {
+    if (!Array.isArray(obj[key])) continue;
+    const arr = obj[key] as unknown[];
+    if (arr.length < 2) continue;
+    if (JSON.stringify(arr).length <= MAX_ARRAY_CHARS) continue;
+    const t = truncateJsonArray(arr, MAX_ARRAY_CHARS);
+    if (!t) continue;
+    obj[key] = t;
+    return JSON.stringify(obj);
+  }
+  return null;
+}
+
+/**
+ * 截断数组：保留前 N 条完整元素（序列化后不超预算），末尾插入总数标记。
+ * 标记以字符串形式混入数组——模型可读、信息自描述，且不破坏"这是个列表"的语义。
+ */
+function truncateJsonArray(arr: unknown[], budget: number): unknown[] | null {
+  const serialized = arr.map(v => JSON.stringify(v));
+  let used = 0;
+  let kept = 0;
+  for (const s of serialized) {
+    const cost = used === 0 ? s.length : s.length + 2; // 元素 + 分隔符
+    if (used + cost > budget && kept > 0) break;
+    used += cost;
+    kept++;
+  }
+  if (kept >= arr.length) return null; // 无需截断
+
+  const keptItems = serialized.slice(0, kept).map(s => JSON.parse(s));
+  const marker =
+    `...(共 ${arr.length} 条，仅保留前 ${kept} 条；` +
+    `如需其余请缩小 limit/since，或按 uid 用 get_email 单查)`;
+  return [...keptItems, marker];
 }
 
 /**
@@ -1319,6 +1394,396 @@ function computeDynamicToolLimit(
   return Math.min(cap, limit);
 }
 
+/**
+ * 从回复文本中提取被声称创建/写入的文件路径。
+ *
+ * ★ 2026-10-27 新增：完成声明对账只检查"是否调用了写工具"，
+ *   但不验证声称创建的文件是否真的存在于磁盘上。此函数从回复中
+ *   提取被声称创建/写入的文件路径，供磁盘核验使用。
+ *
+ * 提取策略：
+ * 1. 匹配反引号中的绝对路径（`/home/...`、`/tmp/...` 等）
+ * 2. 匹配完成声明关键词附近的路径（"已创建"/"已写入"/"文件清单"/"路径"）
+ * 3. 过滤掉 URL、npm/pnpm 包路径、目录路径（无扩展名）等非文件路径
+ * 4. 过滤掉常见的系统路径（/proc, /sys, /dev 等）
+ */
+/**
+ * 从回复中提取被声称创建/写入的文件路径（供磁盘核验使用）。
+ * 导出仅供测试（回归用例见 llm-caller.test.ts）。
+ */
+export function extractClaimedFilePaths(reply: string, baseDir?: string): string[] {
+  if (!reply) return [];
+  const paths = new Set<string>();
+  const hasBase = typeof baseDir === "string" && baseDir.length > 0;
+
+  // 1. 反引号中的绝对路径
+  // ★ 2026-10-28 修复（v4 复测 Task 7 误报）：排除「记录到 / 写入到 / 输出到」
+  //   等运行时写目标——这类路径描述脚本运行期写日志/输出的位置，并非模型
+  //   声称创建的文件（如 monitor.sh 的告警日志 alert.log 被误判为缺失文件）。
+  //   上下文以写目标介词结尾才排除；介词带「到/为/入」后缀，「已写入 X」这类
+  //   完成声明不会误伤（末尾是「入 」而非「入到」）。
+  // ★ 2026-10-28 二次补充「自动写入」：v4 Task 7 复测回复以「超阈值自动写入
+  //   `/tmp/v4-monitor/alert.log`」描述脚本运行期行为——「自动」前缀区别于
+  //   完成声明「已写入」，可安全排除。
+  // ★ 2026-10-28 三次补充「尝试写 / 试着写」：v7 复测回复以「会尝试写
+  //   `/tmp/v4-monitor/alert.log`」描述脚本运行期行为——「尝试」前缀同样
+  //   区别于完成声明，但此前不在列表 → alert.log 被误判为声称创建 → 触发
+  //   虚假「任务未完成」更正脚注。
+  // ★ 2026-10-28 四次补充「时写入 / 时记录 / 时保存 / 时输出 / 时发送」：
+  //   v10 复测 Task 7 回复以「超阈值时写入 `/tmp/v4-monitor/alert.log`」描述
+  //   脚本运行期行为——「时」前缀（条件触发）区别于完成声明「已写入」，
+  //   此前列表只认「写入到」（带「到」后缀），「时写入」漏网 → alert.log
+  //   被误判为声称创建 → 更正脚注误报。
+  // ★ 2026-10-28 五次补充「超阈值写入 / 阈值写入」：v12 复测 Task 7 回复以
+  //   「超阈值写入 `/tmp/v4-monitor/alert.log`」描述脚本运行期行为——
+  //   「超阈值/阈值」条件前缀同样区别于完成声明。
+  const runtimeWriteTargetRe = /(?:记录到|写入到|输出到|保存到|追加到|存到|发送到|写到|记到|记入|存入|输出为|存为|自动写入|尝试写|试着写|时写入|时记录|时保存|时输出|时发送|超阈值写入|阈值写入)\s*$/;
+  const backtickPathRe = /`(\/[^`]+)`/g;
+  for (const m of reply.matchAll(backtickPathRe)) {
+    const p = m[1].trim();
+    if (!isCandidateFilePath(p)) continue;
+    const before = reply.slice(Math.max(0, (m.index ?? 0) - 30), m.index ?? 0);
+    if (runtimeWriteTargetRe.test(before)) continue;
+    paths.add(p);
+  }
+
+  // 2. 完成声明关键词附近的路径
+  // ★ 2026-10-28：补充「创建目录 / 初始化 / 验证通过」——v4 Task 8 回复以
+  //   「✅ 创建目录 /tmp/v4-ratelimit 并初始化 ratelimit.js 文件」句式声称创建；
+  //   复测 Task 7 回复以「三个监控文件已经全部完成并验证通过：」引导文件清单，
+  //   关键词在引导行、路径在清单条目行（±3 行窗口覆盖）。
+  // ★ 2026-10-28 二次补充「就绪 / 都放在」——v4 Task 7 复测回复以
+  //   「监控方案已就绪，三个文件都放在 `/tmp/v4-monitor/` 下了」句式声称完成，
+  //   「就绪/都放在」不在原关键词列表 → 整个文件清单漏检。
+  const claimKeywords = /(?:已创建|已写入|已保存|已生成|文件清单|路径|已部署|已安装|文件结构|目录结构|创建目录|初始化|验证通过|就绪|就位|都放在)/;
+  // 按行分割，找到包含完成声明关键词的行及其前后各 3 行
+  const lines = reply.split("\n");
+  // ★ 2026-10-28：路径字符集排除 CJK 标点——此前 `[^\s`"'<>()|,;)]*` 会把
+  //   中文冒号/逗号粘进路径（v4 Task 8 实测提取出 "/tmp/v4-ratelimit/
+  //   ratelimit.js，实现"），产生永远不存在的畸形路径 → 误报缺失。
+  //   同时对每个匹配应用运行时写目标守卫（与策略 1 同源）。
+  const cjkPunct = "：。，、！？；（）【】《》“”‘’…—～·";
+  const linePathRe = new RegExp(
+    "\\/(?:home|tmp|var|opt|usr|etc|root|data|workspace)[^\\s`\"'<>()|,;" +
+    cjkPunct.split("").map((c) => "\\u" + c.codePointAt(0)!.toString(16).padStart(4, "0")).join("") + "]*",
+    "g",
+  );
+  for (let i = 0; i < lines.length; i++) {
+    if (claimKeywords.test(lines[i])) {
+      // 检查当前行及前后各 3 行中的路径
+      const start = Math.max(0, i - 3);
+      const end = Math.min(lines.length, i + 4);
+      for (let j = start; j < end; j++) {
+        const linePaths = lines[j].match(linePathRe);
+        if (linePaths) {
+          for (const p of linePaths) {
+            if (!isCandidateFilePath(p)) continue;
+            // 运行时写目标守卫：路径前的上下文以写目标介词结尾 → 运行期输出，非创建声明。
+            // ★ 2026-10-28：indexOf(p) 定位的是反引号**之后**的路径起点，before 末尾
+            //   会带一个反引号（「输出到 `/tmp/x/run.log`」→ before 以 "`" 结尾）导致
+            //   runtimeWriteTargetRe 失配 → 运行期写目标被误判为声称创建。
+            //   先剥掉尾部反引号/空白再判定。
+            const line = lines[j];
+            const idx = line.indexOf(p);
+            const before = line
+              .slice(Math.max(0, idx - 30), idx)
+              .replace(/[\s`]+$/, "");
+            if (runtimeWriteTargetRe.test(before)) continue;
+            paths.add(p);
+          }
+        }
+      }
+    }
+  }
+
+  // 2.5 ★ 2026-10-28 新增：裸文件名 + 文中提及目录拼接（v4 Task 7/8 事故）。
+  //   回复常以「在 `/tmp/v4-monitor/` 目录下，已生成 `monitor.sh`」、
+  //   「创建目录 /tmp/v4-ratelimit 并初始化 ratelimit.js 文件」这类句式
+  //   声称创建了文件，但：
+  //   - 目录路径被 isCandidateFilePath 的无扩展名规则过滤；
+  //   - 文件名是裸名（无前导 `/`、可能没有反引号），策略 1/2 都不匹配；
+  //   → 磁盘核验完全漏掉（Task 7 实测 0 事件）。
+  //   修复：收集文中提及的目录（/tmp/xxx 等形态），把行内裸文件名
+  //   （带已知扩展名、不在否定语境）与「其前最近提及的目录」拼接。
+  const dirMentionRe = /\/(?:home|tmp|var|opt|usr|etc|root|data|workspace)[\w./-]*/g;
+  // ★ 2026-10-28 v12 复测：代码块（```/~~~ 围栏）内的目录提及不作为拼接基准——
+  //   v12 回复的 monitor.sh 代码块含「for m in / /var /home /tmp」，其中 /tmp
+  //   被登记为目录后，标题行「## 2. v4-monitor.service + v4-monitor.timer」的
+  //   裸文件名拼到了 /tmp/v4-monitor.service（畸形路径）→ 更正脚注把真实存在
+  //   的 /tmp/v4-monitor/v4-monitor.service 报为缺失。围栏内的提及一律跳过。
+  const fenceSpans: Array<[number, number]> = [];
+  {
+    let fenceStart = -1;
+    let offset = 0;
+    for (const line of reply.split("\n")) {
+      if (/^\s*(?:```|~~~)/.test(line)) {
+        if (fenceStart < 0) fenceStart = offset;
+        else {
+          fenceSpans.push([fenceStart, offset]);
+          fenceStart = -1;
+        }
+      }
+      offset += line.length + 1;
+    }
+  }
+  const inFence = (idx: number) =>
+    fenceSpans.some((s) => idx >= s[0] && idx < s[1]);
+  const mentionedDirs: Array<{ dir: string; end: number }> = [];
+  for (const m of reply.matchAll(dirMentionRe)) {
+    if (inFence(m.index ?? 0)) continue;
+    const raw = m[0];
+    const dir = raw.replace(/\/+$/, "");
+    // 末段带扩展名 → 更像完整文件路径（策略 1/2 已处理），不作为目录
+    if ((dir.split("/").pop() || "").includes(".")) continue;
+    if (dir) mentionedDirs.push({ dir, end: (m.index ?? 0) + raw.length });
+  }
+  // 行级完成声明上下文；否定词（不存在/未创建…）说明模型并未声称创建，跳过
+  const bareClaimContextRe = /(?:已创建|已写入|已保存|已生成|已部署|已安装|文件清单|文件结构|目录结构|完成|创建|初始化|已存在|就绪|就位)/;
+  const bareClaimNegateRe = /(?:不存在|没有|未创建|未生成|未找到|没创建|没生成|未就绪|未就位)/;
+  // ★ 2026-10-28：整条回复的完成声明门（原属策略 2.7，此处前置供 2.5 复用）。
+  //   补充「就绪 / 都放在」——v4 Task 7 复测回复以「监控方案已就绪，三个文件
+  //   都放在 `/tmp/v4-monitor/` 下了」+ 编号清单条目（**1. `monitor.sh`**）声称
+  //   完成，就绪/都放在不在原列表 → 编号条目行无行级声明上下文 → 三个文件全漏。
+  const replyHasCompletionClaim = /(?:完成|已创建|已生成|已写入|已保存|已部署|已安装|创建|初始化|验证通过|就绪|就位|都放在)/.test(reply);
+  // 编号/bullet 清单条目行（**1. `x`** / 1. x / - x / * x / • x）。
+  // ★ 2026-10-28：marker 后必须跟空白——「**阈值含义速查**：…」是加粗段落而非
+  //   bullet，旧正则把前导「*」当 bullet 放行 → 行内裸文件名误拼到最近提及目录。
+  const listItemRe = /^\s*(?:\*{0,2}\s*\d+[.、)]\s+|[-*•]\s+)\*{0,2}\s*/;
+  // 引用语境外（详见/参考/位于）——清单条目只是指向文件，并非声称创建
+  const listItemRefExclRe = /(?:详见|参考|位于)/;
+  // 反引号内的裸文件名（v4 Task 7 实录形态）；扩展名含 systemd 单元（.service/.timer）
+  // ——v7 复测 Task 7 回复以 `evomon.timer` 反引号裸名声称创建
+  const backtickBareRe = /[`]([A-Za-z0-9][A-Za-z0-9._-]*\.(?:py|js|mjs|cjs|ts|tsx|jsx|md|json|css|html?|toml|txt|csv|tsv|sh|bash|service|timer|ya?ml|xml|ini|cfg|conf|sql|log|png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip|gz|tar|bak|spec))[`]/gi;
+  // 无反引号的裸文件名（v4 Task 8 实录形态）；前后不能紧跟路径分隔符/引号/
+  // 词字符——否则「/tmp/x/monitor.sh」的后缀「onitor.sh」（前字符为词字符 m）
+  // 会被误匹配。CJK 标点/汉字不在 \w 内，「、notify.sh」仍正常命中。
+  // lookahead 不排「.」——句尾「已生成 report.md.」的 ASCII 句号是标点非文件名。
+  const plainBareRe = /(?<![\w\/`"'.-])([A-Za-z0-9][A-Za-z0-9._-]*\.(?:py|js|mjs|cjs|ts|tsx|jsx|md|json|css|html?|toml|txt|csv|tsv|sh|bash|service|timer|ya?ml|xml|ini|cfg|conf|sql|log|png|jpe?g|gif|svg|ico|woff2?|ttf|pdf|zip|gz|tar|bak|spec))(?![\w\/`"'])/gi;
+  let lineOffset = 0;
+  // ★ 2026-10-28 v11 复测：代码块（``` 围栏）内的 `# 注释`是 bash 注释而非
+  //   markdown 标题——「# 就会在 alert.log 中看到…」曾命中标题门，裸文件名
+  //   拼到上方最近提及的目录（/etc/systemd/system/alert.log）→ 误报。
+  //   围栏内关闭标题门（其余门不变）。
+  let inCodeBlock = false;
+  for (const rawLine of lines) {
+    const lineStartAbs = lineOffset;
+    lineOffset += rawLine.length + 1; // +1 为换行符
+    if (/^\s*```/.test(rawLine)) inCodeBlock = !inCodeBlock;
+    // ★ 2026-10-28：清单条目行（编号/bullet）在整条回复含完成声明时视为声称行——
+    //   完成声明常在引导行（「三个文件都放在 X 下了」），条目行本身无声明词。
+    const isListItem = listItemRe.test(rawLine);
+    // ★ 2026-10-28 v10 复测 Task 7 实录：markdown 标题行列举文件（「## 2.
+    //   `evoclaw-monitor.service` + `evoclaw-monitor.timer`」）——文件名在标题、
+    //   完成声明在引导行（「三个文件已创建完成」），行级关键词门漏检 → 磁盘
+    //   核验放过未落盘的 .service/.timer，更正脚注缺失。标题行 + 完成声明 +
+    //   非引用语境外（详见/参考/位于）时视为声称行。
+    const isHeading = !inCodeBlock && /^\s{0,3}#{1,6}\s/.test(rawLine);
+    if (bareClaimNegateRe.test(rawLine)) continue;
+    if (
+      !bareClaimContextRe.test(rawLine) &&
+      !((isListItem || isHeading) && replyHasCompletionClaim && !listItemRefExclRe.test(rawLine))
+    ) continue;
+    // 行内目录：取最后一个提及作为本行基准。
+    // ★ 2026-10-28：提及若是文件路径（basename 带扩展名），取其父目录——
+    //   v8 复测 Task 7 回复「三个文件均已就位（/tmp/v4-monitor/monitor.sh、
+    //   notify.sh、monitor.service，另附 monitor.timer）」：目录只以绝对
+    //   路径形式出现，同行裸文件名（notify.sh 等）需要父目录作为拼接基准，
+    //   否则整行漏提取 → 虚假声称无人更正。
+    let lineDir: string | null = null;
+    {
+      const dirsInLine = [...rawLine.matchAll(dirMentionRe)];
+      if (dirsInLine.length > 0) {
+        const last = dirsInLine[dirsInLine.length - 1][0].replace(/\/+$/, "");
+        const base = last.split("/").pop() || "";
+        if (base.includes(".")) {
+          const parent = last.slice(0, -(base.length + 1));
+          if (parent) lineDir = parent;
+        } else {
+          lineDir = last;
+        }
+      }
+    }
+    const collect = (re: RegExp) => {
+      for (const m of rawLine.matchAll(re)) {
+        const name = m[1];
+        if (name.includes("/") || /^https?:/i.test(name)) continue;
+        // ★ 2026-10-28：运行时写目标守卫（与策略 1/2 同源）——文件名前的上下文
+        //   以写目标介词结尾（如「超阈值自动写入 `alert.log`」）→ 运行期输出位置，
+        //   非创建声明，跳过。
+        const beforeName = rawLine.slice(Math.max(0, (m.index ?? 0) - 30), m.index ?? 0);
+        if (runtimeWriteTargetRe.test(beforeName)) continue;
+        const absStart = lineStartAbs + (m.index ?? 0);
+        // 优先本行目录；行内没有则回退到「文件名之前最近提及的目录」（跨行场景）
+        let base = lineDir;
+        if (!base) {
+          for (const d of mentionedDirs) {
+            if (d.end <= absStart) base = d.dir;
+            else break;
+          }
+        }
+        if (!base) continue;
+        const joined = `${base}/${name}`;
+        if (isCandidateFilePath(joined)) paths.add(joined);
+      }
+    };
+    collect(backtickBareRe);
+    collect(plainBareRe);
+  }
+
+  // 2.7 ★ 2026-10-28 新增：清单条目行（bullet + 绝对路径）。
+  //   复测 Task 7 回复结构：「三个监控文件已经全部完成并验证通过：\n
+  //   - /tmp/v4-monitor/monitor.sh：…\n- /tmp/v4-monitor/notify.sh：…\n
+  //   - /tmp/v4-monitor/v4-monitor.service：…」——声称创建的 .service 文件
+  //   实际从未落盘，但路径在清单条目行、完成声明在引导行，两者不同行；
+  //   策略 2 的关键词窗口只认「已创建/验证通过」等关键词，「完成」不在列表
+  //   时整个清单漏检。识别 bullet 起始的绝对路径条目（路径须紧跟 bullet，
+  //   「详见/参考/位于」等引用语境外），且整条回复须含完成声明才生效。
+  //   replyHasCompletionClaim 已于策略 2.5 前置（含「就绪/都放在」），此处复用。
+  if (replyHasCompletionClaim) {
+    // bullet（-/*/• 或编号）+ 空格 + 绝对路径（可带尾描述）
+    const bulletPathRe = /^\s*(?:[-*•]|\d+[.、)])\s+(\/(?:home|tmp|var|opt|usr|etc|root|data|workspace)[\w./-]*)/;
+    for (const rawLine of lines) {
+      const b = bulletPathRe.exec(rawLine);
+      if (!b) continue;
+      // 路径须紧跟 bullet ——「详见/参考/位于 /tmp/x」这类引用语境外自然不匹配
+      const p = b[1].replace(/\/+$/, "");
+      if (isCandidateFilePath(p)) paths.add(p);
+    }
+  }
+
+  // 3. ★ 2026-10-27 新增：代码块中的文件树（相对路径）。
+  //   实测 Task 1 的回复用代码块树状图声称创建了文件：
+  //     todo-cli/
+  //     ├── README.md
+  //     ├── pyproject.toml
+  //     ├── todo_cli/
+  //     │   ├── __init__.py
+  //     │   └── cli.py
+  //   此类相对路径既无前导 `/`，也不在反引号中，旧提取策略完全漏掉。
+  //   解析树状行（`├── foo.py` / `└── bar.ts` / `│   └── baz.js`），
+  //   去掉树形字符与缩进后得到相对路径；存在 baseDir 时逐个解析为绝对路径。
+  //   带目录层级的树（`todo_cli/` 子目录）需维护目录栈以重建完整相对路径。
+  if (hasBase) {
+    // 树状行：前导（空格 + │）+ 分支符（├──/└──）+ 条目名
+    const treeEntryRe = /^([│\s]*)(?:[├└]──\s*)([^\s│].*?)$/;
+    let inCodeBlock = false;
+    // 每个代码块独立维护：代码块内第一个非空行若是「xxx/」则作为树根目录名
+    let blockRoot: string | null = null;
+    // 目录栈：[{ depth, relDir }]——depth = 前导缩进列数 / 2（│ 视觉占 2 列、空格 1 列）
+    // 弹栈用 `>=`：遇到同级条目时弹出上一级目录，保持栈顶始终是最近的父目录
+    const dirStack: Array<{ depth: number; relDir: string }> = [];
+    for (const rawLine of lines) {
+      if (/^\s*```/.test(rawLine)) {
+        inCodeBlock = !inCodeBlock;
+        // 代码块切换：重置目录栈与根目录，避免跨块串味
+        blockRoot = null;
+        dirStack.length = 0;
+        continue;
+      }
+      if (!inCodeBlock) continue;
+      const t = treeEntryRe.exec(rawLine);
+      if (!t) {
+        // 树的根目录行通常无树形前缀（如 `todo-cli/`），仅出现在块首附近；
+        // 在尚无根的情况下，把「xxx/」形式的首个非空行视为树根
+        const rootRe = /^(\S[^\s/]*)\/$/;
+        const r = rootRe.exec(rawLine.trim());
+        if (r && !blockRoot) {
+          blockRoot = r[1];
+        }
+        continue;
+      }
+      // 前导「│」视觉上占 2 列，空格占 1 列；统一折算为列数再 /2 得深度
+      const cols = t[1].replace(/│/g, "  ").length;
+      const depth = Math.floor(cols / 2);
+      let rel = t[2].replace(/\s*(?:\([^)]*\)|[—–-]\s*\d+\s*(?:行|bytes|KB|MB))?\s*$/, "").trim();
+      if (!rel) continue;
+      // 子目录行：以 `/` 结尾（如 `todo_cli/`）或末段无扩展名
+      const looksDir = rel.endsWith("/") || !/\./.test((rel.split("/").pop() || ""));
+      // 弹栈：弹出所有 depth >= 当前行的目录，栈顶即父目录
+      while (dirStack.length > 0 && dirStack[dirStack.length - 1].depth >= depth) {
+        dirStack.pop();
+      }
+      const parent = dirStack.length > 0 ? dirStack[dirStack.length - 1].relDir : "";
+      // parent 已带尾 `/`，rel 不以 `/` 开头，直接拼接避免双斜杠
+      const full = parent ? `${parent}${rel}` : rel;
+      if (looksDir) {
+        dirStack.push({ depth, relDir: full.endsWith("/") ? full : `${full}/` });
+        continue;
+      }
+      if (/^[/~]/.test(rel)) continue; // 已是绝对路径，走策略 1/2
+      if (/^https?:\/\//i.test(rel)) continue;
+      // 树根目录下的条目补上前缀（如 `todo-cli/README.md`）
+      const withRoot = blockRoot && !full.startsWith(`${blockRoot}/`) && full !== blockRoot
+        ? `${blockRoot}/${full}`
+        : full;
+      const resolved = path.isAbsolute(withRoot) ? withRoot : path.join(baseDir, withRoot);
+      if (isCandidateFilePath(resolved)) paths.add(resolved);
+    }
+  }
+
+  return Array.from(paths);
+}
+
+/**
+ * 判断路径是否为候选文件路径（有扩展名、不是 URL、不是系统路径）。
+ */
+function isCandidateFilePath(p: string): boolean {
+  if (!p) return false;
+  // 过滤 URL
+  if (/^https?:\/\//i.test(p)) return false;
+  // 过滤系统路径
+  if (/^\/(?:proc|sys|dev|run|boot|sbin|bin)\//.test(p)) return false;
+  // 过滤目录路径（无扩展名）——只检查有扩展名的文件
+  const basename = p.split("/").pop() || "";
+  if (!basename.includes(".")) return false;
+  // 过滤常见的非文件路径（npm/pnpm 包路径等）
+  if (/\/(?:node_modules|dist|build|out|src)\//.test(p) && !/\.(?:ts|js|json|md|py|txt|csv|html|css|xml|yaml|yml|toml)$/.test(basename)) return false;
+  return true;
+}
+
+/**
+ * 从本回合工具调用记录中提取真实执行过的 shell 命令文本。
+ * 用于「声称运行了验证命令但无执行记录」对账（claimed_command_not_executed，
+ * v4 Task 8 事故）。只收录带 command 参数的执行类工具（shell_exec 等）；
+ * execute_code 的 code 参数是脚本内容而非命令行，刻意不收录（避免子串误匹配）。
+ * 导出仅供测试。
+ */
+export function extractExecutedShellCommands(
+  calls: Array<{ name: string; arguments?: Record<string, unknown> }>,
+): string[] {
+  const out: string[] = [];
+  for (const c of calls) {
+    const name = c.name.toLowerCase();
+    if (
+      !name.includes("shell") &&
+      !name.includes("exec") &&
+      !name.includes("bash") &&
+      !name.includes("terminal")
+    ) continue;
+    const cmd = c.arguments?.command;
+    if (typeof cmd === "string" && cmd.trim()) out.push(cmd.trim());
+  }
+  return out;
+}
+
+/**
+ * 计算两个字符串的重叠率（基于字符 n-gram 的 Jaccard 相似度）。
+ * 用于检测模型是否在续跑后产生了与上次 yield 高度相似的回复（循环守卫）。
+ */
+function overlapRatio(a: string, b: string): number {
+  if (!a || !b) return 0;
+  const n = 10; // 10-gram
+  const setA = new Set<string>();
+  const setB = new Set<string>();
+  for (let i = 0; i <= a.length - n; i++) setA.add(a.slice(i, i + n));
+  for (let i = 0; i <= b.length - n; i++) setB.add(b.slice(i, i + n));
+  if (setA.size === 0 || setB.size === 0) return 0;
+  let intersection = 0;
+  for (const g of setA) if (setB.has(g)) intersection++;
+  return intersection / Math.min(setA.size, setB.size);
+}
+
+
 // ── Helper: session persistence delegation ──
 
 function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps {
@@ -1332,6 +1797,22 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
     lifecycleManager: deps.lifecycleManager,
     sessionManager: deps.sessionManager,
     memoryHub: deps.memoryHub,
+    // LLM 摘要生成器：调用 callLLMOnce 用第一个 provider 生成摘要。
+    // 对标 Hermes ContextCompressor 的辅助 LLM 调用（auxiliary.compression）。
+    llmSummarizer: async (prompt: string): Promise<string> => {
+      const provider = deps.providers[0];
+      if (!provider) return "";
+      const result = await callLLMOnce(
+        provider,
+        [{ role: "user", content: prompt }],
+        [],
+        "none",
+        undefined,
+        deps,
+      );
+      if (result?.message?.content) return result.message.content;
+      return "";
+    },
   };
 }
 
@@ -1366,13 +1847,12 @@ interface ToolGroupDef {
  *   会话首消息未命中关键词时不下发，命中后进入单调并集、此后整段保持字节
  *   稳定（缓存不再逐轮漂移）。
  *
- *   **刻意保留常驻（不分组）的 7 个**：apply_patch（patch/plan_rename/apply_rename）/
- *   workflow（batch）/ code_search（text/references）/
- *   execute_code / dev_check（test/lint）/ verify_project / todo_list。
- *   理由：Agentic 编码任务的首消息常常是「这个页面报错了」这类**不含任何
- *   编码关键词**的叙述，而代码检索/编辑/执行/测试是这类任务一上来就要用的
- *   能力；一旦被关键词裁掉，模型只能退到 shell_exec，属于行为回归而非省 token。
- *   这 7 个 + core 组是「任何请求都该在手」的稳定基座。
+ *   ★ 2026-10-29 第二轮瘦身：core 扩到 10 个常驻工具
+ *   （+execute_code / +todo_list），其余未分组工具全部收进 on-demand 组。
+ *   原 7 个「刻意保留常驻」的工具中，execute_code / todo_list 升入 core；
+ *   code_search / dev_check / verify_project 收进 dev 组（关键词覆盖编码语境）；
+ *   workflow 本就在 workflow 组；apply_patch 是创建类白名单恒定下发。
+ *   创建类白名单（isCreationTool）不受影响，仍恒定下发防「无接口」bug。
  *
  *   ★ 注意「创建类」工具（isCreationTool 白名单）即使被分进某组也**仍然恒定
  *   下发**，所以把它们放进组里不省 token——但为了组内语义完整仍照写，
@@ -1390,6 +1870,7 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     tools: [
       "web_search", "web_fetch", "file_write", "file_read",
       "file_list", "file_delete", "shell_exec", "sequential_thinking",
+      "execute_code", "todo_list",
     ],
     keywords: [], // always included
   },
@@ -1473,6 +1954,30 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     // （命中「研究/调研」时显式激活），web_search 本身在 core 组恒定下发。
     tools: ["web_search"],
     keywords: ["研究", "调研", "查证", "资料收集", "事实核查", "research", "文献"],
+  },
+  // ── 2026-10-29 第二轮瘦身：以下 4 组把原「未分组常驻」的 10 个工具收进 on-demand ──
+  dev: {
+    // 开发/调试工具组：dev_check（test/lint）/ code_search（text/references）/
+    // verify_project（项目验证）。关键词覆盖编码语境，与 git 组同源——
+    // 「开发/代码/修复」等词命中时 git+dev 同时激活，工具集一次到位。
+    tools: ["dev_check", "code_search", "verify_project"],
+    keywords: ["开发", "代码", "测试", "lint", "验证", "调试", "debug", "dev", "test", "verify", "code", "search", "报错", "修复", "修改", "实现", "编程", "代码搜索", "代码检查", "项目验证", "code search", "跑测试", "运行测试"],
+  },
+  report: {
+    // 报告生成工具：report（generate/templates/email_digest/weekly）
+    tools: ["report"],
+    keywords: ["报告", "report", "周报", "生成报告", "总结报告", "报告生成", "weekly", "邮件摘要", "email digest"],
+  },
+  planning: {
+    // 任务规划/分类工具：task_plan（decompose/status/templates）/ classify_task（classify/stats）
+    tools: ["task_plan", "classify_task"],
+    keywords: ["任务分解", "任务规划", "任务分类", "复杂任务", "任务管理", "分解任务", "规划任务", "task decompose", "task plan", "classify task"],
+  },
+  system: {
+    // 系统/内部工具：execute_tool_chain / complete_bootstrap / permission_status / error_stats
+    // 这些工具使用频率低，关键词精确匹配即可。
+    tools: ["execute_tool_chain", "complete_bootstrap", "permission_status", "error_stats"],
+    keywords: ["工具链", "tool chain", "bootstrap", "初始化", "权限状态", "权限检查", "错误统计", "错误恢复", "完成引导"],
   },
 };
 
@@ -1909,20 +2414,6 @@ export class StreamingTagScrubber {
 // /v1/chat/completions），请求/响应/SSE 事件格式均不同。以下转换函数
 // 把通用（OpenAI 兼容）格式与 Anthropic 原生格式互转，仅在
 // provider.provider === "anthropic" 时启用，不影响其他 provider。
-
-/** 构造 Anthropic Messages API 端点 URL（{baseURL}/v1/messages）。 */
-function buildAnthropicMessagesUrl(baseURL: string): string {
-  let url = (baseURL || "").replace(/\/+$/, "");
-  // 兼容用户把 baseURL 配成 OpenAI 兼容路径（/v1/chat/completions）的情况
-  if (url.endsWith("/chat/completions")) {
-    url = url.slice(0, -"/chat/completions".length);
-  }
-  if (!url.endsWith("/messages")) {
-    if (!url.endsWith("/v1")) url = `${url}/v1`;
-    url = `${url}/messages`;
-  }
-  return url;
-}
 
 /** Anthropic tool_choice：auto→{type:"auto"}，required→{type:"any"}。 */
 function convertToolChoiceToAnthropic(
@@ -2803,16 +3294,9 @@ export async function callLLMOnce(
 
   const baseURL = provider.baseURL || "";
   const isAnthropicProvider = provider.provider === "anthropic";
-  let apiURL = isAnthropicProvider
+  const apiURL = isAnthropicProvider
     ? buildAnthropicMessagesUrl(baseURL)
-    : baseURL;
-  if (!isAnthropicProvider && !apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-    apiURL = apiURL.replace(/\/+$/, "");
-    if (!apiURL.endsWith("/v1")) {
-      apiURL = `${apiURL}/v1`;
-    }
-    apiURL = `${apiURL}/chat/completions`;
-  }
+    : buildChatCompletionsUrl(baseURL);
 
   const startTime = Date.now();
   let callStart = startTime;
@@ -2833,15 +3317,21 @@ export async function callLLMOnce(
 
     const useStreaming = !!onProgress;
 
-    // ── Anthropic prompt cache: apply cache_control breakpoints ──
+    // ── Prompt cache: apply cache_control breakpoints ──
     // 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + volatile
     // 区域之前的最后 3 条非 system 消息上注入 cache_control: {type: "ephemeral"}，
-    // 启用 Anthropic 服务端 prompt 缓存。命中缓存时输入 token 按 10% 计费。
-    // 仅对 Anthropic provider 生效（其他 provider 会忽略此字段或报错）。
+    // 启用服务端 prompt 缓存。命中缓存时输入 token 按 10% 计费。
+    // ★ P0-6（2026-10-28）：断点扩展到 OpenAI 兼容路径。实测 A/B（12 轮探针）：
+    // 开断点命中率随 history 增长 17,664→26,880（97-98%）；关断点恒为 17,664
+    // （78-83%）——网关**不**自动前缀缓存 history，必须靠 cache_control 断点。
+    // 网关接受该字段不报错（全程 200）。故默认开启，EVOCLAW_PROMPT_CACHE_BREAKPOINTS=0
+    // 可关闭（个别严格校验未知字段的 OpenAI 兼容端点可按需 opt-out）。
     // ★ P0-5：volatile system 消息（skills 段/动态尾）的合并已在 tryCallLLM 层
     // 完成（一次性，见该处注释），此处只负责断点。
     let messagesToSend = messages;
-    if (provider.provider === "anthropic") {
+    const breakpointsEnabled =
+      provider.provider === "anthropic" || process.env.EVOCLAW_PROMPT_CACHE_BREAKPOINTS !== "0";
+    if (breakpointsEnabled) {
       // P0-3：ContextEngine 分层上下文时，首条 system = frozen + ephemeral。
       // 把断点放在 frozen 段末尾（frozenContent.length），易变尾不拉进缓存块。
       // 非 CE 路径（stableLength undefined）保持旧行为：整条 system 一个断点。
@@ -2889,7 +3379,8 @@ export async function callLLMOnce(
           if (m.tool_calls) msg.tool_calls = m.tool_calls;
           if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
           if (m.name) msg.name = m.name;
-          // 透传 cache_control（仅 Anthropic provider 设置了此字段）
+          // 透传 cache_control（applyAnthropicCacheControl 设置：anthropic 路径
+          // 或默认开启的 OpenAI 兼容路径，EVOCLAW_PROMPT_CACHE_BREAKPOINTS=0 关闭）
           const cacheCtrl = (m as LLMMessage & { cache_control?: unknown }).cache_control;
           if (cacheCtrl) msg.cache_control = cacheCtrl;
           return msg;
@@ -2942,6 +3433,40 @@ export async function callLLMOnce(
 
     process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
     callStart = Date.now();
+
+    // ── 临时诊断：prompt 组成转储（EVOCLAW_DEBUG_PROMPT_DUMP=1 时启用）──
+    // 用途：缓存命中率专项——测量每轮请求各段（system/history/skills/tail/user/tools）
+    // 的字符数与内容哈希，定位逐轮漂移的段。仅调试用，默认关闭。
+    if (process.env.EVOCLAW_DEBUG_PROMPT_DUMP) {
+      try {
+        const msgLines = (body?.messages as Array<{ role: string; content: unknown; cache_control?: unknown }> | undefined)?.map((m, i) => {
+          const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+          const h = crypto.createHash("sha256").update(c, "utf-8").digest("hex").slice(0, 12);
+          const cc = m.cache_control ? "CC" : "--";
+          return `${i}:${m.role}:${c.length}:${h}:${cc}`;
+        }) ?? [];
+        const toolsChars = body?.tools ? JSON.stringify(body.tools).length : 0;
+        // ★ 工具清单 + 各自大小（仅首条带 tools 的记录写一次，避免日志膨胀）
+        const toolEntries = body?.tools as Array<{ function?: { name?: string } }> | undefined;
+        const toolList = toolEntries?.map((t) => {
+          const n = t?.function?.name ?? "?";
+          return { n, c: JSON.stringify(t).length };
+        }) ?? [];
+        fs.appendFileSync(
+          "/tmp/prompt-dump.log",
+          JSON.stringify({
+            ts: Date.now(),
+            model: provider.model,
+            baseURL: provider.baseURL,
+            msgs: msgLines,
+            toolsChars,
+            toolList,
+            bodyChars: JSON.stringify(body).length,
+          }) + "\n",
+        );
+      } catch { /* best-effort */ }
+    }
+
     const response = await nativeFetch(apiURL, {
       method: "POST",
       headers,
@@ -3148,6 +3673,16 @@ export async function callLLMOnce(
 
 export interface TryCallLLMOptions {
   message: string;
+  /**
+   * ★ 2026-10-27 修复：创造性任务判定的原始用户消息。
+   * `message` 是增强后的消息（用户消息 + 注入的 Tavily 搜索上下文）。
+   * 创造性任务模式（CREATIVE_TASK_PATTERN）若直接测试增强消息，会因注入的
+   * 搜索结果中含 "RESTful API"/"技术文档"/"设计 API" 等词而**误判**为创造性
+   * 任务——典型事故：kanban 任务注入的看板软件资讯含 "RESTful API"，导致
+   * 52 个工具全被禁用、模型无法执行 kanban。创造性判定只应针对用户真正
+   * 输入的内容，故单独传入未经增强的原始消息。未传时回退到 message。
+   */
+  rawUserMessage?: string;
   systemPrompt: string;
   /**
    * ★ P0-5（2026-10-27）：skills 元数据段（"## Available Capabilities" 标题 +
@@ -3195,11 +3730,16 @@ export async function tryCallLLM(
 
   const doTryCall = async (): Promise<TryCallLLMResult | null> => {
   const {
-    message, systemPrompt, skillsMessage, dynamicSystemTail: callerDynamicSystemTail, installedSkills, providers, startTime,
+    message, rawUserMessage, systemPrompt, skillsMessage, dynamicSystemTail: callerDynamicSystemTail, installedSkills, providers, startTime,
     sessionId, pendingPermissions, attachments, onProgress,
     searchPreDone = false, channel, abortSignal,
     includeAccumulatedReplyInTokenEvents = false,
   } = options;
+
+  // 创造性任务判定只针对用户原始输入，不测增强消息（含注入的搜索上下文）。
+  // 搜索结果里常见的 "RESTful API"/"技术文档"/"设计 API" 会让 kanban/scheduler
+  // 等工具任务被误判为创造性 → 工具全禁 → 模型无法执行。未传时回退到 message。
+  const rawMessage = rawUserMessage ?? message;
 
   // Wire end-to-end cancellation signal into deps so callLLMOnce picks it up.
   // 创建 deps 浅拷贝再设置 abortSignal，避免修改调用方共享的 deps 对象。
@@ -3207,24 +3747,21 @@ export async function tryCallLLM(
     deps = { ...deps, abortSignal };
   }
 
-  // ★ 2026-10-26 从 30/100 降为 10/30：实测复杂任务中模型在 40 轮工具调用后
-  //   仍未完成，消耗 40 万+ token。10 轮对大多数任务足够（每轮可并行多个工具），
-  //   30 轮上限覆盖极复杂场景。nudging 机制在 4 轮后已催促最终答案。
-  // ★ 2026-10-26 修复：工具轮次限制从 10/30 降到 5/15。
-  //   实测 agnes-3.0-flash 每轮 15-61s，5 轮 = 75-305s。
-  //   原 10 轮上限在 180s 超时内根本无法完成，且每轮上下文增长
-  //   导致 token 爆炸（300K+）。5 轮足够完成创造性任务（写作/设计/分析），
-  //   编码任务可通过 dynamic tool limit 适当上调。
-  const BASE_MAX_TOOL_ROUNDS = 5;
-  const MAX_TOOL_ROUNDS_CAP = 8;
+  // ★ 2026-10-27 调整为 10/20：实测 10 任务压测中，8 轮上限不足以完成
+  //   需要多步操作的复杂任务（如全栈脚手架、仓库分析）。base=10 覆盖大多数
+  //   任务，cap=20 为极复杂场景留足空间。每轮可并行多个工具调用。
+  const BASE_MAX_TOOL_ROUNDS = 10;
+  const MAX_TOOL_ROUNDS_CAP = 20;
   const MAX_CONSECUTIVE_ERRORS = 3;
   // 自动续跑上限：检测到「该继续却停下来问人」时，最多自动回灌多少轮。
   // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
   // ★ 2026-10-26 从 3 降为 1：实测 3 次续跑在复杂任务中导致模型循环——
   //   每轮产生"详细但无实质完成"的响应 → 触发 empty_but_detailed → 续跑 →
   //   重复同样的工具调用 → 再触发 → 3 轮消耗 40 万+ token 仍未完成。
-  //   1 次续跑在保留纠正能力的同时，避免循环耗尽预算。
-  const MAX_AUTO_CONTINUE = 1;
+  // ★ 2026-10-27 恢复为 3：1 次续跑不够——模型收到 nudge 后再次 yield，
+  //   没有第二次续跑就交还用户。加入循环守卫：若模型连续两次 yield 内容
+  //   相同（或高度相似），不再续跑，避免旧循环问题。
+  const MAX_AUTO_CONTINUE = 3;
 
   // ── 过载自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）──
   // provider 出现瞬时过载类错误（429/5xx/超时/网络）时，不立即 failover，
@@ -3478,7 +4015,7 @@ export async function tryCallLLM(
       // 且比旧 fullSystemPrompt 少算了动态内容更准确）。
       if (needsCompactionFn(sessionPDeps, sessionId, stableSystemPrompt + dynamicSystemTail, deps.config.maxTokens)) {
         process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
-        compactConversationHistoryFn(sessionPDeps, sessionId);
+        await compactConversationHistoryFn(sessionPDeps, sessionId);
       }
 
       // ── ContextEngine: use pre-assembled layered context when available ──
@@ -3542,6 +4079,80 @@ export async function tryCallLLM(
       const historyEndIdx = deps.contextEngineResult
         ? messages.length - volatileTailCount - 1 // CE: 末尾还有当前 user 消息
         : 1 + history.length;                      // 非 CE: user 消息尚未 push
+
+      // ── ToolOutputPruner: 3-pass 工具输出裁剪（对标 Hermes _prune_old_tool_results）──
+      // Pass 1: 去重（MD5 哈希，保留最新一份）
+      // Pass 2: 信息摘要（18+ 工具特定摘要模式）
+      // Pass 3: 参数 JSON 截断（保持有效性）
+      // 此前 ToolOutputPruner 已实现但零运行时调用（死代码），现接入活路径。
+      // 与 ContextPruningManager 互补：Pruner 做结构化裁剪，Manager 做兜底 soft-trim/hard-clear。
+      //
+      // ★ P0-5 幂等化：裁剪结果写回 conversationHistory，保证下轮对已裁剪内容再裁剪
+      //   产生相同结果（字节稳定，前缀缓存不漂移）。与 ContextPruningManager 写回逻辑一致。
+      try {
+        const pruner = getToolOutputPruner();
+        const toolMessages: Array<{
+          role: string;
+          content: string | unknown[] | null;
+          tool_call_id?: string;
+          tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+          name?: string;
+        }> = messages.map(m => ({
+          role: m.role,
+          content: typeof m.content === "string" ? m.content : (m.content as unknown[] | null),
+          tool_call_id: m.tool_call_id,
+          tool_calls: m.tool_calls as typeof toolMessages[0]["tool_calls"],
+          name: m.name,
+        }));
+        const pruneResult = pruner.prune(toolMessages);
+        if (pruneResult.stats.deduplicated > 0 || pruneResult.stats.summarized > 0 || pruneResult.stats.argsTruncated > 0) {
+          process.stdout.write(`[AgentModelExecutor] ToolOutputPruner: ${pruneResult.stats.deduplicated} deduped, ${pruneResult.stats.summarized} summarized, ${pruneResult.stats.argsTruncated} args truncated, saved ~${pruneResult.stats.prunedChars} chars\n`);
+          // Apply pruned content back to messages
+          messages = messages.map((orig, idx) => {
+            const pruned = pruneResult.messages[idx];
+            if (!pruned) return orig;
+            if (typeof orig.content === "string" && typeof pruned.content === "string" && pruned.content !== orig.content) {
+              return { ...orig, content: pruned.content };
+            }
+            if (orig.tool_calls && pruned.tool_calls) {
+              return { ...orig, tool_calls: pruned.tool_calls };
+            }
+            return orig;
+          });
+
+          // ★ P0-5：裁剪结果写回 conversationHistory（仅替换 history 切片内的条目）
+          if (historyEndIdx > historyStartIdx) {
+            const fullHistory = deps.conversationHistory.get(sessionId);
+            if (fullHistory && fullHistory.length > 0) {
+              const sliceLen = historyEndIdx - historyStartIdx;
+              const offset = deps.contextEngineResult ? Math.max(0, fullHistory.length - sliceLen) : 0;
+              let changed = false;
+              const updated: typeof fullHistory = fullHistory.map((entry, i) => {
+                const j = i - offset;
+                if (j >= 0 && j < sliceLen) {
+                  const pruned = pruneResult.messages[historyStartIdx + j];
+                  if (
+                    pruned &&
+                    typeof entry.content === "string" &&
+                    typeof pruned.content === "string" &&
+                    pruned.content !== entry.content
+                  ) {
+                    changed = true;
+                    return { ...entry, content: pruned.content };
+                  }
+                }
+                return entry;
+              });
+              if (changed) {
+                deps.conversationHistory.set(sessionId, updated);
+              }
+            }
+          }
+        }
+      } catch {
+        // best-effort — pruning failure should not break the LLM call
+      }
+
       if (deps.contextPruningManager) {
         // Cast to expected type — prune() only modifies string content (tool results)
         const pruningInput = messages.map(m => ({
@@ -3720,8 +4331,23 @@ export async function tryCallLLM(
       // 上一条 user 消息（不含本轮：本轮 message 单独判断）
       const prevUserIdx = lastIndexOfRole(historyMsgs, "user");
       const prevUserMsg = prevUserIdx >= 0 ? historyMsgs[prevUserIdx] : undefined;
-      const isCreativeTask = CREATIVE_TASK_PATTERN.test(message) ||
-        (prevUserMsg && typeof prevUserMsg.content === "string" && CREATIVE_TASK_PATTERN.test(prevUserMsg.content));
+      // 创造性判定用 rawMessage（用户原始输入），不用增强后的 message——后者含
+      // 注入的 Tavily 搜索上下文，其中常见的 "RESTful API"/"技术文档"/"设计 API"
+      // 会让 kanban/scheduler 等工具任务被误判为创造性 → 工具全禁 → 模型无法执行
+      // （实测 Task 9 kanban 因此失败）。
+      // ★ 2026-10-28 修复（v5 Task 4/5 事故）：用户明确要求把交付物写入指定
+      //   路径时（"把设计文档写入 /tmp/v5-billing/…"），创造性禁用工具会让
+      //   模型无法 file_write 落盘——文档只贴在聊天里、文件始终不存在（磁盘
+      //   核验追加了更正脚注，但工具已被禁用、续跑指令也无工具可用，3 轮空转
+      //   后循环保护退出）。识别到写文件请求时不判为创造性任务，保留工具能力。
+      const WRITE_PATH_REQUEST_RE =
+        /(?:写入|保存到|保存|创建|生成|输出到|放到|落盘|另存)\s*[^。\n]{0,40}?(?:`[^`]+`|\/[A-Za-z0-9_\-./]+|[A-Za-z]:\\)/;
+      const hasWritePathRequest = WRITE_PATH_REQUEST_RE.test(rawMessage);
+      const prevHasWritePathRequest =
+        prevUserMsg && typeof prevUserMsg.content === "string" && WRITE_PATH_REQUEST_RE.test(prevUserMsg.content);
+      const isCreativeTask = !hasWritePathRequest && !prevHasWritePathRequest &&
+        (CREATIVE_TASK_PATTERN.test(rawMessage) ||
+        (prevUserMsg && typeof prevUserMsg.content === "string" && CREATIVE_TASK_PATTERN.test(prevUserMsg.content)));
       if (isCreativeTask && tools.length > 0) {
         process.stdout.write(`[AgentModelExecutor] Creative task detected — tools disabled (${tools.length}→0), forcing direct response in 1 round\n`);
         tools = [];
@@ -3801,9 +4427,24 @@ export async function tryCallLLM(
       const executedToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [];
       // 本回合真实执行过的**变更类**工具（文件写类）—— 完成声明对账的写操作证据
       const WRITE_EVIDENCE_TOOLS = new Set(["file_write", "file_delete"]);
+      // ★ 2026-10-27 修复：shell_exec 写入检测——当 shell 命令包含写入模式
+      //   （echo >, printf >, cat >, tee, >> 等）时，视为写操作证据。
+      //   实测 Task 10 声称"报告用 shell 写入"但最后一条 shell_exec 是 grep，
+      //   无写入命令，文件不存在。将 shell_exec 写入纳入 writeOps 后，
+      //   若 agent 声称已写入但 shell 命令不含写入模式，writeOps 为空，
+      //   write_claimed_not_executed 检查可捕获虚假完成声明。
+      const SHELL_WRITE_PATTERN = /(?:echo|printf|cat|tee)\s+.*[>]|\btee\s|\bcat\s+[^|]*>|>>\s*\S/;
       const writeOps = (): Array<{ name: string; args: string }> =>
         executedToolCalls
-          .filter((c) => WRITE_EVIDENCE_TOOLS.has(c.name))
+          .filter((c) => {
+            if (WRITE_EVIDENCE_TOOLS.has(c.name)) return true;
+            // shell_exec：检查命令是否包含写入模式
+            if (c.name === "shell_exec") {
+              const cmd = String(c.arguments?.command ?? c.arguments?.cmd ?? "");
+              return SHELL_WRITE_PATTERN.test(cmd);
+            }
+            return false;
+          })
           .map((c) => ({ name: c.name, args: JSON.stringify(c.arguments).slice(0, 200) }));
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
@@ -3814,6 +4455,10 @@ export async function tryCallLLM(
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
       // 续跑前的回复备份：若续跑后模型产不出新内容，用备份兜底，避免返回空回复
       let lastReplyBackup = "";
+      // ★ 2026-10-27 循环守卫：记录上一次 yield 回复的内容，若模型在收到
+      //   续跑指令后再次 yield 且内容高度相似（>80% 重叠），说明模型陷入了
+      //   "yield → nudge → 同样的 yield" 循环，不再续跑，避免 token 耗尽。
+      let lastYieldReply = "";
       // 验证门暂存回复：验证门触发时，模型已产出但被搁置的最终回复。
       // 若验证门续跑后预算耗尽，用此备份兜底（借鉴 hermes-agent
       // _pending_verification_response 的保留语义）。
@@ -3826,6 +4471,8 @@ export async function tryCallLLM(
 
       // fix-4: 重置流式恢复重试计数器（每次 chat() 调用重置，防止跨会话累积）
       getStreamingRecoveryManager().resetTurn();
+      // 重置错误恢复执行器的 turn 状态（一次性守卫：每 turn 重置 executedActions + retryCount）
+      getErrorRecoveryExecutor().resetTurn();
 
       // R1-3: 工具循环检测器（每个 chat() 调用一个实例）
       const toolLoopDetector = new ToolCallLoopDetector();
@@ -4027,8 +4674,14 @@ export async function tryCallLLM(
         //   每次工具结果加入对话历史导致上下文爆炸（300K tokens/轮）。
         //   model 对"请给出最终回复"的 nudge 响应很差，会继续调工具。
         //   直接设置 tool_choice="none" 强制模型只输出文本，不再调工具。
-        const tc: "auto" | "none" = successfulToolCalls >= 2 ? "none" : "auto";
-        if (successfulToolCalls >= 2) {
+        // ★ 2026-10-28 修复（v5 Task 3/10 事故）：nudge 只对创造性任务生效。
+        //   此前 successfulToolCalls >= 2 时对所有任务强制 tool_choice="none"——
+        //   多步任务（写脚本→运行→写报告 / 写服务→启动→验证）在第 2 次工具调用后
+        //   就被剥夺工具能力，模型只能输出文本、编造未执行的结果（Task 3 编造了
+        //   CSV 统计数字；Task 10 服务从未启动却声称完成）。行动任务不 nudge，
+        //   maxToolRounds 已兜底防死循环。
+        const tc: "auto" | "none" = isCreativeTask && successfulToolCalls >= 2 ? "none" : "auto";
+        if (isCreativeTask && successfulToolCalls >= 2) {
           process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
           conversationMessages.push({
             role: "user",
@@ -4114,10 +4767,64 @@ export async function tryCallLLM(
             });
           }
 
+          // ── IterationBudget: 运行时错误退款 ──
+          // 借鉴 hermes-agent iteration_budget.py refund_for_runtime_error：
+          // 当 LLM 调用因运行时上下文错误失败时（非决策错误），退还迭代。
+          // 决策类错误（内容政策/认证/计费/模型不存在）不退款——已在 refundForRuntimeError 内过滤。
+          if (budget && classified.retryable) {
+            try {
+              const refunded = await budget.refundForRuntimeError(classified.type);
+              if (refunded > 0) {
+                process.stdout.write(
+                  `[AgentModelExecutor] Runtime-error refund: returned ${refunded} iteration(s) for ${classified.type} on provider "${provider.name}"\n`,
+                );
+              }
+            } catch { /* best-effort — refund must never break recovery */ }
+          }
+
+          // ── ErrorRecoveryExecutor: 消息修改类恢复 ──
+          // 借鉴 hermes-agent conversation_loop.py 错误恢复分支：
+          // 剥离 thinking 块、剥离 replay blob、缩小图片、降级 multimodal tool content
+          // ——消息级修复，不需要压缩上下文即可重试。
+          // TurnRetryState 一次性守卫防止同种动作在同一 turn 内重复执行。
+          const reason = classified.reason;
+          if (
+            reason === "thinking_signature" ||
+            reason === "invalid_encrypted_content" ||
+            reason === "image_too_large" ||
+            reason === "multimodal_tool_content_unsupported"
+          ) {
+            const recoveryResult = getErrorRecoveryExecutor().executeRecovery({
+              messages: conversationMessages as unknown as RecoveryMessage[],
+              reason,
+              errorText: classified.message,
+              providerId: provider.name,
+              allowFailover: true,
+            });
+
+            if (recoveryResult.recovered && recoveryResult.shouldRetry) {
+              // 消息修改类恢复：应用修改后的消息，重试同 provider
+              conversationMessages = recoveryResult.messages as unknown as typeof conversationMessages;
+              process.stdout.write(
+                `[AgentModelExecutor] Recovery action: ${recoveryResult.action} — retrying with modified messages\n`,
+              );
+              consecutiveErrors = 0;
+              continue;
+            }
+
+            if (recoveryResult.shouldFailover && !recoveryResult.recovered) {
+              // TurnRetryState 守卫已标记该动作执行过 → 不再剥离，failover
+              process.stderr.write(
+                `[AgentModelExecutor] Message-modification recovery exhausted (${recoveryResult.action}) — failing over to next provider\n`,
+              );
+              break;
+            }
+          }
+
           // ── fix-1: 基于 shouldCompact 统一处理压缩（覆盖 CONTEXT_OVERFLOW 和 PAYLOAD_TOO_LARGE） ──
           if (classified.shouldCompact) {
             process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
-            compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
+            await compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             // ★ P0-5：与主路径同布局——history 在前，skills 段 + 动态尾在后。
             conversationMessages = [
               { role: "system", content: stableSystemPrompt + ephemeralSuffix },
@@ -4149,6 +4856,19 @@ export async function tryCallLLM(
                 deps.volatileSystemStartIdx,
               );
             }
+          }
+
+          // ── IterationBudget: 压缩重启退款 ──
+          // 借鉴 hermes-agent iteration_budget.py refund_for_compression：
+          // 上下文压缩后重启 turn 时，退还压缩前消耗的迭代——压缩不是决策，
+          // 不应消耗预算。此前退款机已实现但零活调用点（死代码），现接入活路径。
+          if (budget && classified.shouldCompact) {
+            try {
+              const refunded = await budget.refundForCompaction();
+              if (refunded > 0) {
+                process.stdout.write(`[AgentModelExecutor] Compaction refund: returned ${refunded} iteration(s) to budget for session "${sessionId}"\n`);
+              }
+            } catch { /* best-effort — refund must never block recovery */ }
           }
 
           // ── fix-1: 基于 backoffMs 统一处理退避（覆盖 RATE_LIMIT/PROVIDER_ERROR/PAYLOAD_TOO_LARGE 等） ──
@@ -4562,18 +5282,41 @@ export async function tryCallLLM(
               failedTools,
               emptyResultTools,
               writeOps: writeOps(),
+              executedShellCommands: extractExecutedShellCommands(executedToolCalls),
             });
+
+            // ── 磁盘文件核验（Task 10 修复：盘内续跑触发）─────────────────
+            // ★ 2026-10-27：完成声明对账只检查"是否调用了写工具"，但不验证
+            //   声称创建的文件是否真的存在于磁盘上。磁盘核验此前只在循环结束
+            //   后追加更正说明，从不回灌到 auto-continue —— 导致声称"已创建
+            //   cache-analysis.md"但文件不存在时，模型不会重试（Task 10 失败）。
+            //   现在把磁盘核验移入循环内：声称文件不存在 → 触发续跑让模型真正创建。
+            let diskMissingPaths: string[] = [];
+            try {
+              const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
+              if (claimedPaths.length > 0) {
+                diskMissingPaths = claimedPaths.filter((p) => {
+                  try { return !fs.existsSync(p); } catch { return true; }
+                });
+              }
+            } catch { /* skip — 磁盘核验失败不阻断主流程 */ }
+
             // 只有在"确实有活可干"的语境下才续跑，避免把纯闲聊的承诺句式误判成停顿
             const hasWorkContext =
               anyToolExecuted ||
               failedTools.length > 0 ||
               emptyResultTools.length > 0 ||
+              diskMissingPaths.length > 0 ||
               hasActionIntentFn(message);
             // ★ 2026-10-26 修复：创造性任务的首次响应可能较短但已包含实质内容
             //   （1307 chars），不应触发 auto-continuation——续跑会额外消耗
             //   60-100s（第二轮 LLM call），总时间超 300s。只有当创造性任务
             //   的响应极短（< 300 chars，可能是确认/敷衍）时才续跑。
-            const isCreativeSubstantive = isCreativeTask && finalReply.length > 300;
+            // ★ 2026-10-28 修复（v5 Task 4 事故）：磁盘核验发现用户要求写入的
+            //   文件不存在时（diskMissingPaths > 0），即使回复已是实质内容也
+            //   必须放行续跑——否则"文档贴在聊天里、文件不落盘"的回复会直接
+            //   收尾（实测：更正脚注已追加但文件始终没写）。
+            const isCreativeSubstantive = isCreativeTask && finalReply.length > 300 && diskMissingPaths.length === 0;
             process.stdout.write(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
             // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
             // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
@@ -4581,12 +5324,21 @@ export async function tryCallLLM(
             // 模型放弃并反问用户「要不要我继续」。这类必须让它换方案再试。
             // 注意 pendingPermissions 非空时整个块已被跳过 —— 那是真的在等人工审批，
             // 不该自动重试；extractToolFailure 也已把「等待审批」排除在 failedTools 外。
+            // ★ 2026-10-27 循环守卫：若模型在收到续跑指令后再次 yield 且内容
+            //   与上次 yield 高度相似（>70% 重叠），说明模型陷入循环，不再续跑。
+            const yieldSimilarity = lastYieldReply && finalReply
+              ? overlapRatio(finalReply, lastYieldReply)
+              : 0;
+            const isLooping = yieldSimilarity > 0.7 && autoContinueCount > 0;
+            process.stdout.write(`[AgentModelExecutor] Auto-continue loop guard: similarity=${yieldSimilarity.toFixed(2)}, isLooping=${isLooping}, lastYieldLen=${lastYieldReply.length}\n`);
             const stalledAfterFailure = failedTools.length > 0;
             const shouldContinue =
               !isCreativeSubstantive &&
+              !isLooping &&
               hasWorkContext &&
               (premature !== null ||
                 stalledAfterFailure ||
+                diskMissingPaths.length > 0 ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
             // ── 验证门（Verification Gate）───────────────────────────
@@ -4681,18 +5433,25 @@ export async function tryCallLLM(
               }
 
               autoContinueCount++;
+              // ★ 2026-10-27 循环守卫：记录本次 yield 回复，用于下一轮检测
+              //   模型是否陷入"yield → nudge → 同样的 yield"循环。
+              lastYieldReply = finalReply;
               // ★ 2026-10-11：`stalledAfterFailure`（工具失败后直接收尾，没有
               //   明确停顿词、也没触发对账更正）时，原来 fallback 成字面量
               //   "unknown"，轨迹条目 detail 甚至是空的 —— 用户点开续跑记录
               //   看不到"为什么续跑"。实测日志确为 `trigger=unknown`。
               //   现在归因清楚，并把失败工具名列进 detail。
               const trigger = premature
+                ?? (diskMissingPaths.length > 0 ? "disk_files_missing" : null)
                 ?? (stalledAfterFailure ? "tool_failed" : preVerdict.reason)
                 ?? "unknown";
               trace.addSystem(
                 `自动续跑 #${autoContinueCount}/${MAX_AUTO_CONTINUE}（原因：${trigger}）`,
                 [
                   premature ? `停顿检测：${premature}` : "",
+                  diskMissingPaths.length > 0
+                    ? `磁盘文件核验：声称创建的文件不存在：${diskMissingPaths.join("、")}`
+                    : "",
                   preVerdict.notice ?? "",
                   failedTools.length > 0
                     ? `本轮失败工具：${failedTools.map((f) => `${f.name}(${f.error})`).join("、")}`
@@ -4702,10 +5461,22 @@ export async function tryCallLLM(
                     : "",
                 ].filter(Boolean).join("\n"),
               );
+              // 磁盘文件缺失时，把缺失文件列表注入续跑指令，让模型明确知道要补建哪些
+              // ★ 2026-10-28 强化（v4 Task 7/8 事故）：此前指令只说"必须重新创建"，
+              //   模型仍可能创建其他文件名的文件替代、或只在回复里描述内容。
+              //   v9 复测新增：模型曾把相对路径 `tmp_v4_monitor/...` 传给 file_write，
+              //   文件落到了工作区 data/workspace/ 下、磁盘核验仍失败。现在明确要求
+              //   使用绝对路径原样传入——相对路径会解析到工作区，写到错误位置。
+              const diskCorrection = diskMissingPaths.length > 0
+                ? `\n\n**磁盘文件核验失败**：以下声称创建的文件在磁盘上不存在，必须重新创建：\n${diskMissingPaths.map((p) => `- \`${p}\``).join("\n")}\n\n必须真正调用 file_write 工具创建这些文件，并把上面列出的路径**原样作为 path 参数传入**（例如 file_write action=create、path="/tmp/v4-monitor/monitor.sh"）。**不要用相对路径**——相对路径会解析到工作区 data/workspace/ 下，文件会写到错误位置、磁盘核验仍会失败。**文件名必须与上面完全一致**——不要创建其他文件名替代。**绝对禁止把文件内容（包括完整代码/代码块）贴在回复里**——贴在回复里不算完成，磁盘核验会判定失败；v5 实测模型多次把测试代码贴在聊天里而不调用 file_write，6 次续跑均未纠正。创建后立即用 file_read 或 \`ls -la <目录>\` 验证文件确实存在，再继续。`
+                : undefined;
               const directive = buildContinuationDirective({
                 kind: premature ?? "needs_correction",
                 userMessage: message,
-                correction: preVerdict.needsCorrection ? preVerdict.notice : undefined,
+                correction: [
+                  preVerdict.needsCorrection ? preVerdict.notice : undefined,
+                  diskCorrection,
+                ].filter(Boolean).join("\n") || undefined,
                 failedTools,
                 emptyResultTools,
               });
@@ -4764,6 +5535,12 @@ export async function tryCallLLM(
         // Separate tool calls into parallel-safe and sequential groups
         const parallelCalls: typeof toolCalls = [];
         const sequentialCalls: typeof toolCalls = [];
+
+        // ── IterationBudget: 收集本轮工具名（execute_code 退款用） ──
+        // 借鉴 hermes-agent iteration_budget.py refund_for_execute_code：
+        // 当一轮中只调用了 execute_code 类工具时，退还该次迭代——执行不是决策。
+        // 此前退款机已实现但零活调用点（死代码），现接入活路径。
+        const roundToolNames = toolCalls.map((tc) => tc.function.name);
 
         if (toolCalls.length > 1) {
           // If ALL tool calls are parallel-safe, execute them all in parallel
@@ -5206,7 +5983,8 @@ export async function tryCallLLM(
                 // 恒为 []，前端「文件下载」区永远不出现。
                 // 只识别明确的文件写入类工具；结果 shape 见 file-tools.ts
                 // （errRecovery.executeWithRetry 剥掉 success 后透传 path/size/workspaceRelative）。
-                if (toolName === "file_write" && rawResult && typeof rawResult === "object") {
+                // TTS 工具也收集——音频文件可作为附件发送。
+                if ((toolName === "file_write" || toolName === "text_to_speech") && rawResult && typeof rawResult === "object") {
                   const r = rawResult as Record<string, unknown>;
                   const filePath =
                     (typeof r.path === "string" && r.path) ||
@@ -5514,6 +6292,20 @@ export async function tryCallLLM(
           break;
         }
 
+        // ── IterationBudget: execute_code 退款 ──
+        // 本轮所有工具调用均为 execute_code 类（执行而非决策）时退还迭代。
+        // 退款机此前为死代码（仅定义+测试），现接入活路径。
+        if (budget && roundToolNames.length > 0) {
+          try {
+            const refunded = await budget.refundForExecuteCode(roundToolNames);
+            if (refunded > 0) {
+              process.stdout.write(
+                `[AgentModelExecutor] Execute-code refund: returned ${refunded} iteration(s) for round ${round + 1} (all ${roundToolNames.length} tools were execute_code-type)\n`,
+              );
+            }
+          } catch { /* best-effort — refund must never break the loop */ }
+        }
+
         // ── fix-3: 工具执行增量持久化（防止崩溃丢失进度） ──
         // 在每个工具执行轮次后将 assistant 消息（含 tool_calls）和工具响应
         // 追加到 session JSONL 文件。即使进程崩溃，JSONL 文件保留了完整的执行状态，
@@ -5656,51 +6448,19 @@ export async function tryCallLLM(
           finalReply += skillFallbackResult;
         }
 
-        // ── 完成声明真实性对账 ──
-        // 防止「声称已完成但实际未执行」的伪造完成态：把模型的完成声明
-        // 与「本回合真实工具执行情况 + 仍未决的审批操作」比对，
-        // 一旦发现不可信的完成声明，确定性地追加一段更正说明。
-        // 详见 completion-truthfulness.ts。
-        try {
-          const verdict = reconcileCompletionTruthfulness({
-            finalReply,
-            pendingPermissions,
-            toolsExecuted: anyToolExecuted,
-            lastUserMessage: message,
-            failedTools,
-            emptyResultTools,
-            writeOps: writeOps(),
-          });
-          if (verdict.needsCorrection && verdict.notice) {
-            // ★ 修复（2026-10-08，用户反馈）：这段 notice 是写给 **LLM 看的续跑指令**
-            //（"请修复上述失败后重新执行；在拿到工具的成功返回之前，请勿认为操作已经完成"），
-            // 属于内部提示词，**绝不能**拼进给用户看的正文。
-            // 事故实录：20:24 那轮回复末尾直接暴露了
-            //   "⚠️ 更正：上面的「已完成」并不成立……请修复上述失败后重新执行"
-            // 用户看到的是一段本该给模型自己看的纠错指令。
-            // 现在只记入轨迹（可追溯），正文保持干净；
-            // 若确实需要告知用户，用下面这句人话版摘要。
-            finalReply += buildUserFacingCorrection(verdict);
-            process.stderr.write(
-              `[AgentModelExecutor] Completion-claim reconciliation triggered (${verdict.reason}) for session "${sessionId}"\n`
-            );
-            // 同时把完整内部指令入轨迹，保留可追溯性而不污染 UI
-            trace?.addSystem?.(
-              `完成声明对账触发（${verdict.reason}）`,
-              verdict.notice
-            );
-          }
-        } catch (reconcileErr) {
-          // 对账失败不得阻断主流程
-          process.stderr.write(
-            `[AgentModelExecutor] Completion-claim reconciliation skipped: ${reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)}\n`
-          );
-        }
-        // ── 剥离泄漏的原始 tool_call XML ──
+        // ── 剥离泄漏的原始 tool_call XML（先于对账/核验执行）──
+        // ★ 2026-10-28 顺序修复（v4 复测 Task 7 事故）：本块原先位于「完成声明
+        //   对账 + 磁盘文件核验」**之后**。当模型在末轮（tool_choice:none）仍把
+        //   工具调用以裸 XML 写进正文时：对账/核验跑在 XML 垃圾文本上（提取不到
+        //   任何声称路径 → 零更正），随后 XML 剥离把回复清空 → 触发兜底总结调用
+        //   （tools:[]，即日志里那次 tools:0 调用）→ 用新总结**替换** finalReply。
+        //   结果：最终回复声称「三个文件都放在 /tmp/v4-monitor/ 下了」但核验从未
+        //   在这份回复上跑过，缺失文件（.service/notify.sh）无人发现。
+        //   修复：文本清洗（剥离 XML）必须先于一切「读回复文本」的分析——对账与
+        //   磁盘核验都应作用在**用户最终看到**的那份回复上。
         // 事故（2026-10-07 15:3x）：模型在最后一轮把工具调用以**裸 XML**
-        // 写进正文发给用户（`<tool_call><function=shell_exec>…`），
-        // 用户看到的是一堆积木而不是回复。成因是模型模仿了 prompt 里的
-        // XML 工具调用格式，而本轮又没有真正执行它。
+        // 写进正文发给用户（XML 工具调用标记），用户看到的是一堆积木而不是回复。
+        // 成因是模型模仿了 prompt 里的 XML 工具调用格式，而本轮又没有真正执行它。
         if (finalReply) {
           const beforeStrip = finalReply;
           finalReply = finalReply
@@ -5764,6 +6524,86 @@ export async function tryCallLLM(
               "（本轮模型只输出了工具调用标记，没有给出文字回复。已停止执行；" +
                 "如需继续，请明确说明下一步要做什么。）";
           }
+        }
+
+        // ── 完成声明真实性对账 ──
+        // 防止「声称已完成但实际未执行」的伪造完成态：把模型的完成声明
+        // 与「本回合真实工具执行情况 + 仍未决的审批操作」比对，
+        // 一旦发现不可信的完成声明，确定性地追加一段更正说明。
+        // 详见 completion-truthfulness.ts。
+        try {
+          const verdict = reconcileCompletionTruthfulness({
+            finalReply,
+            pendingPermissions,
+            toolsExecuted: anyToolExecuted,
+            lastUserMessage: message,
+            failedTools,
+            emptyResultTools,
+            writeOps: writeOps(),
+            executedShellCommands: extractExecutedShellCommands(executedToolCalls),
+          });
+          if (verdict.needsCorrection && verdict.notice) {
+            // ★ 修复（2026-10-08，用户反馈）：这段 notice 是写给 **LLM 看的续跑指令**
+            //（"请修复上述失败后重新执行；在拿到工具的成功返回之前，请勿认为操作已经完成"），
+            // 属于内部提示词，**绝不能**拼进给用户看的正文。
+            // 事故实录：20:24 那轮回复末尾直接暴露了
+            //   "⚠️ 更正：上面的「已完成」并不成立……请修复上述失败后重新执行"
+            // 用户看到的是一段本该给模型自己看的纠错指令。
+            // 现在只记入轨迹（可追溯），正文保持干净；
+            // 若确实需要告知用户，用下面这句人话版摘要。
+            finalReply += buildUserFacingCorrection(verdict);
+            process.stderr.write(
+              `[AgentModelExecutor] Completion-claim reconciliation triggered (${verdict.reason}) for session "${sessionId}"\n`
+            );
+            // 同时把完整内部指令入轨迹，保留可追溯性而不污染 UI
+            trace?.addSystem?.(
+              `完成声明对账触发（${verdict.reason}）`,
+              verdict.notice
+            );
+          }
+        } catch (reconcileErr) {
+          // 对账失败不得阻断主流程
+          process.stderr.write(
+            `[AgentModelExecutor] Completion-claim reconciliation skipped: ${reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr)}\n`
+          );
+        }
+
+        // ── 磁盘文件核验 ──
+        // ★ 2026-10-27 新增：完成声明对账只检查"是否调用了写工具"，
+        //   但不验证声称创建的文件是否真的存在于磁盘上。
+        //   实测 Task 1（声称创建 cli.py/__init__.py 等文件但实际不存在）
+        //   和 Task 10（声称 shell 写入报告但文件不存在）都未被捕获。
+        //   此步骤从回复中提取被声称创建/写入的文件路径，逐一验证磁盘存在性。
+        try {
+          const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
+          if (claimedPaths.length > 0) {
+            const missingPaths: string[] = [];
+            for (const p of claimedPaths) {
+              try {
+                if (!fs.existsSync(p)) missingPaths.push(p);
+              } catch {
+                missingPaths.push(p);
+              }
+            }
+            if (missingPaths.length > 0) {
+              const correction =
+                "\n\n---\n\n**⚠️ 任务未完成**：回复中声称已创建/写入的文件在磁盘上不存在：\n" +
+                missingPaths.map((p) => `- \`${p}\``).join("\n") +
+                "\n\n请以实际执行结果为准，以上文件可能未被成功写入。";
+              finalReply += correction;
+              process.stderr.write(
+                `[AgentModelExecutor] Disk verification found ${missingPaths.length} missing claimed file(s) for session "${sessionId}"\n`
+              );
+              trace?.addSystem?.(
+                `磁盘文件核验：${missingPaths.length} 个声称文件不存在`,
+                missingPaths.join("\n")
+              );
+            }
+          }
+        } catch (diskErr) {
+          process.stderr.write(
+            `[AgentModelExecutor] Disk verification skipped: ${diskErr instanceof Error ? diskErr.message : String(diskErr)}\n`
+          );
         }
 
         // ── Guardrails: output validation ──

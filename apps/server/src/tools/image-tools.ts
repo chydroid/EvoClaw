@@ -653,23 +653,28 @@ export function registerImageTools(executor: AgentModelExecutor): void {
         },
         prompt: {
           type: "string",
-          description: "Detailed description of the image to generate. Be specific about style, composition, colors, and mood. 例：'一只橘猫坐在窗台上，阳光洒落，水彩画风格'（action=generate 使用）",
+          description: "Detailed description of the image to generate. Be specific about style, composition, colors, and mood. 例：'一只橘猫坐在窗台上，阳光洒落，水彩画风格'（action=generate 必填；action=info 不需要）",
+          required: false,
         },
         width: {
           type: "string",
           description: "Image width in pixels (default: 1024). Common: 512, 768, 1024, 1536.（action=generate 使用）",
+          required: false,
         },
         height: {
           type: "string",
           description: "Image height in pixels (default: 1024). Common: 512, 768, 1024, 1536.（action=generate 使用）",
+          required: false,
         },
         provider: {
           type: "string",
           description: "Image generation provider: 'pollinations' (free, default), 'fal' (Fal.ai), 'replicate'. If not specified, auto-selects based on config priority.（action=generate 使用）",
+          required: false,
         },
         model: {
           type: "string",
           description: "Specific model ID. Pollinations: flux, flux-realism, flux-anime, flux-3d, turbo. Fal.ai: fal-ai/flux/schnell, fal-ai/flux/dev, fal-ai/flux-pro. If not specified, uses provider's default.（action=generate 使用）",
+          required: false,
         },
       },
     },

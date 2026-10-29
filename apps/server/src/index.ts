@@ -35,11 +35,11 @@ const SERVER_VERSION = getServerVersion();
 import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
-import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager } from "@evoclaw/agent";
+import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, DelegateEngine, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager, getClarifyGateway } from "@evoclaw/agent";
 import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
 import type { DurableTask } from "@evoclaw/agent";
-import { GitOperations, CodeIntelligence, VisionAnalyzer } from "@evoclaw/agent";
-import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler } from "@evoclaw/agent";
+import { GitOperations, CodeIntelligence, VisionAnalyzer, runBackgroundReview, DEFAULT_REVIEW_CONFIG } from "@evoclaw/agent";
+import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler, ReviewChatFn, ReviewMessage, BackgroundReviewConfig } from "@evoclaw/agent";
 import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
@@ -71,9 +71,13 @@ import {
   registerVisionBatchTools,
   registerDevTools,
   registerMemoryTools,
+  registerSessionSearchTools,
+  registerClarifyTools,
+  registerTtsTools,
   registerKanbanTools,
   registerVerifyTools,
   registerTodoTools,
+  registerDelegateTools,
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
@@ -140,6 +144,8 @@ export class EvoClawServer {
   private dmPairingManager: DMPairingManager;
   private semanticMemory: SemanticMemoryStore;
   private subagentRegistry: SubagentRegistry;
+  /** delegate_task 子代理执行引擎（对标 Hermes delegate_tool.py；配置默认值对齐 Hermes delegate_tool_config.py） */
+  private delegateEngine: DelegateEngine;
   private cronScheduler: CronScheduler;
   private configValidator: ConfigValidator;
   private configWatcher: ConfigWatcher;
@@ -474,7 +480,7 @@ export class EvoClawServer {
     // ── Permission Relay (ACP: centralized permission control) ──
     this.permissionRelay = new PermissionRelay(
       {
-        autoApprovePatterns: ["file_read", "file_list", "task_plan", "skill_search", "error_stats", "permission_status"],
+        autoApprovePatterns: ["file_read", "file_list", "task_plan", "skill_list", "error_stats", "permission_status"],
         autoDenyPatterns: [],
         defaultTimeoutMs: 30_000,
         maxPending: 50,
@@ -546,6 +552,18 @@ export class EvoClawServer {
       this.personaManager.getActivePersonaConfig(),
       { storeDir: dataDir }
     );
+
+    // ── DelegateEngine（delegate_task 子代理执行引擎，对标 Hermes delegate_tool.py）──
+    // 必须在 agentModelExecutor 之后创建（依赖其 chat/abortSession 执行面）。
+    // 默认值对齐 Hermes delegate_tool_config.py：max_concurrent_children=10、
+    // max_spawn_depth=1（flat）、orchestrator_enabled=true。config.yaml 的
+    // delegation.* 接线留待 ConfigManager schema 扩展。
+    this.delegateEngine = new DelegateEngine({
+      executor: this.agentModelExecutor,
+      eventBus: this.eventBus,
+      subagentRegistry: this.subagentRegistry,
+    });
+    this.registry.registerService("delegateEngine", this.delegateEngine);
 
     // ── 可持久化超长任务引擎（断点续跑）：消除「超时即失败 + 请简化请求」──
     // 复用单例，确保 executor 内部与 server 拿到同一实例；用 dataDir 定位落盘点，
@@ -626,6 +644,7 @@ export class EvoClawServer {
     // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
+    this.registry.registerService("memoryHub", this.memoryHub);
     this.agentModelExecutor.setMemoryHub(this.memoryHub);
     this.bootstrapManager = new BootstrapManager(this.configManager);
     this.agentModelExecutor.setBootstrapManager(this.bootstrapManager);
@@ -766,7 +785,12 @@ export class EvoClawServer {
     });
     a2aServer.setTaskHandler(async (task) => {
       const input = typeof task.input === "string" ? task.input : JSON.stringify(task.input);
-      const result = await this.agentModelExecutor.chat(input, { sessionId: `a2a-${task.id}` });
+      const sessionId = `a2a-${task.id}`;
+      const pending = this.delegateEngine.takePendingResults(sessionId);
+      const chatInput = pending.length > 0 ? `${this.formatDelegateResults(pending)}\n\n${input}` : input;
+      const result = await this.delegateEngine.withSession(sessionId, () =>
+        this.agentModelExecutor.chat(chatInput, { sessionId }),
+      );
       return result;
     });
     a2aServer.buildCapabilitiesFromTools(this.agentModelExecutor.getRegisteredTools());
@@ -1011,6 +1035,16 @@ export class EvoClawServer {
         this.logger.info("channel", `Message from ${msg.channel}: ${msg.from} -> ${msg.text?.slice(0, 50)}`);
         const sessionId = `${msg.channel}-${msg.from}`;
 
+        // ── Clarify 响应拦截：如果该 session 有待响应的 clarify 问题，
+        // 把用户消息作为答案解析，不启动新 chat ──
+        const clarifyGateway = getClarifyGateway();
+        if (clarifyGateway.hasPending(sessionId) && msg.text) {
+          if (clarifyGateway.resolveTextResponseForSession(sessionId, msg.text)) {
+            this.logger.info("channel", `Resolved pending clarify for session ${sessionId}`);
+            return;
+          }
+        }
+
         // ── P1-1 Bot Mode 群聊房间路由（feature flag botModeGroupRouting 兜底，默认关闭）──
         // 群消息此前被静默丢弃；现改为：命中已注册 Room → resolveSpeaker（@mention 优先）
         // → 用该 agent 的 AgentConfig 调 chat() 回复回群；未命中房间则维持现有 default agent 行为。
@@ -1019,12 +1053,22 @@ export class EvoClawServer {
           return;
         }
 
+        // ── 后台 delegate_task 结果回投（Hermes between-turns 语义）：
+        //    子代理完成后结果暂存于引擎；此处在下一个消息边界取走并 prepend 为
+        //    新消息，让父代理在回复用户前先看到子代理结果。──
+        const pendingDelegations = this.delegateEngine.takePendingResults(sessionId);
+        const chatInput = pendingDelegations.length > 0
+          ? `${this.formatDelegateResults(pendingDelegations)}\n\n${msg.text}`
+          : msg.text;
+
         const result = await Promise.race([
-          this.agentModelExecutor.chat(msg.text, {
-            sessionId,
-            channel: msg.channel,
-            peerId: msg.from,
-          }),
+          this.delegateEngine.withSession(sessionId, () =>
+            this.agentModelExecutor.chat(chatInput, {
+              sessionId,
+              channel: msg.channel,
+              peerId: msg.from,
+            }),
+          ),
           new Promise<never>((_, reject) => {
             timeoutHandle = setTimeout(() => {
               // 超时后取消后台 chat，避免 agentModelExecutor.chat 继续消耗资源
@@ -1056,6 +1100,47 @@ export class EvoClawServer {
             msg.from,
             "🤔 AI 未生成有效回复，请尝试重新表述您的问题。",
           );
+        }
+
+        // ── Background Review: turn 后自我反思 fork（fire-and-forget）──
+        // 对标 Hermes background_review.py：每轮对话后启动后台子 Agent
+        // 重放对话快照并问自己"是否应保存/更新 skill 或 memory"。
+        // 默认 enabled=false（DEFAULT_REVIEW_CONFIG），需通过 feature flag
+        // "backgroundReview" 显式开启。写入直接落到 memory + skill 存储，
+        // 主对话与 prompt cache 完全不受影响。
+        if (this.featureFlagStore.isEnabled("backgroundReview") && msg.isDirect) {
+          try {
+            const historyMap = (this.agentModelExecutor as unknown as {
+              conversationHistory: Map<string, Array<{ role: string; content: string | null }>>;
+            }).conversationHistory;
+            const conversationMessages = historyMap.get(sessionId) || [];
+
+            if (conversationMessages.length > 0) {
+              const providers = (this.agentModelExecutor as unknown as {
+                providers: Array<{ provider?: string; model: string }>;
+              }).providers;
+              const parentProvider = providers[0]?.provider ?? null;
+              const parentModel = providers[0]?.model ?? null;
+
+              void runBackgroundReview({
+                parentProvider,
+                parentModel,
+                messagesSnapshot: conversationMessages as unknown as ReviewMessage[],
+                chatFn: this.createReviewChatFn(),
+                config: { enabled: true },
+                onComplete: (actions) => {
+                  if (actions.length > 0) {
+                    this.logger.info("channel", `Background review completed: ${actions.length} actions taken for session ${sessionId}`);
+                  }
+                },
+                onError: (err) => {
+                  this.logger.warn("channel", `Background review failed for session ${sessionId}: ${err}`);
+                },
+              }).catch(() => { /* fire-and-forget — never block the main conversation */ });
+            }
+          } catch {
+            // best-effort — background review must never break the main flow
+          }
         }
       } catch (err) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
@@ -1293,6 +1378,7 @@ export class EvoClawServer {
     this.registerReportingTools();
     this.registerKanbanTools();
     this.registerTodoTools();
+    this.registerDelegateTools();
     this.registerIntelligenceTools();
     this.registerMarkItDownTools();
 
@@ -1564,14 +1650,18 @@ export class EvoClawServer {
     const CHANNEL_TIMEOUT = 5 * 60 * 1000;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
     try {
+      const pending = this.delegateEngine.takePendingResults(sessionId);
+      const chatInput = pending.length > 0 ? `${this.formatDelegateResults(pending)}\n\n${msg.text ?? ""}` : msg.text ?? "";
       const result = await Promise.race([
-        this.agentModelExecutor.chat(msg.text ?? "", {
-          sessionId,
-          channel: msg.channel,
-          peerId: msg.from,
-          agentId: agent.id,
-          groupId,
-        }),
+        this.delegateEngine.withSession(sessionId, () =>
+          this.agentModelExecutor.chat(chatInput, {
+            sessionId,
+            channel: msg.channel,
+            peerId: msg.from,
+            agentId: agent.id,
+            groupId,
+          }),
+        ),
         new Promise<never>((_, reject) => {
           timeoutHandle = setTimeout(() => {
             this.agentModelExecutor.abortSession(sessionId);
@@ -2151,6 +2241,26 @@ export class EvoClawServer {
     });
   }
 
+  /** delegate_task 子代理派发工具（对标 Hermes delegate_tool.py） */
+  private registerDelegateTools(): void {
+    registerDelegateTools({
+      executor: this.agentModelExecutor,
+      delegateEngine: this.delegateEngine,
+      // ALS 会话上下文未接线时的回退（channel/web/room/a2a 入口已用 withSession 包裹）
+      getSessionId: () => this.agentModelExecutor.currentSessionId || "web-ui",
+    });
+  }
+
+  /** 把后台子代理结果格式化为父会话消息边界的回投文本 */
+  private formatDelegateResults(results: Array<{ id: string; goal: string; status: string; summary: string; error?: string }>): string {
+    const parts = results.map((r) => {
+      const head = `[子代理 ${r.id}（${r.status}）: ${r.goal}]`;
+      const body = r.error ? `错误: ${r.error}` : r.summary;
+      return `${head}\n${body}`;
+    });
+    return `【后台子代理结果】\n${parts.join("\n\n")}\n\n以下是用户最新消息，请结合以上结果回复：`;
+  }
+
   private registerMarkItDownTools(): void {
     const { execFile } = require("child_process");
     const { promisify } = require("util");
@@ -2457,6 +2567,9 @@ export class EvoClawServer {
     );
     registerDevTools(this.agentModelExecutor);
     registerMemoryTools(this.agentModelExecutor);
+    registerSessionSearchTools(this.agentModelExecutor);
+    registerClarifyTools(this.agentModelExecutor);
+    registerTtsTools(this.agentModelExecutor);
     registerVerifyTools(this.agentModelExecutor);
   }
 
@@ -2471,6 +2584,124 @@ export class EvoClawServer {
       codeIntel: this.codeIntelligence,
       fsBase: path.resolve(__dirname, "..", "..", ".."),
     });
+  }
+
+  /**
+   * 创建后台审查的 ReviewChatFn。
+   *
+   * 用 executor 内部的 callLLMOnce + registeredTools 实现最小 agent loop：
+   * 调用 LLM → 执行工具白名单 → 循环直到 LLM 不再调用工具。
+   * 系统 prompt 用 opts.systemPrompt（review 指令），不继承父级 persona。
+   */
+  private createReviewChatFn(): ReviewChatFn {
+    return async (opts) => {
+      const executor = this.agentModelExecutor as unknown as {
+        providers: Array<{ name: string; provider?: string; model: string; apiKey?: string; baseURL?: string; timeout?: number }>;
+        registeredTools: Map<string, {
+          definition: { name: string; description: string; parameters: Record<string, unknown> };
+          handler: (params: Record<string, unknown>) => Promise<unknown>;
+        }>;
+        callLLMOnce: (
+          provider: unknown,
+          messages: unknown[],
+          tools: unknown[],
+          toolChoice: "auto" | "required" | "none",
+          onProgress: unknown,
+        ) => Promise<{
+          message: { role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }> };
+          classifiedError?: unknown;
+        } | null>;
+      };
+
+      const providers = executor.providers;
+      const registeredTools = executor.registeredTools;
+      const callLLMOnce = executor.callLLMOnce;
+
+      if (!providers || providers.length === 0) return opts.messages;
+
+      // 匹配 opts.provider，否则取第一个
+      const provider = providers.find(p => p.name === opts.provider) ?? providers[0];
+
+      // 从工具白名单构建 OpenAI tool definitions
+      const tools = opts.toolWhitelist
+        ? opts.toolWhitelist
+            .filter(name => registeredTools.has(name))
+            .map(name => {
+              const entry = registeredTools.get(name)!;
+              return {
+                type: "function" as const,
+                function: {
+                  name: entry.definition.name,
+                  description: entry.definition.description,
+                  parameters: entry.definition.parameters,
+                },
+              };
+            })
+        : [];
+
+      // 构建 messages：system prompt + review 消息
+      const messages: Array<Record<string, unknown>> = [
+        { role: "system", content: opts.systemPrompt || "" },
+        ...opts.messages.map(m => ({
+          role: m.role,
+          content: m.content,
+          tool_calls: m.tool_calls,
+          tool_call_id: m.tool_call_id,
+        })),
+      ];
+
+      // 最小 agent loop
+      const allMessages = [...messages];
+      const maxIterations = opts.maxIterations ?? 16;
+
+      for (let i = 0; i < maxIterations; i++) {
+        const result = await callLLMOnce(provider, allMessages as unknown[], tools as unknown[], "auto", undefined);
+        if (!result || result.classifiedError) break;
+
+        const assistantMsg = result.message;
+        allMessages.push({
+          role: "assistant",
+          content: assistantMsg.content,
+          tool_calls: assistantMsg.tool_calls,
+        });
+
+        if (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0) break;
+
+        // 执行工具调用
+        for (const tc of assistantMsg.tool_calls) {
+          const toolName = tc.function.name;
+          let args: Record<string, unknown> = {};
+          try { args = JSON.parse(tc.function.arguments || "{}"); } catch { /* ignore */ }
+
+          const toolEntry = registeredTools.get(toolName);
+          if (!toolEntry) {
+            allMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ error: `Tool ${toolName} not found` }),
+            });
+            continue;
+          }
+
+          try {
+            const toolResult = await toolEntry.handler(args);
+            allMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify(toolResult),
+            });
+          } catch (err) {
+            allMessages.push({
+              role: "tool",
+              tool_call_id: tc.id,
+              content: JSON.stringify({ error: err instanceof Error ? err.message : String(err) }),
+            });
+          }
+        }
+      }
+
+      return allMessages as unknown as ReviewMessage[];
+    };
   }
 
   /** 注册 VLM + 批量执行 + 工作流 + 检查点 + DLQ 工具 */

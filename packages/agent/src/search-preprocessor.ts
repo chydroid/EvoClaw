@@ -136,6 +136,15 @@ export async function preprocessSearch(
     return { newsContext, searchReason, shouldSearch };
   }
 
+  // 创意写作类任务不需要网络搜索上下文
+  // （"写一个关于AI的故事" 包含 "AI" 关键词会被误判为搜索意图）
+  const isCreativeWriting = /(?:写|创作)\s*(?:一个|一篇|一段|个)?\s*(?:关于|的)?\s*(?:故事|小说|短文|诗歌|散文|剧本|寓言|童话)/i.test(userMessage)
+    || /(?:短篇小说|长篇小说|故事创作|创意写作|写诗|写词)/i.test(userMessage);
+  if (isCreativeWriting) {
+    process.stdout.write(`[SearchPreprocessor] Creative writing detected — skipping search pre-processing\n`);
+    return { newsContext, searchReason, shouldSearch };
+  }
+
   // Try to use TaskClassifier for semantic intent detection
   const taskClassifier = registry.resolveService<{
     classify(task: string): { primaryCategory: string; confidence: number; intentSimilarity?: Record<string, number> };

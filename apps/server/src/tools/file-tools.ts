@@ -323,8 +323,8 @@ export function registerFileTools(
       description: "Read the contents of a file",
       parameters: {
         path: { type: "string", description: "File path to read", required: true },
-        offset: { type: "string", description: "Line number to start reading from (1-based, default: 1)" },
-        limit: { type: "string", description: "Number of lines to read (default: all)" },
+        offset: { type: "string", description: "Line number to start reading from (1-based, default: 1)", required: false },
+        limit: { type: "string", description: "Number of lines to read (default: all)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -359,7 +359,7 @@ export function registerFileTools(
       name: "file_list",
       description: "List files and directories in a folder",
       parameters: {
-        path: { type: "string", description: "Relative directory path to list" },
+        path: { type: "string", description: "Relative directory path to list（缺省列出工作区根目录）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

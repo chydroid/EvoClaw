@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -268,6 +268,65 @@ describe("llm-caller > Optional 参数不进 required", () => {
     const fn = out.find((t) => t.function.name === "t")!;
     expect((fn.function.parameters as { required: string[] }).required).toContain("x");
     expect(validateToolParams("t", {}, reg.get("t")!.definition)).toMatch(/Missing required parameter "x"/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// truncateToolResult — JSON 结构感知截断（回归 2026-10-28）
+// 事故：list_inbox 22K 字符被旧的"首尾拼接"截断，模型只能看到头尾两段邮件，
+// 中间整段丢失，邮箱整理摘要因此不完整。改为保留前 N 条完整元素 + 总数标记。
+// ═══════════════════════════════════════════════════════════
+describe("truncateToolResult — JSON 结构感知截断", () => {
+  it("短结果原样返回", () => {
+    expect(truncateToolResult("short", 100)).toBe("short");
+  });
+
+  it("JSON 对象里的数组：保留前 N 条完整元素 + 总数标记", () => {
+    const emails = Array.from({ length: 50 }, (_, i) => ({
+      uid: `u${i}`,
+      subject: `主题${i}`,
+      from: "a@b.c",
+      snippet: "x".repeat(200),
+    }));
+    const text = JSON.stringify({ success: true, emails, account: { id: "acct-1" } });
+    const out = truncateToolResult(text, 2000);
+    expect(out.length).toBeLessThan(2400); // 标记允许小幅超出预算
+    expect(out).toContain("共 50 条");
+
+    const jsonPart = out.split("...[结果过长已截断")[0];
+    const parsed = JSON.parse(jsonPart) as { emails: Array<Record<string, unknown>> };
+    expect(parsed.emails.length).toBeLessThan(emails.length);
+    // 保留的条目必须完整（不是残片）
+    for (const e of parsed.emails.slice(0, -1)) {
+      expect(String(e.uid)).toMatch(/^u\d+$/);
+      expect(String(e.snippet).length).toBe(200);
+    }
+    // 末尾是总数标记字符串
+    expect(String(parsed.emails[parsed.emails.length - 1])).toContain("仅保留前");
+  });
+
+  it("root 为数组时同样按结构截断", () => {
+    const text = JSON.stringify(Array.from({ length: 50 }, (_, i) => ({ i, v: "x".repeat(100) })));
+    const out = truncateToolResult(text, 1500);
+    expect(out).toContain("共 50 条");
+    const jsonPart = out.split("...[结果过长已截断")[0];
+    const parsed = JSON.parse(jsonPart) as Array<Record<string, unknown>>;
+    expect(parsed.length).toBeLessThan(50);
+    expect(String(parsed[parsed.length - 1])).toContain("共 50 条");
+  });
+
+  it("不超预算的 JSON 原样返回", () => {
+    const text = JSON.stringify({ success: true, emails: [{ uid: "1", subject: "s" }] });
+    expect(truncateToolResult(text, 1000)).toBe(text);
+  });
+
+  it("非法 JSON（shell 输出）：保留头部，尾部丢弃并如实告知", () => {
+    const text = "a".repeat(5000);
+    const out = truncateToolResult(text, 1000);
+    expect(out.startsWith("a".repeat(840))).toBe(true); // budget = 1000 - 160
+    expect(out).toContain("尾部");
+    expect(out).toContain("已丢弃");
+    expect(out.length).toBeLessThan(1200);
   });
 });
 
@@ -1698,6 +1757,13 @@ describe("llm-caller > Anthropic 原生 Messages API", () => {
 // 修复：tools 始终下发 + 显式 tool_choice:"none"（网关真正收到禁用指令，
 // 请求体字节稳定）；个别网关若仍无视 tool_choice，由 toolCallsNoneRefusals
 // 兜底拒绝执行——语义与「置空 tools」等价，但不再击穿缓存。
+//
+// ★ 2026-10-28 架构演进（v5 Task 3/10 事故）：nudge 只对创造性任务生效
+//  （Fix 2），而创造性任务在 4194 行已硬禁用 tools（tools=[]）——nudge 的
+//  「保留 tools + tool_choice:none」在生产路径不可达，仅当网关无视 tools
+//  缺失仍返回 tool_calls 时由拒绝兜底拦截。请求体构建层的「tools + 显式
+//  tool_choice:none」仍由下方 callLLMOnce 单测（toolChoice='none'/'auto'）
+//  直接覆盖；本 describe 的 tryCallLLM 集成测试验证拒绝兜底的回灌行为。
 // ═══════════════════════════════════════════════════════════
 describe("llm-caller > tc=none 时 tools 段保持稳定（P0-5 缓存回归）", () => {
   function captureServer(
@@ -1802,11 +1868,15 @@ describe("llm-caller > tc=none 时 tools 段保持稳定（P0-5 缓存回归）"
     expect(captured[0].tool_choice).toBe("auto");
   });
 
-  it("tryCallLLM：网关无视 tool_choice=none 时拒绝执行工具并回灌拒绝结果", async () => {
+  it("tryCallLLM：创造性任务禁用 tools 后，网关无视禁用仍返回 tool_calls 时拒绝执行并回灌拒绝结果", async () => {
     // 轮次剧本：
-    //   round0/round1 → 返回工具调用（成功执行 → successfulToolCalls=2）
-    //   round2         → tc 变 "none"，网关**无视**该指令仍返回 tool_calls → 必须被拒绝
+    //   round0/round1 → 网关无视 tools 禁用仍返回工具调用（成功执行 → successfulToolCalls=2）
+    //   round2         → nudge 生效（tc 变 "none"），网关仍返回 tool_calls → 必须被拒绝
     //   round3         → 返回文本收尾
+    // 创造性任务（设计 API）→ isCreativeTask=true → tools 置空（硬禁用，4194 行）。
+    // 个别网关无视请求中缺失的 tools 仍返回 tool_calls——拒绝兜底
+    // （toolCallsNoneRefusals，4842 行）负责拦截，并把拒绝结果回灌
+    // （保持 OpenAI 消息格式合法——否则下一轮请求会带无人应答的 tool_calls 被网关 400）。
     // 注意：每轮工具参数必须互不相同——工具结果缓存以 args 为键，参数相同会
     //   命中缓存而跳过 handler（本回归曾因此误判为「工具未执行」）。
     let call = 0;
@@ -1835,7 +1905,7 @@ describe("llm-caller > tc=none 时 tools 段保持稳定（P0-5 缓存回归）"
     ]);
     const dep = minimalDeps({ registeredTools });
     const res = await tryCallLLM(dep, {
-      message: "跑个命令",
+      message: "设计一个 RESTful API 并给出完整方案",
       systemPrompt: "SYS",
       installedSkills: [],
       providers: [openAIProvider(port)],
@@ -1845,17 +1915,15 @@ describe("llm-caller > tc=none 时 tools 段保持稳定（P0-5 缓存回归）"
     });
     close();
 
-    // 前两轮工具调用被真正执行（handler 收到的是带 _signal 的 args，只断言 cmd）
+    // 前两轮工具调用被真正执行（非合规网关无视 tools 缺失仍返回 tool_calls；
+    // handler 收到的是带 _signal 的 args，只断言 cmd）
     expect(handler).toHaveBeenCalledTimes(2);
     expect(handler.mock.calls.map((c) => (c[0] as { cmd?: string }).cmd)).toEqual(["echo first", "echo second"]);
 
-    // tc 序列：前两轮 auto，第三轮起 nudge 生效
-    expect(captured.map((b) => b.tool_choice)).toEqual(["auto", "auto", "none", "none"]);
-
-    // tc="none" 的轮次：tools 段仍必须下发（缓存稳定性核心断言）
-    expect(Array.isArray(captured[2].tools)).toBe(true);
-    expect((captured[2].tools as unknown[]).length).toBeGreaterThan(0);
-    expect(captured[2].tool_choice).toBe("none");
+    // 创造性任务硬禁用：所有轮次请求均不下发 tools/tool_choice
+    // （tools 在请求体末尾，置空只丢 tools 段自身的缓存、不影响 messages 前缀）
+    expect(captured.every((b) => b.tools === undefined)).toBe(true);
+    expect(captured.every((b) => b.tool_choice === undefined)).toBe(true);
 
     // 被拒绝的那次调用不得触达 handler，且拒绝结果已回灌给模型
     // （tool 角色 + 拒绝说明），保证下一轮请求格式合法（无人应答的 tool_calls 会被网关 400）
@@ -1897,13 +1965,23 @@ describe("P0-5 buildOpenAITools — 领域工具分组瘦身 + 输出分档（�
     return { names, active: out.activeTools };
   };
 
-  /** 常驻编码基座：任何措辞（哪怕完全无关）都必须在手（未分组 → 恒定下发） */
+  /** 常驻编码基座：任何措辞（哪怕完全无关）都必须在手（core 组 + 创建类白名单） */
   const ALWAYS_ON = [
-    "apply_patch", "code_search", "dev_check", "execute_code", "verify_project",
-    "todo_list", "document", "task_plan", "report", "classify_task",
+    "web_search", "web_fetch", "file_write", "file_read",
+    "file_list", "file_delete", "shell_exec", "sequential_thinking",
+    "execute_code", "todo_list",
+    // 创建类白名单恒定下发
+    "email", "git", "kanban", "skill_manage", "scheduler",
   ];
   /** 领域工具：关键词不命中时必须被裁掉（这正是本次瘦身的目标） */
   const DOMAIN_GATED = [
+    // dev 组
+    "dev_check", "code_search", "verify_project",
+    // report 组
+    "report",
+    // planning 组
+    "task_plan", "classify_task",
+    // memory / vision / media 组
     "memory", "vision_analyze", "computer_use", "checkpoint",
     "workflow", "video", "music", "image_generate",
     "browser_navigate", "browser_wait", "browser_scroll",
@@ -2111,5 +2189,302 @@ describe("llm-caller > prompt cache 命中率指标（P0-5：网关未上报缓�
 
     expect(obs.calls).toHaveLength(1);
     expect(obs.calls[0]).toMatchObject({ hit: 0, miss: 8 });
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 测试套件：extractClaimedFilePaths / extractExecutedShellCommands
+// 覆盖：v4 压测 Task 7/8 磁盘核验漏检回归（2026-10-28）
+// ═══════════════════════════════════════════════════════════
+
+describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 回归）", () => {
+  it("★ Task 7 实录：反引号裸文件名 + 同行目录 → 拼接出绝对路径", () => {
+    const reply =
+      "已创建完成。在 `/tmp/v4-monitor/` 目录下，已生成 `monitor.sh`（监控脚本）和 `notify.sh`（告警通知脚本）。接下来是第三个文件（systemd service）以及部署验证说明。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+  });
+
+  it("★ Task 8 实录：无反引号裸文件名 + 同行目录", () => {
+    const reply =
+      "🎉 所有 5 个子任务已成功完成！\n✅ **创建目录 /tmp/v4-ratelimit 并初始化 ratelimit.js 文件，实现 TokenBucket 类**";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-ratelimit/ratelimit.js");
+  });
+
+  it("跨行：目录在前一行，文件名在后一行", () => {
+    const reply = "在 /tmp/v4-x 目录下工作。\n已生成 `report.md`。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-x/report.md");
+  });
+
+  it("否定语境（不存在/未创建）不拼接", () => {
+    const reply = "在 /tmp/v4-monitor 下，monitor.sh 不存在，未创建。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).not.toContain("/tmp/v4-monitor/monitor.sh");
+  });
+
+  it("★ 运行时写目标（记录到/输出到）不视为声称创建的文件", () => {
+    // 复测 Task 7 误报：monitor.sh 脚本运行期把告警写入 alert.log，
+    // 回复「超阈值时记录到 `/tmp/v4-monitor/alert.log`」是脚本行为描述，
+    // 不是模型声称创建的文件——不得触发磁盘核验更正。
+    const reply =
+      "三个文件都放在 /tmp/v4-monitor/ 下。\n`monitor.sh`：超阈值时记录到 `/tmp/v4-monitor/alert.log` 并调用 `notify.sh` 发告警。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("★ v7 复测 Task 7 实录：「会尝试写」运行期行为不触发更正脚注", () => {
+    // v7 复测最终回复（recovery 摘要）含「且会尝试写 `/tmp/v4-monitor/alert.log`
+    // 并调用 `alert.sh`」——alert.log 是脚本运行期输出，「尝试写」前缀区别于
+    // 完成声明「已写入」。修复前被误提取 → 触发虚假「⚠️ 任务未完成」更正脚注。
+    const reply =
+      "验证完成。`/tmp/v4-monitor/` 下 4 个文件全部就位：\n" +
+      "- `monitor.sh`、`alert.sh`（脚本）\n" +
+      "- `evomon.service`、`evomon.timer`（systemd 单元）\n" +
+      "一点说明：`monitor.sh` 会尝试写 `/tmp/v4-monitor/alert.log` 并调用 `alert.sh`。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/alert.sh");
+    expect(paths).toContain("/tmp/v4-monitor/evomon.service");
+    expect(paths).toContain("/tmp/v4-monitor/evomon.timer");
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("运行时写目标排除不得误伤「已写入 X」完成声明", () => {
+    // 「已写入」是完成声明（模型确实写了文件），与「记录到」（脚本行为）
+    // 不同：前者末尾无「到」后缀，后者有。回归保护：不得把前者排除。
+    const reply = "已写入 `/tmp/v4-x/report.md`，内容完整。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-x/report.md");
+  });
+
+  it("无完成声明上下文的行不拼接（示例引用不算创建声称）", () => {
+    const reply = "参考 /tmp/docs 下 monitor.sh 的实现思路。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).not.toContain("/tmp/docs/monitor.sh");
+  });
+
+  it("反引号绝对路径仍被提取（既有行为不变）", () => {
+    const reply = "已创建 `/tmp/v4-x/app.py` 和 `/tmp/v4-x/data.json`。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-x/app.py");
+    expect(paths).toContain("/tmp/v4-x/data.json");
+  });
+
+  it("★ 复测 Task 7 实录：完成声明引导行 + bullet 清单条目行", () => {
+    const reply =
+      "主人，三个监控文件已经全部完成并验证通过：\n" +
+      "- /tmp/v4-monitor/monitor.sh：监控 CPU/内存/磁盘/端口\n" +
+      "- /tmp/v4-monitor/notify.sh：模拟邮件/打印告警\n" +
+      "- /tmp/v4-monitor/v4-monitor.service：systemd service 配置";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+    expect(paths).toContain("/tmp/v4-monitor/v4-monitor.service");
+  });
+
+  it("bullet 引用语境（详见/参考）不提取", () => {
+    const reply = "任务完成。\n- 详见 /tmp/docs/guide.md\n- 参考 /tmp/docs/api.md";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).not.toContain("/tmp/docs/guide.md");
+    expect(paths).not.toContain("/tmp/docs/api.md");
+  });
+
+  it("无完成声明的 bullet 路径不提取", () => {
+    const reply = "当前目录内容：\n- /tmp/x/a.py\n- /tmp/x/b.js";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).not.toContain("/tmp/x/a.py");
+  });
+
+  it("★ v6 复测 Task 7 实录：就绪/都放在引导行 + 编号加粗条目 + 跨行目录回退", () => {
+    // 复测 Task 7 最终回复（2372 字符摘要）的声称结构：完成声明在引导行
+    // （「监控方案已就绪，三个文件都放在 `/tmp/v4-monitor/` 下了」），
+    // 文件名在编号加粗条目行（**1. `monitor.sh`** …）——行内无声明词，
+    // 且第 2/3 条的目录只出现在引导行 → 需 2.5 清单条目门 + mentionedDirs 回退。
+    // 修复前三个文件全部漏提取 → 缺失的 .service/notify.sh 无人发现。
+    const reply =
+      "主人，监控方案已就绪，三个文件都放在 `/tmp/v4-monitor/` 下了：\n" +
+      "## 📁 文件清单\n" +
+      "**1. `monitor.sh`** — 主监控脚本，检查 4 项指标，超阈值自动写入 `/tmp/v4-monitor/alert.log`：\n" +
+      "- 轮询间隔 60s，超阈值写入日志\n" +
+      "**2. `evoclaw-monitor.service`** — systemd 单元（timer 方式，每 5 分钟跑一次）：\n" +
+      "- [Unit] Description=EvoClaw Monitor\n" +
+      "**3. `notify.sh`** — 模拟告警通知脚本：\n" +
+      "- 被 monitor.sh 调用，发送告警";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/evoclaw-monitor.service");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+    // alert.log 是脚本运行期写目标（自动写入），不是声称创建的文件
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("★ v8 复测 Task 7 实录：「均已就位」+ 括号内绝对路径 + 裸文件名", () => {
+    // v8 复测最终回复（5541 字符）的声称结构：完成声明「三个文件均已就位」
+    // 引导行内嵌绝对路径 + 裸文件名（「（/tmp/v4-monitor/monitor.sh、
+    // notify.sh、monitor.service，另附 monitor.timer）」）——「就位」不在
+    // 原关键词列表 → 整行漏提取 → 虚假声称无人更正（files=[] 却无更正脚注）。
+    // 同时回归：路径后缀「onitor.sh」（/tmp/x/monitor.sh 的尾段）不得误匹配；
+    // 加粗段落「**阈值含义速查**」不得当 bullet 放行。
+    const reply =
+      "主人，完整方案如下，三个文件均已就位（/tmp/v4-monitor/monitor.sh、notify.sh、monitor.service，另附 monitor.timer），阈值、去重、模拟邮件通知逻辑都按您的要求实现。\n" +
+      "## 1. monitor.sh — 主监控脚本（/tmp/v4-monitor/monitor.sh）\n" +
+      "监控 4 项：CPU、内存、磁盘、端口。超阈值时追加写入 `alert.log` 并调用 notify.sh。\n" +
+      "**阈值含义速查**：CPU >80%、内存 >85%、磁盘 >90%，均可在 monitor.sh 顶部配置区直接调整。";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+    expect(paths).toContain("/tmp/v4-monitor/monitor.service");
+    expect(paths).toContain("/tmp/v4-monitor/monitor.timer");
+    // 后缀误匹配（basename 恰为 onitor.sh）与加粗段落误放行（/var/lib 等）不得出现
+    expect(paths.some((p) => p.split("/").pop() === "onitor.sh")).toBe(false);
+    expect(paths.some((p) => p.includes("/var/lib"))).toBe(false);
+    // 运行期写目标（追加写入 alert.log）不提取
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("★ v10 复测 Task 7 实录：markdown 标题行列举文件 + 「时写入」运行期行为", () => {
+    // v10 复测最终回复（1735 字符）的声称结构：完成声明在引导行
+    // （「三个文件已创建完成在 /tmp/v4-monitor/ 下」），文件名在 markdown
+    // 标题行（「## 2. `evoclaw-monitor.service` + `evoclaw-monitor.timer`」）——
+    // 行级关键词门漏检 → 未落盘的 .service/.timer 无人更正（files=[monitor.sh,
+    // notify.sh] 却只更正 alert.log）。同时回归「时写入」运行期行为：
+    // 「超阈值时写入 `/tmp/v4-monitor/alert.log`」是脚本运行期描述，
+    // 不是创建声明，不得触发更正脚注。
+    const reply =
+      "主人，三个文件已创建完成在 `/tmp/v4-monitor/` 下：\n" +
+      "\n" +
+      "## 1. `monitor.sh` — 主监控脚本\n" +
+      "监控 4 项：CPU、内存、磁盘、端口。超阈值时写入 `/tmp/v4-monitor/alert.log`，并带 300 秒冷却去重。正常时记录到 status.log。\n" +
+      "\n" +
+      "## 2. `evoclaw-monitor.service` + `evoclaw-monitor.timer` — systemd 自动运行\n" +
+      "- service：`Type=oneshot`，每次执行 monitor.sh\n" +
+      "- timer：`OnCalendar=*:0/5` 每 5 分钟触发一次，`Persistent=true` 补跑\n" +
+      "\n" +
+      "## 3. `notify.sh` — 告警通知脚本\n" +
+      "monitor.sh 检测到告警时自动调用它。当前实现为打印 + 写 notify.log 模拟邮件。\n" +
+      "\n" +
+      "## 部署步骤\n" +
+      "```bash\n" +
+      "cp /tmp/v4-monitor/evoclaw-monitor.service /etc/systemd/system/\n" +
+      "systemctl enable --now evoclaw-monitor.timer\n" +
+      "```";
+    const paths = extractClaimedFilePaths(reply);
+    // 标题行列举的文件全部提取（含未落盘的 .service/.timer——磁盘核验应更正）
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+    expect(paths).toContain("/tmp/v4-monitor/evoclaw-monitor.service");
+    expect(paths).toContain("/tmp/v4-monitor/evoclaw-monitor.timer");
+    // 「时写入」运行期行为不提取（alert.log 由脚本运行期产出，非创建声明）
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+    // 「记录到 status.log」运行期行为不提取
+    expect(paths).not.toContain("/tmp/v4-monitor/status.log");
+    // 代码块内的部署命令路径不提取（非文件树形态）
+    expect(paths).not.toContain("/etc/systemd/system/evoclaw-monitor.service");
+    // 非引用语境外：「已写入 X」完成声明仍正常提取（时写入守卫不误伤）
+    const claimed = extractClaimedFilePaths(
+      "任务完成。已写入 /tmp/x/report.md，另附 summary.md。"
+    );
+    expect(claimed).toContain("/tmp/x/report.md");
+    expect(claimed).toContain("/tmp/x/summary.md");
+  });
+
+  it("★ v11 复测 Task 7 实录：代码块内 bash 注释不触发标题门（/etc/systemd 误报）", () => {
+    // v11 复测回复的「验证方法」代码块内有注释行「# 就会在 alert.log 中看到
+    // "端口 9999 未监听"的告警。」——`# ` 同时是 markdown H1 与 bash 注释，
+    // 标题门放行后裸文件名 alert.log 拼到上方最近提及的目录 /etc/systemd/system/
+    // → 更正脚注误报 /etc/systemd/system/alert.log。代码块围栏内须关闭标题门。
+    const reply =
+      "主人，三个文件已创建完成，部署方法如下：\n" +
+      "## 文件清单\n" +
+      "| `/tmp/v4-monitor/monitor.sh` | 主监控脚本，超阈值写入 `alert.log` |\n" +
+      "## 部署步骤\n" +
+      "```bash\n" +
+      "sudo cp /tmp/v4-monitor/monitor.service /etc/systemd/system/\n" +
+      "```\n" +
+      "## 验证方法\n" +
+      "```bash\n" +
+      "# 就会在 alert.log 中看到\"端口 9999 未监听\"的告警。\n" +
+      "```";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/v4-monitor/monitor.sh");
+    expect(paths).not.toContain("/etc/systemd/system/alert.log");
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("★ v12 复测 Task 7 实录：标题裸文件名拼接排除代码块内目录 + 「超阈值写入」守卫", () => {
+    // v12 复测最终回复（通过态）的声称结构：完成声明在引导行、文件名在标题行
+    // 且为裸名（「## 2. v4-monitor.service + v4-monitor.timer」）——标题门放行后
+    // 裸文件名拼到「其前最近提及的目录」。此前代码块内脚本内容「for m in
+    // / /var /home /tmp」把 /tmp 登记为目录 → 拼出 /tmp/v4-monitor.service、
+    // /tmp/notify.sh 等畸形路径 → 更正脚注把真实存在的文件报为缺失。
+    // 同时回归「超阈值写入」运行期行为不触发更正脚注。
+    const reply =
+      "主人，📁 `/tmp/v4-monitor/` 下的三个文件（含配套 timer）已在上一轮实际创建并验证成功。\n" +
+      "## 1. monitor.sh — 监控脚本\n" +
+      "监控四项，超阈值写入 `/tmp/v4-monitor/alert.log`。\n" +
+      "```bash\n" +
+      "for m in / /var /home /tmp; do\n" +
+      'ALERT_LOG="/tmp/v4-monitor/alert.log"\n' +
+      "```\n" +
+      "## 2. v4-monitor.service + v4-monitor.timer — 每 5 分钟自动运行\n" +
+      "## 3. notify.sh — 告警通知（模拟邮件）\n";
+    const paths = extractClaimedFilePaths(reply);
+    // 标题裸文件名拼到代码块外最近提及的目录 /tmp/v4-monitor
+    expect(paths).toContain("/tmp/v4-monitor/v4-monitor.service");
+    expect(paths).toContain("/tmp/v4-monitor/v4-monitor.timer");
+    expect(paths).toContain("/tmp/v4-monitor/notify.sh");
+    // 代码块内的 /tmp 不作为拼接基准（畸形路径不得出现）
+    expect(paths).not.toContain("/tmp/v4-monitor.service");
+    expect(paths).not.toContain("/tmp/notify.sh");
+    // 「超阈值写入」运行期行为不提取
+    expect(paths).not.toContain("/tmp/v4-monitor/alert.log");
+  });
+
+  it("运行时写目标守卫不误伤编号条目内的裸文件名（仅排除写目标本身）", () => {
+    // 2.5 的行内守卫只按「文件名前 30 字符」判定：条目行首的 `app.py` 与
+    // 行尾「输出到 `run.log`」互不干扰——前者保留、后者排除。
+    const reply =
+      "任务完成。三个文件都放在 /tmp/x/ 下：\n" +
+      "**1. `app.py`** — 主程序，运行期日志输出到 `/tmp/x/run.log`\n" +
+      "**2. `config.json`** — 配置文件";
+    const paths = extractClaimedFilePaths(reply);
+    expect(paths).toContain("/tmp/x/app.py");
+    expect(paths).toContain("/tmp/x/config.json");
+    expect(paths).not.toContain("/tmp/x/run.log");
+  });
+
+  it("代码块文件树（相对路径 + baseDir）仍被提取（既有行为不变）", () => {
+    const reply =
+      "已创建完成。\n```\ntodo-cli/\n├── README.md\n└── pyproject.toml\n```";
+    const paths = extractClaimedFilePaths(reply, "/tmp/base");
+    expect(paths).toContain("/tmp/base/todo-cli/README.md");
+    expect(paths).toContain("/tmp/base/todo-cli/pyproject.toml");
+  });
+});
+
+describe("extractExecutedShellCommands", () => {
+  it("提取 shell_exec 的 command", () => {
+    const cmds = extractExecutedShellCommands([
+      { name: "shell_exec", arguments: { command: "node --test ratelimit.test.js" } },
+      { name: "file_read", arguments: { path: "/tmp/x" } },
+    ]);
+    expect(cmds).toEqual(["node --test ratelimit.test.js"]);
+  });
+
+  it("execute_code 的 code 参数不算命令（避免子串误匹配）", () => {
+    const cmds = extractExecutedShellCommands([
+      { name: "execute_code", arguments: { code: "console.log('npm test')" } },
+    ]);
+    expect(cmds).toEqual([]);
+  });
+
+  it("无 command 参数的执行类工具跳过", () => {
+    const cmds = extractExecutedShellCommands([
+      { name: "bash", arguments: { timeout: 5 } },
+    ]);
+    expect(cmds).toEqual([]);
   });
 });

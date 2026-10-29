@@ -67,10 +67,11 @@ export interface MCPServerInfo {
 }
 
 export interface MCPTransport {
-  type: "stdio" | "sse";
+  type: "stdio" | "sse" | "streamable-http";
   command?: string;
   args?: string[];
   url?: string;
+  headers?: Record<string, string>;
 }
 
 export interface MCPToolCallRequest {

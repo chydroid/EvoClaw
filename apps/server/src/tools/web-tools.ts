@@ -1,6 +1,8 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { SkillManager } from "@evoclaw/skills";
 import type { ServiceRegistry } from "@evoclaw/core";
@@ -318,6 +320,20 @@ export function registerWebTools(
   // browser_fetch_json（浏览器后端取 JSON，实现从 browser-tools.ts 搬来）：
   // 一个工具 + action 字段，保持 schema 紧凑、降低每轮 token 成本。
 
+  /** curl 兜底抓取：Node fetch 返回空内容时用 curl 重试。
+   *  curl 的 TLS 指纹和 HTTP/2 协商更通用，能绕过部分站点对 Node fetch 的 UA/指纹过滤。
+   *  返回原始 HTML，由调用方统一做标签剥离。 */
+  const execFileAsync = promisify(execFile);
+  async function curlFallback(targetUrl: string): Promise<string> {
+    // curl -sL 跟随重定向，-A 设置浏览器 UA，--max-time 限制超时
+    const { stdout } = await execFileAsync(
+      "curl",
+      ["-sL", "--max-time", "15", "-A", "Mozilla/5.0 (compatible; EvoClaw/1.0)", targetUrl],
+      { timeout: 20000, maxBuffer: 5 * 1024 * 1024 },
+    );
+    return stdout;
+  }
+
   /** 原 web_fetch */
   const handleWebFetch = async (params: Record<string, unknown>) => {
     const url = String(params.url || "");
@@ -477,11 +493,34 @@ export function registerWebTools(
           .replace(/<[^>]+>/g, " ")
       ).replace(/\s+/g, " ").trim();
       const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
+
+      // ★ 2026-10-27 修复：fetch 返回空内容时用 curl 兜底。
+      //   实测 devblogs 等站点对 Node fetch 的 UA/TLS 指纹敏感，返回空 body；
+      //   curl 的指纹更通用，能拿到完整 HTML。仅在 content 极短（<20 chars）时触发，
+      //   避免对正常页面增加延迟。curl 返回原始 HTML，复用下方统一的标签剥离逻辑。
+      let finalContent = content;
+      if (content.length < 20) {
+        try {
+          const curlHtml = await curlFallback(currentUrl);
+          const curlContent = decodeHtmlEntities(
+            curlHtml.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+              .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
+              .replace(/<[^>]+>/g, " ")
+          ).replace(/\s+/g, " ").trim();
+          if (curlContent.length > content.length) {
+            finalContent = curlContent;
+            process.stderr.write(`[web_fetch] Node fetch returned ${content.length} chars, curl fallback got ${curlContent.length} chars for ${currentUrl}\n`);
+          }
+        } catch (curlErr: any) {
+          process.stderr.write(`[web_fetch] curl fallback failed: ${curlErr.message}\n`);
+        }
+      }
+
       return {
         url,
         title: titleMatch ? titleMatch[1].trim().replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"') : url,
-        content: content.slice(0, maxLength),
-        length: content.length,
+        content: finalContent.slice(0, maxLength),
+        length: finalContent.length,
       };
     } catch (err: any) {
       return { success: false, error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
@@ -595,12 +634,12 @@ except Exception as e:
           required: true,
           enum: ["fetch", "stealth", "json"],
         },
-        url: { type: "string", description: "要抓取的 URL（fetch / stealth / json 使用）" },
-        format: { type: "string", description: "响应格式：'text'（纯文本）、'html'（原始 HTML）、'json'（解析后的 JSON）；默认 'text'（fetch 使用）" },
-        selector: { type: "string", description: "可选 CSS 选择器，提取指定内容（stealth 使用）" },
-        extractLinks: { type: "string", description: "设为 'true' 提取页面全部链接（stealth 使用）" },
-        headless: { type: "string", description: "设为 'false' 使用非 headless 模式（默认 true）（stealth 使用）" },
-        maxLength: { type: "number", description: "返回的最大字符数（默认 5000）（fetch 使用；原 fetch_node_page 参数）" },
+        url: { type: "string", description: "要抓取的 URL（fetch / stealth / json 使用）", required: true },
+        format: { type: "string", description: "响应格式：'text'（纯文本）、'html'（原始 HTML）、'json'（解析后的 JSON）；默认 'text'（fetch 使用）", required: false },
+        selector: { type: "string", description: "可选 CSS 选择器，提取指定内容（stealth 使用）", required: false },
+        extractLinks: { type: "string", description: "设为 'true' 提取页面全部链接（stealth 使用）", required: false },
+        headless: { type: "string", description: "设为 'false' 使用非 headless 模式（默认 true）（stealth 使用）", required: false },
+        maxLength: { type: "number", description: "返回的最大字符数（默认 5000）（fetch 使用；原 fetch_node_page 参数）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -909,13 +948,13 @@ except Exception as e:
           required: true,
           enum: ["search", "research", "browser"],
         },
-        query: { type: "string", description: "搜索关键词（search / browser 使用）" },
-        limit: { type: "number", description: "最大结果数（默认 10，上限 50）（search 使用）" },
-        freshness: { type: "string", description: "时间过滤：pd（24h）、pw（7d）、pm（31d）、py（365d）或 YYYY-MM-DDtoYYYY-MM-DD（search 使用）" },
-        sites: { type: "string", description: "逗号分隔的搜索引擎（google、bing、duckduckgo）（browser 使用；默认 duckduckgo）" },
-        question: { type: "string", description: "要研究的问题（research 使用）" },
-        maxSources: { type: "number", description: "抓取用于取证的网页数上限（默认 5，上限 10）（research 使用）" },
-        maxSearchResults: { type: "number", description: "考虑的搜索结果数上限（默认 10，上限 20）（research 使用）" },
+        query: { type: "string", description: "搜索关键词（search / browser 使用；research 用 question 代替）", required: false },
+        limit: { type: "number", description: "最大结果数（默认 10，上限 50）（search 使用）", required: false },
+        freshness: { type: "string", description: "时间过滤：pd（24h）、pw（7d）、pm（31d）、py（365d）或 YYYY-MM-DDtoYYYY-MM-DD（search 使用）", required: false },
+        sites: { type: "string", description: "逗号分隔的搜索引擎（google、bing、duckduckgo）（browser 使用；默认 duckduckgo）", required: false },
+        question: { type: "string", description: "要研究的问题（research 使用）", required: false },
+        maxSources: { type: "number", description: "抓取用于取证的网页数上限（默认 5，上限 10）（research 使用）", required: false },
+        maxSearchResults: { type: "number", description: "考虑的搜索结果数上限（默认 10，上限 20）（research 使用）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

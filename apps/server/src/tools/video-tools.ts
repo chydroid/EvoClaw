@@ -752,39 +752,48 @@ export function registerVideoTools(
         },
         prompt: {
           type: "string",
-          description: "Detailed description of the video to generate. Be specific about scenes, camera movements, style, and mood. 例：'一只猫在阳光下打盹，镜头缓慢推进，温暖色调'（action=generate 使用）",
+          description: "Detailed description of the video to generate. Be specific about scenes, camera movements, style, and mood. 例：'一只猫在阳光下打盹，镜头缓慢推进，温暖色调'（action=generate 必填；action=info / download 不需要）",
+          required: false,
         },
         duration: {
           type: "string",
           description: "Video duration in seconds (default: 5, range: 3-15)（action=generate 使用）",
+          required: false,
         },
         aspect_ratio: {
           type: "string",
           description: "Aspect ratio: '16:9' (landscape, default), '9:16' (portrait), '1:1' (square)（action=generate 使用）",
+          required: false,
         },
         provider: {
           type: "string",
           description: "Video generation provider: 'fal' (Fal.ai), 'replicate', 'local' (FFmpeg slideshow). If not specified, auto-selects based on available API keys.（action=generate 使用）",
+          required: false,
         },
         model: {
           type: "string",
           description: "Specific model ID (e.g., 'fal-ai/wan/v2.2/text-to-video'). If not specified, uses provider's default.（action=generate 使用）",
+          required: false,
         },
         image_url: {
           type: "string",
           description: "Optional image URL for image-to-video generation. If provided, the video will animate from this image.（action=generate 使用）",
+          required: false,
         },
         url: {
           type: "string",
           description: "The video URL to download (Bilibili, Douyin, YouTube, etc.)（action=download 使用）",
+          required: false,
         },
         format: {
           type: "string",
           description: "Video quality: 'best', '720p', '1080p', '4k' (default: best)（action=download 使用）",
+          required: false,
         },
         noWatermark: {
           type: "string",
           description: "Set to 'true' to remove watermark (default: true for Douyin)（action=download 使用）",
+          required: false,
         },
       },
     },

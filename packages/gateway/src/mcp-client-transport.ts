@@ -1,23 +1,25 @@
 /**
  * MCPClientTransport — 消费外部 MCP server 的客户端传输层。
  *
- * 基于 @modelcontextprotocol/sdk 的 Client + StdioClientTransport / SSEClientTransport，
- * 启动并连接外部 MCP server 进程，通过标准 MCP 协议调用其全部工具。
- * 保留原版 server 的完整功能，不做任何功能裁剪。
+ * 基于 @modelcontextprotocol/sdk 的 Client + StdioClientTransport / SSEClientTransport /
+ * StreamableHTTPClientTransport，启动并连接外部 MCP server 进程，通过标准 MCP 协议
+ * 调用其全部工具。保留原版 server 的完整功能，不做任何功能裁剪。
  *
- * 支持两种传输方式：
+ * 支持三种传输方式：
  * - stdio: spawn 子进程（如 npx -y firecrawl-mcp），通过 stdin/stdout JSON-RPC 通信
  * - sse: 连接 HTTP SSE 端点
+ * - streamable-http: 连接 Streamable HTTP 端点（MCP 协议默认 HTTP 传输）
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 
 /** 外部 MCP server 配置（与 IDE 的 mcpServers 配置格式一致） */
 export interface ExternalMCPServerConfig {
   /** 传输类型 */
-  type: "stdio" | "sse";
+  type: "stdio" | "sse" | "streamable-http";
   /** stdio 模式：要执行的命令（如 "npx"、"node"、"python"） */
   command?: string;
   /** stdio 模式：命令参数（如 ["-y", "firecrawl-mcp"]） */
@@ -26,8 +28,13 @@ export interface ExternalMCPServerConfig {
   env?: Record<string, string>;
   /** stdio 模式：工作目录 */
   cwd?: string;
-  /** sse 模式：MCP server 的 URL */
+  /** sse / streamable-http 模式：MCP server 的 URL */
   url?: string;
+  /**
+   * streamable-http 模式：自定义 HTTP 请求头（认证等）。
+   * 对标 Hermes headers 配置，用于传递 API Key / Bearer token。
+   */
+  headers?: Record<string, string>;
   /** 是否启用（默认 true） */
   enabled?: boolean;
   /**
@@ -63,7 +70,7 @@ export interface DiscoveredTool {
  */
 export class MCPClientTransport {
   /** 传输类型（满足 MCPGateway 的鸭子类型检查） */
-  readonly type: "stdio" | "sse";
+  readonly type: "stdio" | "sse" | "streamable-http";
 
   private client: Client | null = null;
   private transport: Transport | null = null;
@@ -101,6 +108,15 @@ export class MCPClientTransport {
         throw new Error(`sse MCP server "${this.name}" requires "url"`);
       }
       this.transport = new SSEClientTransport(new URL(this.config.url));
+    } else if (this.config.type === "streamable-http") {
+      if (!this.config.url) {
+        throw new Error(`streamable-http MCP server "${this.name}" requires "url"`);
+      }
+      this.transport = new StreamableHTTPClientTransport(new URL(this.config.url), {
+        requestInit: {
+          headers: this.config.headers ?? {},
+        },
+      });
     } else {
       throw new Error(`Unknown MCP transport type: ${(this.config as { type: string }).type}`);
     }

@@ -66,6 +66,20 @@ export { RoomManager, parseAgentMentions } from "./room-manager";
 export type { Room, RoomSpec, ResolveSpeakerInput } from "./room-manager";
 export { SubagentRegistry } from "./subagent-registry";
 export type { SubagentConfig, SubagentInfo, SubagentStatus, SubagentEvent, SubagentListFilter, SubagentRegistryEvent, SubagentSteerChannel } from "./subagent-registry";
+// DelegateEngine — delegate_task 子代理执行引擎（对标 Hermes delegate_tool.py）
+export { DelegateEngine, validateAgainstSchema } from "./delegate-engine";
+export type {
+  DelegateTaskItem,
+  DelegateRole,
+  DelegateRunStatus,
+  DelegateRunResult,
+  DelegateRunSummary,
+  DelegateDispatchResult,
+  DelegateEngineConfig,
+  DelegateEngineDeps,
+  DelegateExecutorLike,
+  DelegateResultDeliver,
+} from "./delegate-engine";
 export { handleChatCommand, dispatchCommand } from "./chat-commands";
 export type { CommandResult, CommandContext } from "./chat-commands";
 export { AutoReplyEngine } from "./auto-reply";

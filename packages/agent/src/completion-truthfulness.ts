@@ -8,6 +8,9 @@
  * 本模块提供纯函数式的对账能力，在 llm-caller 返回 finalReply 之前调用：
  *   - 模型声称完成，但操作仍处于 pending（等待人工审批） → 追加更正说明
  *   - 模型声称完成，但本回合完全没有执行任何工具      → 追加更正说明
+ *   - 模型声称完成，但本回合有工具执行失败            → 追加更正说明
+ *   - 模型声称完成，但本回合没有任何写文件类工具      → 追加更正说明
+ *   - 模型声称完成，但声称执行的验证命令无执行记录    → 追加更正说明（v4 Task 8）
  *
  * 设计取舍：采用「确定性追加更正」而非「让模型重新生成一轮」。
  * 理由是重新生成会引入额外延迟与再次卡死的风险（与本项目此前的
@@ -60,13 +63,19 @@ export interface ReconcileInput {
   emptyResultTools?: EmptyResultTool[];
   /** 本回合**真实执行过**的变更类工具调用（工具名 + 参数摘要） */
   writeOps?: Array<{ name: string; args: string }>;
+  /**
+   * 本回合真实执行过的 shell 命令文本（shell_exec/bash/execute_code 的原始命令）。
+   * 用于「声称运行了验证命令但无执行记录」对账（v4 Task 8 事故：回复声称
+   * 运行 node --test 验证通过，但工具日志只有 node -e require 测试）。
+   */
+  executedShellCommands?: string[];
 }
 
 export interface ReconcileResult {
   /** 是否检测到虚假/不可信的完成声明 */
   needsCorrection: boolean;
   /** 问题类型，便于测试与日志定位 */
-  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed" | "write_claimed_not_executed";
+  reason?: "pending_permissions" | "no_tool_executed" | "tool_failed" | "empty_but_detailed" | "write_claimed_not_executed" | "claimed_command_not_executed";
   /**
    * 给 **LLM 看**的续跑/纠错指令（内部提示词）。
    * ★ 绝不可直接展示给用户 —— 事故（2026-10-08 20:24）就是把它拼进了正文，
@@ -98,6 +107,8 @@ export function buildUserFacingCorrection(v: ReconcileResult): string {
       return suffix + "本回合没有执行任何写文件/改文件类工具，「已修改/已创建」不成立。";
     case "empty_but_detailed":
       return suffix + "相关工具返回的是空结果，上文给出的数量与明细**并非来自实际数据**，请勿采信。";
+    case "claimed_command_not_executed":
+      return suffix + "回复声称执行了某些验证命令，但本回合工具日志中没有对应执行记录，「验证通过」不成立。";
     default:
       return suffix + "之前的「已完成」结论不成立，请以实际执行结果为准。";
   }
@@ -110,7 +121,8 @@ export function buildUserFacingCorrection(v: ReconcileResult): string {
  */
 const COMPLETION_CLAIM_PATTERNS: RegExp[] = [
   // 中文：已完成 / 已添加 / 已创建 / 已删除 / 已修改 / 已发送 / 已安装 / 已配置 …
-  /已(?:完成|添加|新增|创建|删除|移除|修改|更新|发送|运行|执行|安装|配置|设置|保存|写入|注册|部署|搞定|办妥|处理好)/,
+  // 「已成功完成」也常见（v4 Task 8 回复即此措辞），故 (?:成功)? 可选。
+  /已(?:成功)?(?:完成|添加|新增|创建|删除|移除|修改|更新|发送|运行|执行|安装|配置|设置|保存|写入|注册|部署|搞定|办妥|处理好)/,
   // 中文：添加成功 / 配置完成 / 发送成功 …
   /(?:添加|创建|删除|修改|发送|安装|配置|设置|注册|保存|部署)(?:成功|完毕|完成)/,
   // 中文：搞定了 / 办好了 / 妥了
@@ -202,7 +214,25 @@ function pickError(o: Record<string, unknown>): string | null {
 
   const parts: string[] = [];
   if (hasErr) parts.push(String(o.error).trim());
-  if (hasErrs) parts.push((o.errors as unknown[]).map(String).join("; "));
+  if (hasErrs) {
+    // apply_patch 等工具返回 { path, reason } 结构化错误 —— 逐个拼出可读文案。
+    // 此前直接 errors.map(String) 会把对象拼成 "[object Object]"（2026-10-28
+    // v4 复测 Task 7 实测）：模型看到无意义错误后放弃写文件，把内容以文本
+    // 形式写进回复，浪费 151K tokens。
+    parts.push(
+      (o.errors as unknown[]).map((e) => {
+        if (typeof e === "string") return e;
+        if (e && typeof e === "object") {
+          const r = e as Record<string, unknown>;
+          const p = typeof r.path === "string" ? r.path : "";
+          const why = typeof r.reason === "string" ? r.reason : (typeof r.error === "string" ? r.error : "");
+          const joined = [p, why].filter(Boolean).join(": ");
+          return joined || String(r);
+        }
+        return String(e);
+      }).join("; "),
+    );
+  }
   if (parts.length === 0 && typeof o.message === "string" && o.message.trim()) parts.push(o.message.trim());
   if (parts.length === 0 && typeof o.reason === "string" && o.reason.trim()) parts.push(o.reason.trim());
   return parts.length > 0 ? parts.join("; ") : failed ? "工具返回失败" : null;
@@ -230,13 +260,16 @@ function pickError(o: Record<string, unknown>): string | null {
  * （每轮 60K+ tokens，120s 超时内根本无法完成）。
  */
 const DATA_RETRIEVAL_TOOLS = new Set([
-  "web_search", "tavily_search", "web_fetch",
-  "email_search", "email_list", "email_fetch",
-  "email", // 邮件数据/分析工具：totalEmails=0 等空结果同样意味着"无数据可查"
-  "file_read", "file_search",
+  "web_search", "web_fetch",
+  // 邮件数据/分析工具：totalEmails=0 等空结果同样意味着"无数据可查"
+  "email",
+  "file_read",
   "skill_manage", // skill 可能返回数据
-  "knowledge_search", "semantic_search",
 ]);
+// 注：以下旧名已随工具合并精简移除（注册表中不存在，均为死引用，勿再加回）：
+// file_search（88379a5）、tavily_search（并入 web_search）、
+// email_search/email_list/email_fetch（合并为复合 email）、
+// knowledge_search/semantic_search（语义检索未注册为独立工具）。
 
 export function extractEmptyResult(toolName: string, result: unknown): EmptyResultTool | null {
   // ★ 2026-10-26 修复：非数据检索类工具的空结果不参与对账
@@ -391,6 +424,29 @@ export function reconcileCompletionTruthfulness(input: ReconcileInput): Reconcil
     return { needsCorrection: true, reason: "tool_failed", notice };
   }
 
+  // 情况五：声称执行了验证命令，但本回合工具日志中没有该命令的执行记录。
+  // 真实事故（v4 Task 8，2026-10-28）：回复「✅ 运行 node --test 验证全部通过」，
+  // 但本轮 shell_exec 只有 node -e require 测试——node --test 从未执行，
+  // 测试文件也从未创建。验证门因「调过 shell_exec + 回复含运行测试」而放行，
+  // 因此需要这一道独立的对账。
+  if (claimsCompletion(finalReply)) {
+    const claimed = extractClaimedCommands(finalReply);
+    if (claimed.length > 0) {
+      const executed = input.executedShellCommands ?? [];
+      const missing = claimed.filter(
+        (c) => !executed.some((e) => e.includes(c) || c.includes(e)),
+      );
+      if (missing.length > 0) {
+        const notice =
+          "\n\n---\n" +
+          "⚠️ **更正**：上面的「已完成」并不成立。回复声称执行了以下验证命令，但本回合工具日志中**没有该命令的执行记录**：\n" +
+          missing.map((c) => `- \`${c}\``).join("\n") + "\n\n" +
+          "请真正执行该命令（或说明为何无法执行）后再汇报结果；在拿到实际执行输出之前，请勿认为验证已通过。";
+        return { needsCorrection: true, reason: "claimed_command_not_executed", notice };
+      }
+    }
+  }
+
   // 情况三：声称完成，但本回合一个工具都没执行过（最典型的伪造完成态）
   // ★ 2026-10-26 修复：创造性任务（API 设计/PRD/商业计划书/技术文档）
   //   模型可以仅凭自身知识产出完整交付物，不需要工具。如果回复已经是
@@ -439,4 +495,61 @@ const WRITE_CLAIM_PATTERNS: RegExp[] = [
 export function claimsWriteCompletion(text: string): boolean {
   if (!text) return false;
   return WRITE_CLAIM_PATTERNS.some((re) => re.test(text));
+}
+
+// ── 声称执行过的命令提取（v4 Task 8 事故驱动）───────────────────────────
+
+/** 引号内命令（反引号/单双引号/中文引号） */
+const QUOTED_CMD_RE = /[「'"`『]([^」'"`』\n]{4,120})[」'"`』]/g;
+/** 散文句式：运行/执行/跑 + 验证类命令 */
+const PROSE_VERIFY_RE =
+  /(?:运行|执行|跑)\s*(?:了)?\s*(node\s+--test|npm\s+test|pnpm\s+test|yarn\s+test|vitest(?:\s+run)?|jest|mocha|tsc|pytest|make\s+test|deno\s+test)\b/gi;
+/** 验证类命令特征 */
+const VERIFICATION_CMD_RE =
+  /(?:test|vitest|jest|mocha|tsc|pytest|make\s+test|npm\s+test|pnpm\s+test|yarn\s+test|node\s+--test|deno\s+test)/i;
+/** 句子执行上下文：声称「运行/执行/验证通过」等 */
+const EXEC_CONTEXT_RE = /(?:运行|执行|跑|验证|通过|测试|检查|passed|verified|ran)/i;
+/** 已知解释器/运行器名（引号内单命令必须以此开头） */
+const CMD_LEADER_RE = /^(?:node|npm|npx|pnpm|yarn|vitest|jest|mocha|tsc|pytest|python3?|bash|sh|make|deno)\b/i;
+/** 恰好是单个运行器名（无参数形态） */
+const SINGLE_RUNNER_RE = /^(?:vitest|jest|mocha|pytest|tsc|deno)$/i;
+
+/** 判断引号内文本是否像一条命令（而非路径/文件名） */
+function looksLikeCommand(c: string): boolean {
+  // 含空格或 flag → 命令 + 参数（`node --test` / `npm test` / `jest --watch`）
+  if (/\s/.test(c) || /--/.test(c)) return true;
+  // 单个词：必须是已知运行器名（`vitest`），排除 `node-test.js` 这类文件名
+  return SINGLE_RUNNER_RE.test(c);
+}
+
+/**
+ * 从回复中提取声称执行过的**验证类命令**。
+ *
+ * 两类来源：
+ *   1. 引号内命令：`node --test`、"npm test" 等
+ *   2. 散文句式：运行/执行/跑 + 命令，如「运行 node --test 验证通过」
+ *
+ * 只收录验证类命令，且所在句子必须含执行/验证上下文词——
+ * 避免把示例引用误判为执行声称。
+ */
+export function extractClaimedCommands(reply: string): string[] {
+  const out = new Set<string>();
+  if (!reply) return [];
+  // 按句子切分，只检查含执行上下文的句子
+  const sentences = reply.split(/[.!?。！？\n]+/);
+  for (const sentence of sentences) {
+    if (!EXEC_CONTEXT_RE.test(sentence)) continue;
+    // 引号内命令
+    for (const m of sentence.match(QUOTED_CMD_RE) || []) {
+      const c = m.replace(/[「'"`『」』]/g, "").trim();
+      if (!VERIFICATION_CMD_RE.test(c)) continue;
+      if (CMD_LEADER_RE.test(c) && looksLikeCommand(c)) out.add(c);
+    }
+    // 散文：运行 + 命令
+    for (const m of sentence.match(PROSE_VERIFY_RE) || []) {
+      const c = m.replace(/^.*?(?:运行|执行|跑)/, "").trim();
+      if (c) out.add(c);
+    }
+  }
+  return Array.from(out);
 }

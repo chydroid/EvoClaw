@@ -63,6 +63,7 @@ export function registerTodoTools(deps: TodoToolDeps): void {
         todos: {
           type: "array",
           description: "Task items to write.",
+          required: true,
           items: {
             type: "object",
             properties: {

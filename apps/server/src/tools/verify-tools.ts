@@ -37,21 +37,25 @@ export function registerVerifyTools(
           type: "string",
           description:
             "Path to the project root (optional, default: workspace root). Use relative paths from the workspace.",
+          required: false,
         },
         phases: {
           type: "string",
           description:
             "Which phases to run, comma-separated: 'bootstrap,build,test,start' (default: all). " +
             "Omit 'start' to skip booting the server (useful for CI/test-only verification).",
+          required: false,
         },
         port: {
           type: "string",
           description: "Override the default port for the start/readiness check.",
+          required: false,
         },
         saveManifest: {
           type: "boolean",
           description:
             "Save the detected recipe to .evoclaw/environment.json for future runs (default: false).",
+          required: false,
         },
       },
     },

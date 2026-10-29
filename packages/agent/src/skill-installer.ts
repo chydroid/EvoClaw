@@ -103,6 +103,17 @@ export async function handleSkillInstall(
     }
 
     // ── Browse mode: show available skills ──
+    // ★ 2026-10-28 修复（v5 Task 7 事故）：browse 兜底会劫持任何到达此处的消息
+    //   （旧 installSpecificSkill 正则把 "logging 配置 max-size" 误判为
+    //   "安装 max-size" 技能请求，docker-compose 任务被 0-token 技能列表回复
+    //   顶替）。只有消息确实表达"安装技能"意图时才返回技能列表；否则返回
+    //   null 交给 LLM 走完整流程。
+    const explicitInstallIntent = /(?:技能|skill|安装|下载|添加|全部安装|装一下)/i;
+    if (!explicitInstallIntent.test(message)) {
+      process.stdout.write(`[AgentModelExecutor] Skill install path reached without explicit intent — falling through to LLM\n`);
+      return null;
+    }
+
     // Use SkillDispatcher for comprehensive skill discovery
     const skillDispatcher = deps.registry?.resolveService<{
       getSkillSummary(): Promise<{

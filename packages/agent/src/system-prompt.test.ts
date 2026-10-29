@@ -86,8 +86,9 @@ describe("真实性契约 —— 不得被后续改动削弱（回归）", () =>
 
   it("★ 第 7 条点名禁止「停下来等继续」的话术", () => {
     const p = build();
-    expect(p).toContain("你回个继续我就开工");
-    expect(p).toContain("要不要我继续");
+    // 精简后不再列举具体话术例子，但核心意思保留：不要停下等用户输入「继续」
+    expect(p).toContain("停下等用户输入「继续」");
+    expect(p).toContain("在同一轮内把剩余步骤执行到底");
   });
 });
 

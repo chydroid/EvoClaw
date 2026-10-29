@@ -19,6 +19,11 @@ import { MatrixAdapter } from "./channels/matrix";
 import { DingtalkAdapter } from "./channels/dingtalk";
 import { QQAdapter } from "./channels/qq";
 import { WeiboAdapter } from "./channels/weibo";
+import { TelegramAdapter, type TelegramConfig } from "./channels/telegram";
+import { DiscordAdapter, type DiscordConfig } from "./channels/discord";
+import { SlackAdapter, type SlackConfig } from "./channels/slack";
+import { WhatsAppAdapter, type WhatsAppConfig } from "./channels/whatsapp";
+import { WeChatAdapter } from "./channels/wechat";
 import type { ChannelAdapter, ChannelConfig, ChannelType } from "./channel-manager";
 import {
   getActiveSecurityPolicy,
@@ -1282,6 +1287,36 @@ export class ProtocolAdapter {
             }
             break;
           }
+          case "telegram": {
+            if (settings.botToken) {
+              adapter = new TelegramAdapter(config.settings as unknown as TelegramConfig);
+            }
+            break;
+          }
+          case "discord": {
+            if (settings.botToken) {
+              adapter = new DiscordAdapter(config.settings as unknown as DiscordConfig);
+            }
+            break;
+          }
+          case "slack": {
+            if (settings.botToken) {
+              adapter = new SlackAdapter(config.settings as unknown as SlackConfig);
+            }
+            break;
+          }
+          case "whatsapp": {
+            if (settings.phoneNumberId && settings.accessToken) {
+              adapter = new WhatsAppAdapter(config.settings as unknown as WhatsAppConfig);
+            }
+            break;
+          }
+          case "wechat": {
+            if (settings.mode) {
+              adapter = new WeChatAdapter(config);
+            }
+            break;
+          }
           // Other channel types can be added here
         }
 
@@ -1290,7 +1325,7 @@ export class ProtocolAdapter {
             process.stderr.write(`[ProtocolAdapter] Failed to attach ${type} adapter:` + " " + err + "\n");
           });
           process.stdout.write(`[ProtocolAdapter] Applied channel: ${type} (enabled=${enabled})\n`);
-        } else if (type === "feishu" || type === "matrix") {
+        } else if (["feishu", "matrix", "dingtalk", "qq", "weibo", "telegram", "discord", "slack", "whatsapp", "wechat"].includes(type)) {
           process.stderr.write(`[ProtocolAdapter] Channel ${type} is enabled but missing required settings\n`);
         }
       }

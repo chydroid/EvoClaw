@@ -182,3 +182,6 @@ export {
   backupCorruptConfig,
 } from "./env-loader";
 export type { EnvLoadResult } from "./env-loader";
+
+// LLM URL 构造器 — 共享 OpenAI/Anthropic 端点 URL 构建逻辑
+export { buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "./llm-url";

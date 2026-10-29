@@ -150,7 +150,7 @@ export function registerAutoSkillTools(
       return {
         success: false,
         error:
-          `「${skillName}」不是技能，而是**内置工具**。请不要通过 skill_execute 调用它，` +
+          `「${skillName}」不是技能，而是**内置工具**。请不要通过 skill_manage 调用它，` +
           `请直接调用工具 \`${redirected}\`（同样的参数即可）。`,
         builtinTool: redirected,
         hint: `直接调用 \`${redirected}\` 即可；该调用会经过正常的权限/审批流程。`,

@@ -31,6 +31,13 @@ export interface DispatchOptions {
   maxCandidates?: number;
   /** Min relevance score to trigger auto-install */
   autoInstallThreshold?: number;
+  /**
+   * Min relevance score to actually execute an already-installed skill.
+   * 低于此阈值只跳过执行（不安装、不运行），直接走 fallback。
+   * 事故（2026-10-28）：邮箱整理任务被 44% 相关度的 hash-computer 命中并执行，
+   * 白白浪费一轮 + 输出误导性前缀。安装阈值（0.25）管太松，执行必须更严。
+   */
+  executeThreshold?: number;
   /** Whether to auto-install missing skills */
   autoInstall?: boolean;
   /** Whether to fallback to web_search when no skill matches */
@@ -40,6 +47,7 @@ export interface DispatchOptions {
 const DEFAULT_OPTIONS: DispatchOptions = {
   maxCandidates: 5,
   autoInstallThreshold: 0.25,
+  executeThreshold: 0.6,
   autoInstall: true,
   fallbackToWebSearch: true,
 };
@@ -164,6 +172,14 @@ export class SkillDispatcher {
                     continue;
                   }
 
+                  if (match.relevance < opts.executeThreshold!) {
+                    reasoning.push(
+                      `技能 "${match.skillName}" 相关度 ${(match.relevance * 100).toFixed(0)}% 低于执行阈值 ` +
+                      `${(opts.executeThreshold! * 100).toFixed(0)}%，跳过执行`
+                    );
+                    continue;
+                  }
+
                   reasoning.push(`配置完整，执行中...`);
                   try {
                     const params = this.extractSkillParams(context.task, match.skillName);
@@ -200,6 +216,14 @@ export class SkillDispatcher {
 
             if (!this.isSkillConfigured(installed)) {
               reasoning.push(`技能 "${match.skillName}" 配置不完整，跳过`);
+              continue;
+            }
+
+            if (match.relevance < opts.executeThreshold!) {
+              reasoning.push(
+                `候选 "${match.skillName}" 相关度 ${(match.relevance * 100).toFixed(0)}% 低于执行阈值 ` +
+                `${(opts.executeThreshold! * 100).toFixed(0)}%，跳过执行`
+              );
               continue;
             }
 
@@ -267,7 +291,7 @@ export class SkillDispatcher {
               const allMatches = await this.autoSkillManager.findAllMatches(context.task, opts.maxCandidates!);
               const remoteMatch = allMatches.find(m => m.skillName === skillName && m.source === "remote");
 
-              if (remoteMatch && remoteMatch.relevance >= opts.autoInstallThreshold!) {
+              if (remoteMatch && remoteMatch.relevance >= opts.executeThreshold!) {
                 reasoning.push(`远端技能 "${skillName}" 匹配 (相关度 ${(remoteMatch.relevance * 100).toFixed(0)}%)，尝试安装`);
 
                 const installResult = await this.autoSkillManager.autoInstallForTask(context.task);

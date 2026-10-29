@@ -1,4 +1,5 @@
 import type { PersonaConfig } from "@evoclaw/core";
+import { buildChatCompletionsUrl } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
 import { nativeFetch } from "./llm-caller";
 
@@ -29,14 +30,7 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
 - 示例：收到，我来帮您了解小米MiMo模型的情况。\n我将搜索MiMo的最新信息，包括模型能力、评测结果和发布动态。`;
 
   const baseURL = provider.baseURL || "";
-  let apiURL = baseURL;
-  if (!apiURL.endsWith("/chat/completions") && !apiURL.endsWith("/v1/chat/completions")) {
-    apiURL = apiURL.replace(/\/+$/, "");
-    if (!apiURL.endsWith("/v1")) {
-      apiURL = `${apiURL}/v1`;
-    }
-    apiURL = `${apiURL}/chat/completions`;
-  }
+  let apiURL = buildChatCompletionsUrl(baseURL);
 
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
