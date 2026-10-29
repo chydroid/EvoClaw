@@ -29,6 +29,8 @@ export type { ExecutionState, ExecutionSnapshot } from "./execution-checkpoint";
 export { TaskPlanner } from "./task-planner";
 export { BootstrapManager } from "./bootstrap-manager";
 export { CompactionManager } from "./compaction-manager";
+export { TrajectoryCompressor } from "./trajectory-compressor";
+export type { TrajectoryCompressionConfig, TrajectoryCompressionMetrics } from "./trajectory-compressor";
 export { AgentLifecycleManager, AgentLifecycleEvent } from "./agent-lifecycle";
 export { QueueManager } from "./queue-manager";
 export { buildAgentSystemPrompt, buildCompactSkillsPrompt } from "./system-prompt";

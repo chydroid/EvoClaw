@@ -4042,6 +4042,52 @@ export async function tryCallLLM(
         await compactConversationHistoryFn(sessionPDeps, sessionId);
       }
 
+      // ── TrajectoryCompressor: in-place 轨迹压缩（对标 Hermes trajectory_compressor.py）──
+      // 与 CompactionManager（session-level，successor transcript）互补：
+      // TrajectoryCompressor 做即时 in-place 压缩——保护头尾、摘要中间、原地替换。
+      // 仅在 history 超过 token 预算且 session-level compaction 未触发时运行。
+      // 摘要经 llmSummarizer 回调（同 CompactionManager 的 LLM 摘要路径）。
+      if (history.length > 0 && sessionPDeps.llmSummarizer) {
+        try {
+          // 粗略估算 history token（char/3 近似），超过预算才压缩
+          const historyTokens = history.reduce(
+            (sum, m) => sum + Math.ceil((typeof m.content === "string" ? m.content.length : 0) / 3),
+            0
+          );
+          const trajectoryBudget = Math.floor(deps.config.maxTokens * 0.8); // 留 20% 给 system/skills/tail
+          if (historyTokens > trajectoryBudget) {
+            const { TrajectoryCompressor } = await import("./trajectory-compressor.js");
+            const compressor = new TrajectoryCompressor({
+              targetMaxTokens: trajectoryBudget,
+              summaryTargetTokens: Math.floor(deps.config.maxTokens * 0.02),
+            });
+            const currentHistory = deps.conversationHistory.get(sessionId) || [];
+            const { trajectory: compressedHistory, metrics } = await compressor.compress(
+              currentHistory as Array<LLMMessage>,
+              sessionPDeps.llmSummarizer
+            );
+            if (metrics.wasCompressed) {
+              process.stdout.write(
+                `[AgentModelExecutor] TrajectoryCompressor: ${metrics.turnsRemoved} turns removed, ` +
+                `${metrics.tokensSaved} tokens saved (ratio ${(metrics.compressionRatio * 100).toFixed(1)}%), ` +
+                `region [${metrics.turnsCompressedStartIdx}, ${metrics.turnsCompressedEndIdx}), ` +
+                `summarization ${metrics.summarizationApiCalls} calls / ${metrics.summarizationErrors} errors\n`
+              );
+              // ★ P0-5：压缩结果写回 conversationHistory，保证下轮对已压缩内容再压缩产生相同结果
+              deps.conversationHistory.set(sessionId, compressedHistory as Array<SessionHistoryEntry>);
+              // 更新局部 history 引用
+              (history as Array<SessionHistoryEntry>).length = 0;
+              (history as Array<SessionHistoryEntry>).push(...compressedHistory as Array<SessionHistoryEntry>);
+            }
+          }
+        } catch (err) {
+          // 压缩失败不阻断主流程——回退到原始 history
+          process.stdout.write(
+            `[AgentModelExecutor] TrajectoryCompressor failed: ${err instanceof Error ? err.message : String(err)}\n`
+          );
+        }
+      }
+
       // ── ContextEngine: use pre-assembled layered context when available ──
       // When ContextEngine has already assembled the context (with frozen/ephemeral
       // separation, bootstrap files, token-aware truncation), use its messages
