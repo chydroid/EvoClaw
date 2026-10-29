@@ -1,6 +1,9 @@
 export { registerFileTools } from "./file-tools";
 export { registerAutoSkillTools } from "./skill-tools";
 export { registerBrowserTools } from "./browser-tools";
+// Browser 补全工具集（对标 Hermes Tier 7：back/press/get_images/vision/cdp/dialog/vault/exec）
+export { registerBrowserCompletionTools } from "./browser-completion-tools";
+export type { BrowserCompletionToolDeps } from "./browser-completion-tools";
 export { registerWebTools } from "./web-tools";
 export { registerEmailTools } from "./email-tools";
 export { registerSchedulerTools } from "./scheduler-tools";

@@ -806,7 +806,8 @@ export function registerBrowserTools(
         count: result.count,
         flatTree: result.flatTree,
         selectorMap: result.selectorMap,
-        hint: "Use browser_act with action=click (or action=fill) and the [index] numbers above; browser_scroll also accepts an index.",
+        pending_dialogs: pwBrowser.listDialogs(),
+        hint: "Use browser_act with action=click (or action=fill) and the [index] numbers above; browser_scroll also accepts an index. If pending_dialogs is non-empty, respond with browser_dialog (action=accept/dismiss) first — a native JS dialog blocks all page operations.",
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -832,7 +833,8 @@ export function registerBrowserTools(
       description:
         "复合 DOM 提取工具（composite DOM extraction tool），通过 action 参数选择具体操作。" +
         "actions: " +
-        "extract（默认，提取当前页的索引化扁平 DOM 树，返回形如 '[0]<button>登录</button>' 的文本与 selectorMap） / " +
+        "extract（默认，提取当前页的索引化扁平 DOM 树，返回形如 '[0]<button>登录</button>' 的文本与 selectorMap；" +
+        "若页面被原生 JS 对话框阻塞，响应附带 pending_dialogs 字段，用 browser_dialog 处理） / " +
         "clear（清除 browser_extract_dom 设置的所有 data-pa-idx 属性；重新提取前调用以避免索引错乱）",
       parameters: {
         action: {

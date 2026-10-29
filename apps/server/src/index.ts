@@ -38,7 +38,7 @@ import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, DelegateEngine, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager, getClarifyGateway } from "@evoclaw/agent";
 import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
 import type { DurableTask } from "@evoclaw/agent";
-import { GitOperations, CodeIntelligence, VisionAnalyzer, runBackgroundReview, DEFAULT_REVIEW_CONFIG } from "@evoclaw/agent";
+import { GitOperations, CodeIntelligence, VisionAnalyzer, BrowserVault, runBackgroundReview, DEFAULT_REVIEW_CONFIG } from "@evoclaw/agent";
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler, ReviewChatFn, ReviewMessage, BackgroundReviewConfig } from "@evoclaw/agent";
 import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
@@ -78,6 +78,7 @@ import {
   registerVerifyTools,
   registerTodoTools,
   registerDelegateTools,
+  registerBrowserCompletionTools,
 } from "./tools";
 import { NativeComputerBackend, RobotJsComputerBackend, NutJsComputerBackend } from "./tools";
 import type { ComputerBackend } from "./tools";
@@ -179,6 +180,7 @@ export class EvoClawServer {
   private gitOperations: GitOperations;
   private codeIntelligence: CodeIntelligence;
   private visionAnalyzer: VisionAnalyzer;
+  private browserVault: BrowserVault;
   private shutdownForensics: ShutdownForensics;
 
   // ── v0.77.0: Previously-unregistered services exposed via WebUI ──
@@ -266,6 +268,11 @@ export class EvoClawServer {
     this.registry.registerService("gitOperations", this.gitOperations);
     this.registry.registerService("codeIntelligence", this.codeIntelligence);
     this.registry.registerService("visionAnalyzer", this.visionAnalyzer);
+
+    // ── BrowserVault — 浏览器凭据保险库（对标 Hermes vault_store.py + vault_backends/local.py）──
+    // AES-256-GCM 静态加密：密钥 data/vault/vault.key（0600 首次生成），库文件 data/vault/vault.json（0600）
+    this.browserVault = new BrowserVault(path.resolve(projectRoot, "data", "vault"));
+    this.registry.registerService("browserVault", this.browserVault);
 
     // ── Feature Flag Store (runtime feature toggles) ──
     this.featureFlagStore = new FeatureFlagStore({
@@ -1963,6 +1970,13 @@ export class EvoClawServer {
       this.eventBus,
       this.fileSystemManager
     );
+    // Browser 补全工具集（对标 Hermes Tier 7：back/press/get_images/vision/cdp/dialog/vault/exec）
+    registerBrowserCompletionTools({
+      executor: this.agentModelExecutor,
+      playwrightBrowser: this.playwrightBrowser,
+      registry: this.registry,
+      eventBus: this.eventBus,
+    });
     registerWebTools(
       this.agentModelExecutor,
       this.skillManager,

@@ -176,6 +176,7 @@ export function registerTtsTools(executor: AgentModelExecutor): void {
         },
         speed: {
           type: "number",
+          required: false,
           description:
             "Playback speed multiplier. 1.0 = normal, 0.5 = very slow, 2.0 = fast. Range: 0.25-4.0.",
         },

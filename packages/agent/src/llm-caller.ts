@@ -643,12 +643,38 @@ function recordToolSuccess(toolName: string): void {
 // Validates that LLM-generated tool parameters match the expected schema.
 // Returns a descriptive error if validation fails, or null if OK.
 
+/**
+ * 归一化工具参数 schema —— 兼容两种注册风格：
+ *   - flat（主流，如 browser_* / shell_*）：parameters = { 参数名: { type, description, ... } }
+ *   - wrapped（JSON Schema 原生 / Hermes 风格，如 delegate_task/text_to_speech）：
+ *     parameters = { type: "object", properties: {...}, required: [...] }
+ * 统一返回「参数名 → schema」映射；flat 原样返回。
+ *
+ * ★ 接线修复（2026-10-29）：此前 wrapped 风格直接进入 buildOpenAITools/validateToolParams
+ *   的 flat 迭代，生成 {type, properties, required} 三个字符串参数的损坏 schema
+ *   （delegate_task 的 tasks/action 对模型完全不可见）。
+ */
+export function normalizeToolParameters(
+  parameters: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (
+    parameters &&
+    typeof parameters === "object" &&
+    parameters.type === "object" &&
+    parameters.properties &&
+    typeof parameters.properties === "object"
+  ) {
+    return parameters.properties as Record<string, unknown>;
+  }
+  return parameters ?? {};
+}
+
 export function validateToolParams(
   toolName: string,
   args: Record<string, unknown>,
   definition: { parameters: Record<string, unknown> }
 ): string | null {
-  const params = definition.parameters;
+  const params = normalizeToolParameters(definition.parameters);
   for (const [key, schema] of Object.entries(params)) {
     const p = schema as Record<string, unknown>;
     const isRequired =
@@ -2195,17 +2221,15 @@ export function buildOpenAITools(
       const props: Record<string, unknown> = {};
       const required: string[] = [];
 
-      for (const [key, paramDef] of Object.entries(effectiveDef.parameters)) {
+      // wrapped/flat 归一化（见 normalizeToolParameters）——此前 wrapped 风格
+      // 直接迭代会生成 {type, properties, required} 三个字符串参数的损坏 schema。
+      for (const [key, paramDef] of Object.entries(normalizeToolParameters(effectiveDef.parameters))) {
         const p = paramDef as Record<string, unknown>;
-        const prop: Record<string, unknown> = {
-          type: p.type || "string",
-          description: p.description || key,
-        };
-        // 复合工具（file_write / git / email / scheduler …）靠 action 判别字段
-        // 区分语义，其合法取值写在 enum 里。这里必须透传 enum/default，
-        // 否则模型只能从 description 里猜取值，猜错就落到「未知 action」分支。
-        if (p.enum !== undefined) prop.enum = p.enum;
-        if (p.default !== undefined) prop.default = p.default;
+        // 完整透传 schema（items/minItems/additionalProperties/嵌套 properties 等）；
+        // 仅在缺省时补 type/description 兜底——此前重建子集会丢失嵌套结构。
+        const prop: Record<string, unknown> = { ...p };
+        if (!prop.type) prop.type = "string";
+        if (!prop.description) prop.description = key;
         props[key] = prop;
         // 与 validateToolParams 一致：描述里标 "Optional" 的参数不进 required 列表
         if (p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""))) {

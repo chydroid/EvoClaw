@@ -710,6 +710,17 @@ export type {
   VisionChatFn,
 } from "./vision-analyzer";
 
+// BrowserVault — 浏览器凭据保险库（对标 Hermes vault_store.py + vault_backends/local.py）
+//   AES-256-GCM 静态加密 + RFC 6238 TOTP + origin 精确绑定（model-blind 契约）
+export { BrowserVault, VaultError, normalizeOrigin, normalizeOtpSecret, totpNow } from "./browser-vault";
+export type {
+  VaultKind,
+  OtpAlgo,
+  VaultItemMeta,
+  AddItemInput,
+  TotpOptions,
+} from "./browser-vault";
+
 // BatchExecutor — 批量并发执行（对标 Devin 多步并行）
 //   executeParallel/executeSequential/executeDAG + 限速 + 重试 + 失败隔离
 export { BatchExecutor } from "./batch-executor";

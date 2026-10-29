@@ -141,6 +141,7 @@ export function registerDelegateTools(deps: DelegateToolDeps): void {
           action: {
             type: "string",
             enum: ["spawn", "list", "steer", "stop"],
+            required: false,
             description:
               "Default 'spawn'. Live control of running children: 'list' = ids/goals/status; " +
               "'steer' = queue course-correction text into one child (subagent_id + message) without stopping it; " +
@@ -149,10 +150,12 @@ export function registerDelegateTools(deps: DelegateToolDeps): void {
           },
           subagent_id: {
             type: "string",
+            required: false,
             description: "Target for action='steer'/'stop' (ids from the spawn response or action='list').",
           },
           message: {
             type: "string",
+            required: false,
             description:
               "For action='steer': the course correction, appended to the child's next turn. Be directive and specific.",
           },
