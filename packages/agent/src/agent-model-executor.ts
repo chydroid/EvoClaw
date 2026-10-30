@@ -1661,6 +1661,9 @@ export class AgentModelExecutor {
     const chatTimeoutMs = this.config.chatTimeoutMs ?? 0;
     const effectiveTimeoutMs = isResumeCall ? 0 : chatTimeoutMs;
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    // 竞速用：软超时触发时 resolve，让 chat() 立即返回 ⏳ checkpoint
+    let resolveTimeout: (() => void) | undefined;
+    const timeoutPromise = new Promise<void>((resolve) => { resolveTimeout = resolve; });
 
     const runChat = async () => {
       if (tracing?.isEnabled()) {
@@ -1680,6 +1683,7 @@ export class AgentModelExecutor {
     if (effectiveTimeoutMs > 0) {
       timeoutHandle = setTimeout(() => {
         this.requestDurablePause(sessionId, message, context);
+        resolveTimeout?.();
       }, effectiveTimeoutMs);
       timeoutHandle?.unref?.();
     }
@@ -1707,14 +1711,42 @@ export class AgentModelExecutor {
     });
 
     try {
-      const result = await runChat();
+      // 竞速：runChat vs 软超时。超时先到则立即返回 ⏳ checkpoint，
+      // 不再等待 runChat() 完成——provider 可能不支持 abort，LLM 调用
+      // 会一直跑到自然结束（实测 3.7M tokens / >500s），远超客户端超时。
+      const runPromise = runChat();
+      // 防止 runChat 在后台继续运行后抛出 unhandled rejection
+      runPromise.catch(() => { /* swallowed — durable resume handles completion */ });
+
+      const raceResult = await Promise.race([
+        runPromise.then(r => ({ type: 'result' as const, value: r })),
+        timeoutPromise.then(() => ({ type: 'timeout' as const })),
+      ]);
+
+      if (raceResult.type === 'timeout') {
+        this.durablePauseRequested.delete(sessionId);
+        return this.enterDurablePause(sessionId, message, context, null, wrappedOnProgress, startTime, channel, peerId);
+      }
+
+      const result = raceResult.value;
       if (timeoutHandle) clearTimeout(timeoutHandle);
       // 若本次运行期间被请求暂停（软超时 / 浏览器关闭），转入后台续跑而不是失败
       if (this.durablePauseRequested.get(sessionId) && !isResumeCall) {
         this.durablePauseRequested.delete(sessionId);
-        return this.enterDurablePause(sessionId, message, context, result, wrappedOnProgress, startTime, channel, peerId);
+        const pauseResult = this.enterDurablePause(sessionId, message, context, result, wrappedOnProgress, startTime, channel, peerId);
+        return pauseResult;
       }
       return result;
+    } catch (err) {
+      // ★ 2026-10-30 修复：chatInner 在 ABORT 后抛异常时（如后处理 guardrails/
+      //   memory/observability 失败），此前异常直接传播到 protocol adapter，
+      //   durablePauseRequested 的 ⏳ checkpoint 回复被跳过。此处兜底：
+      //   若暂停意图已标记，仍返回 ⏳ checkpoint 回复。
+      if (this.durablePauseRequested.get(sessionId) && !isResumeCall) {
+        this.durablePauseRequested.delete(sessionId);
+        return this.enterDurablePause(sessionId, message, context, null, wrappedOnProgress, startTime, channel, peerId);
+      }
+      throw err;
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle);
       liveness.stop(sessionId);
@@ -3764,7 +3796,7 @@ export class AgentModelExecutor {
     sessionId: string,
     message: string,
     context: Record<string, unknown> | undefined,
-    partialResult: Awaited<ReturnType<AgentModelExecutor["chat"]>>,
+    partialResult: Awaited<ReturnType<AgentModelExecutor["chat"]>> | null,
     _onProgress: AgentProgressCallback | undefined,
     startTime: number,
     channel: string,
@@ -3811,6 +3843,11 @@ export class AgentModelExecutor {
     const task = this.durableRunner.get(taskId);
     if (!task) return;
     this.activeTaskBySession.set(task.sessionId, task.id);
+    // ★ 2026-10-30 修复：create() 把 status 设为 "paused"，resumeDurableTask
+    //   此前从未调用 markRunning()——导致下方完成检查 current.status === "running"
+    //   永远为 false，任务永远停在 "paused" 态、complete() 永不触发。
+    //   必须在此标记 running，让状态机正确推进到 completed/failed。
+    this.durableRunner.markRunning(task.id);
     try {
       const continuePrompt = this.buildContinuePrompt(task);
       const result = await this.chat(

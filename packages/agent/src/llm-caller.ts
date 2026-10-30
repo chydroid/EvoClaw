@@ -648,15 +648,25 @@ function recordToolSuccess(toolName: string): void {
  *   - flat（主流，如 browser_* / shell_*）：parameters = { 参数名: { type, description, ... } }
  *   - wrapped（JSON Schema 原生 / Hermes 风格，如 delegate_task/text_to_speech）：
  *     parameters = { type: "object", properties: {...}, required: [...] }
- * 统一返回「参数名 → schema」映射；flat 原样返回。
+ * 统一返回 { properties, required }；flat 的 required 为 undefined（走逐属性启发式）。
  *
  * ★ 接线修复（2026-10-29）：此前 wrapped 风格直接进入 buildOpenAITools/validateToolParams
  *   的 flat 迭代，生成 {type, properties, required} 三个字符串参数的损坏 schema
  *   （delegate_task 的 tasks/action 对模型完全不可见）。
+ *
+ * ★ P1 修复（2026-10-30）：此前解包时丢弃顶层 required 数组，导致 delegate_task 的
+ *   tasks 被逐属性启发式误判为必填（顶层 required:[] 表达"无参数无条件必填"）。
+ *   现保留顶层 required 数组，wrapped schema 的必填性以顶层数组为准。
  */
+export interface NormalizedToolParameters {
+  properties: Record<string, unknown>;
+  /** 顶层 required 数组（wrapped schema 原生表达）；undefined 表示 flat schema 走逐属性启发式 */
+  required: string[] | undefined;
+}
+
 export function normalizeToolParameters(
   parameters: Record<string, unknown> | undefined
-): Record<string, unknown> {
+): NormalizedToolParameters {
   if (
     parameters &&
     typeof parameters === "object" &&
@@ -664,9 +674,48 @@ export function normalizeToolParameters(
     parameters.properties &&
     typeof parameters.properties === "object"
   ) {
-    return parameters.properties as Record<string, unknown>;
+    const req = Array.isArray(parameters.required) ? (parameters.required as string[]) : undefined;
+    return { properties: parameters.properties as Record<string, unknown>, required: req };
   }
-  return parameters ?? {};
+  return { properties: parameters ?? {}, required: undefined };
+}
+
+/**
+ * ★ 2026-10-30 修复（v6 压测 Agnes-china 400 错误）：递归剥离 schema 中所有层级的
+ *   required 字段。JSON Schema 规范中 required 是对象级别字段（字符串数组），
+ *   不是属性内部字段。OpenAI 兼容网关严格校验：属性内部的 required: true/false
+ *   会导致 400 "True/False is not of type 'array'"。
+ *
+ *   工具定义使用了 flat 风格的 required: true/false 在属性内部——包括嵌套在
+ *   items.properties 内部的子属性（如 document-tools.ts 的表格行/单元格定义）。
+ *   递归处理：properties → items → additionalProperties → allOf → anyOf → oneOf。
+ */
+function stripNestedRequired(schema: Record<string, unknown>): void {
+  if (schema.required !== undefined) {
+    delete schema.required;
+  }
+  if (schema.properties && typeof schema.properties === "object") {
+    const props = schema.properties as Record<string, Record<string, unknown>>;
+    for (const key of Object.keys(props)) {
+      stripNestedRequired(props[key]);
+    }
+  }
+  if (schema.items && typeof schema.items === "object") {
+    stripNestedRequired(schema.items as Record<string, unknown>);
+  }
+  if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
+    stripNestedRequired(schema.additionalProperties as Record<string, unknown>);
+  }
+  for (const key of ["allOf", "anyOf", "oneOf"]) {
+    const arr = schema[key];
+    if (Array.isArray(arr)) {
+      for (const sub of arr) {
+        if (sub && typeof sub === "object") {
+          stripNestedRequired(sub as Record<string, unknown>);
+        }
+      }
+    }
+  }
 }
 
 export function validateToolParams(
@@ -674,11 +723,14 @@ export function validateToolParams(
   args: Record<string, unknown>,
   definition: { parameters: Record<string, unknown> }
 ): string | null {
-  const params = normalizeToolParameters(definition.parameters);
+  const { properties: params, required: topLevelRequired } = normalizeToolParameters(definition.parameters);
   for (const [key, schema] of Object.entries(params)) {
     const p = schema as Record<string, unknown>;
+    // wrapped schema 以顶层 required 数组为准；flat schema 走逐属性启发式
     const isRequired =
-      p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""));
+      topLevelRequired !== undefined
+        ? topLevelRequired.includes(key)
+        : p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""));
     const value = args[key];
 
     // Check required parameters
@@ -1409,7 +1461,10 @@ function computeDynamicToolLimit(
   }
 
   if (hasActionIntentFn(message)) {
-    limit = Math.min(cap, limit + 10);
+    // ★ 2026-10-30 提升 +10→+15：v7 压测复跑实证——Task 7/8（运维/算法类）
+    //   标题不匹配 complexPatterns 但 hasActionIntent=true，旧 +10 给出 20 轮
+    //   不够完成多文件脚手架+测试+部署。+15 → 25 轮，配合 TOKEN_BUDGET=1.8M。
+    limit = Math.min(cap, limit + 15);
   }
 
   const sessionHistory = conversationHistory.get(sessionId) || [];
@@ -1907,6 +1962,11 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
       "browser_extract_dom", "browser_login",
       // ↑ 以下 2 个此前未分组、逐轮常驻（≈4.2K 字符）
       "browser_scroll", "browser_wait",
+      // ↑ 以下 8 个 Hermes 对齐批次（9b89913）新增的浏览器补全工具，此前
+      // 未分组 → 逐轮常驻（≈8.1K 字符 ≈2.2K token/轮）。收进本组，由浏览器
+      // 关键词统一激活；会话单调并集保证激活一次后在场不回退。
+      "browser_back", "browser_press", "browser_get_images", "browser_vision",
+      "browser_cdp", "browser_dialog", "browser_vault", "browser_exec",
     ],
     keywords: [
       "browse", "browser", "网页", "网站", "打开", "navigate", "click", "screenshot",
@@ -1914,6 +1974,10 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
       // 补充中文常见说法，覆盖此前常驻的 10 个浏览器工具的用途
       "浏览器", "滚动", "scroll", "悬停", "hover", "下拉框", "下拉菜单",
       "等待加载", "页面元素", "dom 索引", "提取页面", "页面检查",
+      // ↑ 8 个补全工具的用途关键词（返回/按键/取图/视觉/对话框/CDP/凭据/执行）
+      "返回上一页", "后退", "back", "按键", "press", "keystroke", "取图", "图片",
+      "images", "视觉", "vision", "对话框", "弹窗", "dialog", "弹窗处理",
+      "devtools", "cdp", "凭据", "vault", "执行脚本",
     ],
   },
   skill: {
@@ -1944,8 +2008,9 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
     keywords: ["schedule", "定时", "cron", "调度", "定期", "计划任务", "死信", "dlq", "重试队列", "失败重试", "投递失败"],
   },
   memory: {
-    tools: ["memory"],
-    keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索"],
+    // 记忆/会话检索组：memory（语义记忆）/ session_search（历史会话全文检索）
+    tools: ["memory", "session_search"],
+    keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索", "历史会话", "之前的对话", "上次聊", "会话记录", "session"],
   },
   // ── 以下 7 组为 P0-5 新增：把原先「不分组 → 逐轮常驻」的领域工具收进分组 ──
   git: {
@@ -1984,15 +2049,24 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   // ── 2026-10-29 第二轮瘦身：以下 4 组把原「未分组常驻」的 10 个工具收进 on-demand ──
   dev: {
     // 开发/调试工具组：dev_check（test/lint）/ code_search（text/references）/
-    // verify_project（项目验证）。关键词覆盖编码语境，与 git 组同源——
-    // 「开发/代码/修复」等词命中时 git+dev 同时激活，工具集一次到位。
-    tools: ["dev_check", "code_search", "verify_project"],
-    keywords: ["开发", "代码", "测试", "lint", "验证", "调试", "debug", "dev", "test", "verify", "code", "search", "报错", "修复", "修改", "实现", "编程", "代码搜索", "代码检查", "项目验证", "code search", "跑测试", "运行测试"],
+    // verify_project（项目验证）/ apply_patch（SEARCH/REPLACE 补丁 + 重命名）。
+    // 关键词覆盖编码语境，与 git 组同源——「开发/代码/修复/修改」等词命中时
+    // git+dev 同时激活，工具集一次到位。apply_patch 是主编辑工具，务必与
+    // 「修改/修复/实现」同组，否则改代码的请求可能拿不到它。
+    tools: ["dev_check", "code_search", "verify_project", "apply_patch"],
+    keywords: ["开发", "代码", "测试", "lint", "验证", "调试", "debug", "dev", "test", "verify", "code", "search", "报错", "修复", "修改", "实现", "编程", "代码搜索", "代码检查", "项目验证", "code search", "跑测试", "运行测试", "改成", "改为", "替换", "重构", "patch", "edit", "编辑"],
   },
   report: {
     // 报告生成工具：report（generate/templates/email_digest/weekly）
     tools: ["report"],
     keywords: ["报告", "report", "周报", "生成报告", "总结报告", "报告生成", "weekly", "邮件摘要", "email digest"],
+  },
+  document: {
+    // 办公文档生成工具：document（create_docx / create_xlsx / create_pptx）
+    // 此前未分组 → 逐轮常驻（≈1.7K 字符）。与 report 分开成组：report 是
+    // 「总结/汇总」语义，document 是「产出文件」语义，关键词几乎不重叠。
+    tools: ["document"],
+    keywords: ["文档", "docx", "xlsx", "pptx", "word", "excel", "ppt", "演示文稿", "幻灯片", "表格", "document"],
   },
   planning: {
     // 任务规划/分类工具：task_plan（decompose/status/templates）/ classify_task（classify/stats）
@@ -2223,16 +2297,29 @@ export function buildOpenAITools(
 
       // wrapped/flat 归一化（见 normalizeToolParameters）——此前 wrapped 风格
       // 直接迭代会生成 {type, properties, required} 三个字符串参数的损坏 schema。
-      for (const [key, paramDef] of Object.entries(normalizeToolParameters(effectiveDef.parameters))) {
+      const { properties: params, required: topLevelRequired } = normalizeToolParameters(effectiveDef.parameters);
+      for (const [key, paramDef] of Object.entries(params)) {
         const p = paramDef as Record<string, unknown>;
         // 完整透传 schema（items/minItems/additionalProperties/嵌套 properties 等）；
         // 仅在缺省时补 type/description 兜底——此前重建子集会丢失嵌套结构。
         const prop: Record<string, unknown> = { ...p };
+        // ★ 2026-10-30 修复（v6 压测 Agnes-china 400 错误）：递归剥离所有层级的 required 字段。
+        //   JSON Schema 规范中 required 是对象级别字段（字符串数组），不是属性内部字段。
+        //   Agnes-china（OpenAI 兼容网关）严格校验：属性内部的 required: false 会导致
+        //   400 Bad Request（"False is not of type 'array'"）。所有工具定义都使用了
+        //   flat 风格的 required: true/false 在属性内部——包括嵌套在 items.properties
+        //   内部的子属性（如 document-tools.ts 的表格行/单元格定义）。此前仅删除顶层
+        //   属性的 required，嵌套层级的仍然泄漏到 API → 400。
+        //   顶层 required 数组已由 line 2258-2262 的启发式逻辑生成。
+        stripNestedRequired(prop);
         if (!prop.type) prop.type = "string";
         if (!prop.description) prop.description = key;
         props[key] = prop;
-        // 与 validateToolParams 一致：描述里标 "Optional" 的参数不进 required 列表
-        if (p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""))) {
+        // wrapped schema 以顶层 required 数组为准；flat schema 走逐属性启发式
+        // （与 validateToolParams 一致：描述里标 "Optional" 的参数不进 required 列表）
+        if (topLevelRequired !== undefined) {
+          if (topLevelRequired.includes(key)) required.push(key);
+        } else if (p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""))) {
           required.push(key);
         }
       }
@@ -3774,8 +3861,13 @@ export async function tryCallLLM(
   // ★ 2026-10-27 调整为 10/20：实测 10 任务压测中，8 轮上限不足以完成
   //   需要多步操作的复杂任务（如全栈脚手架、仓库分析）。base=10 覆盖大多数
   //   任务，cap=20 为极复杂场景留足空间。每轮可并行多个工具调用。
+  // ★ 2026-10-30 提升 cap 至 30：v7 压测复跑实证——Task 1/7/8 均在 round 20
+  //   撞顶时仍有大量工作未完成（Task 7 刚写完 17 个 .tf 文件还没部署/写 README；
+  //   Task 8 写完实现+测试还没跑测试）。30 轮 × ~36K tokens/轮 ≈ 1.1M tokens，
+  //   与下方 TOKEN_BUDGET=1.2M 配套。循环安全仍靠 MAX_AUTO_CONTINUE=3 +
+  //   overlapRatio>0.7 守卫兜底，勿删。
   const BASE_MAX_TOOL_ROUNDS = 10;
-  const MAX_TOOL_ROUNDS_CAP = 20;
+  const MAX_TOOL_ROUNDS_CAP = 30;
   const MAX_CONSECUTIVE_ERRORS = 3;
   // 自动续跑上限：检测到「该继续却停下来问人」时，最多自动回灌多少轮。
   // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
@@ -4047,11 +4139,26 @@ export async function tryCallLLM(
       // TrajectoryCompressor 做即时 in-place 压缩——保护头尾、摘要中间、原地替换。
       // 仅在 history 超过 token 预算且 session-level compaction 未触发时运行。
       // 摘要经 llmSummarizer 回调（同 CompactionManager 的 LLM 摘要路径）。
+      //
+      // ★ CE 路径时序说明：contextEngineResult 在 agent-model-executor.ts 中、
+      //   tryCallLLM 之前装配，故 CE 路径本回合使用压缩前快照；压缩结果写回
+      //   conversationHistory 后，下一回合 CE 装配读取到压缩后历史 → 延迟一回合生效。
+      //   非 CE 路径（fallback）本回合即生效（history 局部引用同步更新）。
+      //   压缩器内部 totalTokens<=targetMaxTokens 时 skippedUnderTarget 跳过，
+      //   故 CE 路径本回合不会重复压缩已压缩内容。
+      //
+      // ★ P3 修复：gate 使用 conversationHistory 最新引用（compactConversationHistoryFn
+      //   通过 set() 替换数组，局部 history 变量指向旧数组）；token 估算包含 tool_calls
+      //   （与 compressor.estimateMessageTokens 一致，避免仅计 content 低估大工具调用）。
       if (history.length > 0 && sessionPDeps.llmSummarizer) {
         try {
-          // 粗略估算 history token（char/3 近似），超过预算才压缩
-          const historyTokens = history.reduce(
-            (sum, m) => sum + Math.ceil((typeof m.content === "string" ? m.content.length : 0) / 3),
+          const gateHistory = deps.conversationHistory.get(sessionId) || history;
+          // 粗略估算 history token（char/3 近似 + tool_calls JSON），超过预算才压缩
+          const historyTokens = gateHistory.reduce(
+            (sum, m) =>
+              sum +
+              Math.ceil((typeof m.content === "string" ? m.content.length : 0) / 3) +
+              (m.tool_calls ? Math.ceil(JSON.stringify(m.tool_calls).length / 3) : 0),
             0
           );
           const trajectoryBudget = Math.floor(deps.config.maxTokens * 0.8); // 留 20% 给 system/skills/tail
@@ -4941,6 +5048,26 @@ export async function tryCallLLM(
             } catch { /* best-effort — refund must never block recovery */ }
           }
 
+          // ★ 2026-10-30：abort 快速通道——abort 是用户/系统主动取消（软超时暂停、
+          // 客户端断开、/cancel），不是 provider 错误。直接 return 退出 tryCallLLM，
+          // 不做退避/failover/熔断（否则 ~50-77s 浪费 + 健康 provider 被误排除），
+          // 也跳过后处理（总结调用/对账/磁盘核验——这些在后台 resume 中完成）。
+          // v7 压测复跑实证：break 进后处理让 ⏳ 延迟 >500s 客户端超时（Task 1）。
+          if (classified.type === LLMErrorType.ABORT) {
+            process.stdout.write(
+              `[AgentModelExecutor] Request aborted for session "${sessionId}" — returning immediately (skipping post-loop processing)\n`,
+            );
+            return {
+              reply: "⏹️ 操作已取消。",
+              tokensUsed: totalTokensUsed,
+              duration: Date.now() - startTime,
+              permissionRequests: pendingPermissions,
+              toolsExecuted: anyToolExecuted,
+              files: createdFiles,
+              thinkingTrace: trace.isEmpty ? undefined : trace.toJSON(),
+            };
+          }
+
           // ── fix-1: 基于 backoffMs 统一处理退避（覆盖 RATE_LIMIT/PROVIDER_ERROR/PAYLOAD_TOO_LARGE 等） ──
           // 增强（2026-10-18）：瞬时过载类错误（429/5xx/超时）优先走「原地恢复阶梯」
           // ——最多 5 个周期、15s→60s jittered backoff、Retry-After 契约优先（见
@@ -5001,7 +5128,10 @@ export async function tryCallLLM(
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
 
-        const TOKEN_BUDGET = 900000;
+        // ★ 2026-10-30 提升至 1.8M：与 action-intent 轮次上限 25 配套。
+        // v7 压测实测：Task 7 每轮 ~40K tokens（795K/20轮），Task 8 每轮 ~61K
+        // （1.23M/20轮）。25 轮 × 61K ≈ 1.53M，1.8M 留余量给总结调用。
+        const TOKEN_BUDGET = 1800000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
           conversationMessages.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
@@ -5340,7 +5470,14 @@ export async function tryCallLLM(
           if (
             finalReply &&
             autoContinueCount < MAX_AUTO_CONTINUE &&
-            round < maxToolRounds - 2 &&
+            // ★ 2026-10-30 v7 压测修复：旧门 round < maxToolRounds - 2 把末两轮
+            //   的 nudge 全部挡掉——复杂任务（cap=20）第 18~19 轮模型说"下一步/
+            //   继续"也无人续跑，直接带未完成交付收尾（Task 7 terraform 只产出
+            //   6 个 .tf 就停）。放宽到 cap-1：倒数第二轮仍可 nudge 续跑（续跑
+            //   占用最后一轮）；末轮本身不 nudge，由兜底总结调用（下方
+            //   round === maxToolRounds - 1 的总结分支）接管。循环安全仍靠
+            //   MAX_AUTO_CONTINUE=3 + overlapRatio>0.7 循环守卫兜底，勿删。
+            round < maxToolRounds - 1 &&
             pendingPermissions.length === 0
           ) {
             const premature = detectPrematureStop(finalReply, { toolCallsThisRound: false });

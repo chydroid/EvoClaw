@@ -552,10 +552,21 @@ export class EvoClawServer {
     }).catch((err) => {
       this.logger.warn("server", `SandboxManager backend probe failed: ${err instanceof Error ? err.message : String(err)}`);
     });
+    // ── hermes 式软超时预算（ms）──
+    // 预算到后存检查点 + 转后台续跑（enterDurablePause），HTTP 立即返回
+    // 阶段性回复（⏳），而不是让长任务一直跑到真完成才响应——后者会让
+    // 等待中的 HTTP 客户端先超时（v7 压测实测 600~720s 的任务全部被
+    // 客户端 500s 超时误判）。默认 6 分钟（DEFAULT_MODEL_CONFIG）；
+    // CHAT_TIMEOUT_MS=0 显式禁用，CHAT_TIMEOUT_MS=600000 等可调整。
+    const chatTimeoutRaw = process.env.CHAT_TIMEOUT_MS?.trim();
+    const chatTimeoutMs =
+      chatTimeoutRaw !== undefined && chatTimeoutRaw !== "" && /^\d+$/.test(chatTimeoutRaw)
+        ? Number.parseInt(chatTimeoutRaw, 10)
+        : undefined;
     this.agentModelExecutor = new AgentModelExecutor(
       this.registry,
       this.eventBus,
-      undefined,
+      chatTimeoutMs !== undefined ? { chatTimeoutMs } : undefined,
       this.personaManager.getActivePersonaConfig(),
       { storeDir: dataDir }
     );
@@ -651,7 +662,7 @@ export class EvoClawServer {
     // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
-    this.registry.registerService("memoryHub", this.memoryHub);
+    // MemoryHub self-registers in its constructor — no manual registerService needed
     this.agentModelExecutor.setMemoryHub(this.memoryHub);
     this.bootstrapManager = new BootstrapManager(this.configManager);
     this.agentModelExecutor.setBootstrapManager(this.bootstrapManager);

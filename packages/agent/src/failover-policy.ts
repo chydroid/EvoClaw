@@ -59,7 +59,8 @@ export type FailoverReason =
   | "invalid_encrypted_content" // Responses API replay blob 无效（transient，剥离后重试）
   | "multimodal_tool_content_unsupported" // Provider 拒绝 tool 消息列表内容（transient，降级为文本）
   | "thinking_signature"        // Anthropic thinking 块签名无效（transient，剥离后重试）
-  | "long_context_tier";        // Anthropic 长上下文层级门控（transient，需压缩）
+  | "long_context_tier"         // Anthropic 长上下文层级门控（transient，需压缩）
+  | "aborted";                   // ★ 2026-10-30：用户/系统主动取消（非 provider 错误，non-transient）
 
 // ── Transient Classification ──────────────────────────────
 

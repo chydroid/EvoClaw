@@ -10,6 +10,11 @@ export enum LLMErrorType {
   NETWORK = "network",
   PROVIDER_ERROR = "provider_error",
   UNKNOWN = "unknown",
+  // ★ 2026-10-30 新增：用户/系统主动取消（abort），不是 provider 错误。
+  // 此前 "Request aborted" 被 TIMEOUT_PATTERNS 的 /abort/i 吞掉 → 走 overload
+  // ladder（6s/14s/27s 退避）+ circuit breaker（30s 冷却）≈ 50-77s 浪费/次，
+  // 还会误触熔断器把健康 provider 排除（v7 压测 Task 1/10 实证）。
+  ABORT = "abort",
   // ── 对齐 hermes-agent 错误分类粒度（fix-1） ──
   /** Provider 安全过滤器拒绝（确定性，不可重试，应立即 fallback） */
   CONTENT_POLICY = "content_policy",
@@ -200,6 +205,19 @@ const SERVER_DISCONNECT_PATTERNS = [
   /connection.closed.prematurely/i,
   /incomplete.chunked/i,
   /stream.closed.prematurely/i,
+];
+
+// ★ 2026-10-30：abort 模式——必须在 TIMEOUT_PATTERNS 之前匹配，
+// 否则 /abort/i 会把它吞进 TIMEOUT → 走退避阶梯 + 熔断器，浪费 50-77s/次。
+const ABORT_PATTERNS = [
+  /request aborted/i,
+  /aborterror/i,
+  /this operation was aborted/i,
+  /aborted due to/i,
+  /aborted by/i,
+  /aborted at/i,
+  /signal.*abort/i,
+  /^aborted$/i,           // controller.abort(new Error("aborted")) → 裸 "aborted"
 ];
 
 // ── Jitter 配置 ───────────────────────────────────────────
@@ -483,6 +501,27 @@ export function classifyLLMError(
         message: "Billing/quota issue. Skipping this provider.",
         reason,
         isTransient,
+      };
+    }
+  }
+
+  // ★ 2026-10-30：abort 检测——必须在 TIMEOUT_PATTERNS 之前。
+  // abort 是用户/系统主动取消（软超时暂停、客户端断开、/cancel），
+  // 不是 provider 错误：不退避、不 failover、不触发熔断器。
+  // 返回 retryable:false + backoffMs:0，由 caller 层 break 出 provider 循环，
+  // 交给 round 顶部的 abortSignal 检查统一处理取消。
+  for (const pattern of ABORT_PATTERNS) {
+    if (pattern.test(lower)) {
+      return {
+        type: LLMErrorType.ABORT,
+        retryable: false,
+        shouldCompact: false,
+        shouldRotateAuth: false,
+        shouldSkipProvider: false,
+        backoffMs: 0,
+        message: "Request aborted (deliberate cancellation). Not a provider error.",
+        reason: "aborted",
+        isTransient: false,
       };
     }
   }
@@ -821,6 +860,13 @@ export function formatClassifiedErrorForUser(
         userMessage: `${providerLabel} 返回了服务器错误（5xx），正在重试...`,
         actionableHint: "如持续出现，provider 可能暂时不可用，建议切换到其他 provider。",
         shouldNotifyUser: false, // 5xx 重试不打扰
+      };
+
+    case LLMErrorType.ABORT:
+      return {
+        userMessage: "请求已取消（软超时暂停或用户中断）。",
+        actionableHint: "任务已保存检查点，可在后台继续。输入 /resume 立即续跑。",
+        shouldNotifyUser: false, // 取消是常规操作，不打扰
       };
 
     case LLMErrorType.UNKNOWN:

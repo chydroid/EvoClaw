@@ -71,7 +71,11 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   maxTokens: 4096,
   temperature: 0.3,
   timeout: 60000,
-  chatTimeoutMs: 0, // 禁用整体超时，靠 max_iterations + 用户中断
+  // hermes 式软超时：预算到后存检查点 + 转后台续跑（enterDurablePause），
+  // 不是失败式硬超时。旧默认 0（禁用）导致长任务从不主动早返回——HTTP 客户端
+  // 只能干等任务真跑完（v7 压测实测 600~720s），最终被客户端超时误判。
+  // 服务端可用 CHAT_TIMEOUT_MS=0 显式禁用。
+  chatTimeoutMs: 360000,
 };
 
 // ── Task Status Tracker: real-time progress feedback for long-running tasks ──

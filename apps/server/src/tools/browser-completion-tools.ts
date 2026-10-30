@@ -258,7 +258,7 @@ export function registerBrowserCompletionTools(deps: BrowserCompletionToolDeps):
         "- Method reference: https://chromedevtools.github.io/devtools-protocol/",
       parameters: {
         method: { type: "string", description: "CDP method name, e.g. 'Target.getTargets', 'Runtime.evaluate'.", required: true },
-        params: { type: "object", properties: {}, additionalProperties: true, description: "Method-specific parameters as a JSON object. Omit or pass {} for methods that take no parameters." },
+        params: { type: "object", properties: {}, additionalProperties: true, description: "Method-specific parameters as a JSON object. Omit or pass {} for methods that take no parameters.", required: false },
         target_id: { type: "string", description: "Optional. Tab ID from browser_tabs list (list action). Use for page-level methods scoped to a tab." },
         timeout: { type: "number", default: 30, description: "Timeout in seconds (default 30, max 300).", required: false },
       },
@@ -312,8 +312,8 @@ export function registerBrowserCompletionTools(deps: BrowserCompletionToolDeps):
           description: "'accept' clicks OK / returns the prompt text. 'dismiss' clicks Cancel / returns null from prompt(). For beforeunload: 'accept' allows navigation, 'dismiss' keeps the page.",
           required: true,
         },
-        prompt_text: { type: "string", description: "Response string for a prompt() dialog. Ignored for other dialog types." },
-        dialog_id: { type: "string", description: "Specific dialog to respond to, from browser_extract_dom.pending_dialogs[].id. Required only when multiple dialogs are queued." },
+        prompt_text: { type: "string", description: "Response string for a prompt() dialog. Ignored for other dialog types.", required: false },
+        dialog_id: { type: "string", description: "Specific dialog to respond to, from browser_extract_dom.pending_dialogs[].id. Required only when multiple dialogs are queued.", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -351,9 +351,9 @@ export function registerBrowserCompletionTools(deps: BrowserCompletionToolDeps):
         "page or user shows one.",
       parameters: {
         action: { type: "string", enum: ["list", "fill", "save_login", "enter_code", "unlock"], description: "Vault operation.", required: true },
-        handle: { type: "string", description: "fill / enter_code: a handle from list." },
-        backend: { type: "string", enum: ["onepassword", "bitwarden"], description: "unlock only (external managers not supported in v1)." },
-        label: { type: "string", description: "save_login only: short site name (default: the host)." },
+        handle: { type: "string", description: "fill / enter_code: a handle from list.", required: false },
+        backend: { type: "string", enum: ["onepassword", "bitwarden"], description: "unlock only (external managers not supported in v1).", required: false },
+        label: { type: "string", description: "save_login only: short site name (default: the host).", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -507,7 +507,7 @@ export function registerBrowserCompletionTools(deps: BrowserCompletionToolDeps):
         "browser_* tools. Prefer the dedicated tools for simple navigation/click/read flows.",
       parameters: {
         code: { type: "string", description: "Python code to execute using the pre-imported browser helpers. Use print(...) for any data you need back.", required: true },
-        session: { type: "string", description: "Named isolated browser session (1-64 letters/digits/dashes/underscores). Reuse the same name on every related call; omit for the shared default session." },
+        session: { type: "string", description: "Named isolated browser session (1-64 letters/digits/dashes/underscores). Reuse the same name on every related call; omit for the shared default session.", required: false },
         timeout_s: { type: "number", default: 300, description: "Max seconds to wait for the code to finish (default 300, max 900)." },
       },
     },

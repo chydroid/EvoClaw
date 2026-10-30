@@ -88,16 +88,39 @@ const INTENT_RULES: IntentRule[] = [
   {
     intent: "personal_info",
     patterns: [
-      // 强凭证信号：裸词即拦截。
-      // 中文关键词不加 \b——JS 正则中 CJK 属 \w，「我密码忘了」这类语境
-      // 永远匹配不到 \b密码\b（2026-10-28 修复时一并修正的既有漏检）。
-      /密码|信用卡|身份证|\b(password|passwd|ssn)\b/i,
-      /\bapi[\s_-]?key\b/i,
+      // ★ 2026-10-30 修复（v6 压测举一反三）：中文凭证裸词细化。
+      //   「密码学」「密码算法」「密码协议」等密码学领域术语会被裸词「密码」
+      //   误命中 → 加负向前瞻排除。
+      //   「信用卡支付系统集成」「身份证识别系统」等开发任务会被裸词误拦
+      //   → 改为凭证上下文才触发（所有格/赋值/凭证短语）。
+      //   末尾不加 \b——「我密码忘了」这类中英混排无空格场景同样要命中。
+      /密码(?!学|算法|协议)/,
+      /(?:我的|我们的|你的|my|our|your)\s*(?:信用卡|身份证)/i,
+      /(?:信用卡|身份证)\s*(?:号|号码|额度|号码是|号是)\s*\d/i,
+      // ★ 2026-10-30 修复（v6 压测举一反三）：password 不再作为裸词匹配。
+      //   「设计 password hashing 方案」「password 存储加密」等开发/安全任务
+      //   会被 \bpassword\b 误命中。改为凭证上下文才触发：所有格、赋值。
+      /\b(passwd|ssn)\b/i,
+      /(?:我的|我们的|你的|my|our|your)\s*password/i,
+      /\bpassword\s*(?:=|:)\s*[^\s，,。；;]{8,}/i,
+      // ★ 2026-10-30 修复（v6 压测举一反三）：api key 不再作为裸词匹配。
+      //   「设计 API key 管理方案」「API key 轮换策略」等开发/架构任务
+      //   会被 \bapi[\s_-]?key\b 误命中 → 改为凭证上下文才触发：
+      //   赋值（api key=xxx）、所有格（我的 api key）、Bearer 长凭证。
+      /\bapi[\s_-]?keys?\s*(?:=|:)\s*[^\s，,。；;]{8,}/i,
       // 「我的 api 密钥是 sk-...」——中文「密钥」不在 \bkey\b 覆盖范围，
       // 且必须带所有格才拦截（「分析 API 密钥管理的最佳实践」这类教学
       // 语境无所有格，不得误伤——与 token 的凭证上下文策略同理）。
       /(?:我的|我们的|你的|my|our|your)\s*api[\s_-]?(?:key|密钥)/i,
-      /\bsecret\b/i,
+      // ★ 2026-10-30 修复（v6 压测 Task 7 误拦）：secret 不再作为裸词匹配。
+      //   「Kubernetes Secret 资源」「secret management」「secrets.yaml」等
+      //   开发/运维语境会被 \bsecret\b 误命中，导致整个部署任务在 init 阶段
+      //   被拦截（实测 0 tokens 返回）。改为凭证上下文才触发：
+      //   所有格（我的 secret）、赋值（secret=xxx）、secret manager 凭证语境。
+      //   末尾不加 \b——「我的secret是xxx」这类中英混排无空格场景同样要命中。
+      /(?:我的|我们的|你的|my|our|your)\s*secrets?/i,
+      /\bsecrets?\s*(?:=|:)\s*[^\s，,。；;]{8,}/i,
+      /\bsecret\s+(?:key|token|credential|manager|vault)\b/i,
       // ★ 2026-10-28 修复（v4 压测 Task 3 误拦）：token 不再作为裸词匹配。
       //   「JWT（JSON Web Token）」「access token 机制」「令牌续期」等安全教学/
       //   开发语境会被 \btoken\b 误命中，导致整个安全分析请求在 init 阶段被

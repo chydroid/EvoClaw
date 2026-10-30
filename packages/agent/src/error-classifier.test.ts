@@ -407,3 +407,40 @@ describe("fix-1: Server disconnect + large session heuristic", () => {
     expect(result.type).toBe(LLMErrorType.CONTEXT_OVERFLOW);
   });
 });
+
+describe("★ 2026-10-30: ABORT classification (deliberate cancellation)", () => {
+  it("should classify 'Request aborted' as ABORT, not TIMEOUT", () => {
+    // 此前 /abort/i 在 TIMEOUT_PATTERNS 中吞掉 "Request aborted"，
+    // 导致 abort 走 overload ladder（6s/14s/27s）+ 熔断器（30s）≈ 50-77s 浪费/次。
+    const result = classifyLLMError(undefined, "Request aborted");
+    expect(result.type).toBe(LLMErrorType.ABORT);
+    expect(result.retryable).toBe(false);
+    expect(result.backoffMs).toBe(0);
+    expect(result.shouldSkipProvider).toBe(false);
+    expect(result.isTransient).toBe(false);
+  });
+
+  it("should classify AbortError DOMException as ABORT", () => {
+    const result = classifyLLMError(undefined, "AbortError: This operation was aborted");
+    expect(result.type).toBe(LLMErrorType.ABORT);
+    expect(result.retryable).toBe(false);
+  });
+
+  it("should classify 'aborted' reason string as ABORT", () => {
+    // controller.abort(new Error("aborted")) → fetch rejects with reason "aborted"
+    const result = classifyLLMError(undefined, "aborted");
+    expect(result.type).toBe(LLMErrorType.ABORT);
+  });
+
+  it("should not classify provider 502 as ABORT", () => {
+    // 502 是 provider 错误，不是 abort——确保 ABORT_PATTERNS 不误伤
+    const result = classifyLLMError(502, "bad gateway");
+    expect(result.type).not.toBe(LLMErrorType.ABORT);
+  });
+
+  it("should not classify 'timeout' as ABORT", () => {
+    // 真实超时仍归 TIMEOUT——确保 ABORT 检查不抢占超时分类
+    const result = classifyLLMError(undefined, "request timed out after 60000ms");
+    expect(result.type).toBe(LLMErrorType.TIMEOUT);
+  });
+});

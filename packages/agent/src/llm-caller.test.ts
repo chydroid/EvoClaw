@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -268,6 +268,85 @@ describe("llm-caller > Optional 参数不进 required", () => {
     const fn = out.find((t) => t.function.name === "t")!;
     expect((fn.function.parameters as { required: string[] }).required).toContain("x");
     expect(validateToolParams("t", {}, reg.get("t")!.definition)).toMatch(/Missing required parameter "x"/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// wrapped schema — 顶层 required 数组保留（回归 P1-2，2026-10-30）
+// delegate_task 等 wrapped 风格工具：parameters = { type:"object",
+// properties:{...}, required:[...] }。此前 normalizeToolParameters 解包时
+// 丢弃顶层 required 数组，导致 tasks 被逐属性启发式误判为必填，
+// action=list/steer/stop 等无参调用全部失败。
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > wrapped schema 顶层 required 数组保留", () => {
+  // delegate_task 真实 schema：顶层 required:[] 表达"无参数无条件必填"
+  const DELEGATE_DEF = {
+    definition: {
+      name: "delegate_task",
+      description: "Delegate tasks to subagents",
+      parameters: {
+        type: "object",
+        properties: {
+          tasks: { type: "array", description: "Tasks to delegate" },
+          action: { type: "string", description: "Optional action" },
+          subagent_id: { type: "string", description: "Optional subagent" },
+          message: { type: "string", description: "Optional message" },
+        },
+        required: [],
+      },
+    },
+    handler: async () => ({}),
+  };
+
+  it("normalizeToolParameters 保留顶层 required 数组", () => {
+    const norm = normalizeToolParameters(DELEGATE_DEF.definition.parameters);
+    expect(norm.required).toEqual([]);
+    expect(Object.keys(norm.properties)).toEqual(["tasks", "action", "subagent_id", "message"]);
+  });
+
+  it("validateToolParams：action=list 不带 tasks 不报错", () => {
+    const err = validateToolParams("delegate_task", { action: "list" }, DELEGATE_DEF.definition);
+    expect(err).toBeNull();
+  });
+
+  it("validateToolParams：空参数不报错", () => {
+    const err = validateToolParams("delegate_task", {}, DELEGATE_DEF.definition);
+    expect(err).toBeNull();
+  });
+
+  it("buildOpenAITools：顶层 required:[] → required 列表为空", () => {
+    const reg = new Map([["delegate_task", DELEGATE_DEF]]);
+    const out = buildOpenAITools(reg, "delegate", (fn) => fn());
+    const fn = out.find((t) => t.function.name === "delegate_task")!;
+    const required = (fn.function.parameters as { required: string[] }).required;
+    expect(required).toEqual([]);
+    expect(required).not.toContain("tasks");
+  });
+
+  it("wrapped schema 顶层 required:[\"tasks\"] → tasks 进 required 列表", () => {
+    const def = {
+      definition: {
+        name: "wrapped_req",
+        description: "d",
+        parameters: {
+          type: "object",
+          properties: {
+            tasks: { type: "array", description: "Tasks" },
+            action: { type: "string", description: "Optional action" },
+          },
+          required: ["tasks"],
+        },
+      },
+      handler: async () => ({}),
+    };
+    const reg = new Map([["wrapped_req", def]]);
+    const out = buildOpenAITools(reg, "m", (fn) => fn());
+    const fn = out.find((t) => t.function.name === "wrapped_req")!;
+    const required = (fn.function.parameters as { required: string[] }).required;
+    expect(required).toEqual(["tasks"]);
+    expect(required).not.toContain("action");
+    // 缺 tasks 应报错
+    expect(validateToolParams("wrapped_req", { action: "list" }, def.definition)).toMatch(/Missing required parameter "tasks"/);
   });
 });
 
