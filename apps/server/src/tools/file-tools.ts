@@ -1,5 +1,6 @@
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { PermissionManager, PermissionRelay } from "@evoclaw/security";
 import { getActiveSecurityPolicy, decideFileAccess } from "@evoclaw/security";
@@ -133,6 +134,17 @@ function judgeBySecurityLevel(
   const normalizedBase = path.resolve(fsBase);
   const insideSandbox =
     resolvedPath === normalizedBase || resolvedPath.startsWith(normalizedBase + path.sep);
+
+  // ★ 2026-10-30 修复（v7 压测 Task 7）：系统临时目录（/tmp/ 或 os.tmpdir()）
+  //   是临时空间——写入不持久、不敏感。shell_exec 已可写 /tmp/，在此拦截
+  //   file_write 只会迫使模型用 Python 脚本绕过（实测消耗 5-8 轮/文件），
+  //   白白浪费轮次导致交付物缺失。放行临时目录写入不影响安全边界。
+  const tmpDir = path.resolve(os.tmpdir()).replace(/\\/g, "/");
+  const normalizedPath = path.resolve(resolvedPath).replace(/\\/g, "/");
+  if (normalizedPath === tmpDir || normalizedPath.startsWith(tmpDir + "/")) {
+    if (write) return { decision: "allow", insideSandbox: false };
+  }
+
   const decision = decideFileAccess(policy, { insideSandbox, write });
   if (decision === "allow") return { decision, insideSandbox };
   if (decision === "deny") {
