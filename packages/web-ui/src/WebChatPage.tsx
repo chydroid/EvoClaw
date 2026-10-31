@@ -2105,6 +2105,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   // Copy message as markdown
   const copyAsMarkdown = async (msg: WebChatMessage) => {
     const text = msg.content || "";
+    // 用户消息只复制原始输入，不加用户名/时间
+    if (msg.role === "user") {
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      return;
+    }
+    // 助手消息保留 nick + time + content
     const nick = getNickname(msg.role);
     const time = msg.timestamp ? formatTime(msg.timestamp) : "";
     const md = `**${nick}** (${time})\n\n${text}`;
