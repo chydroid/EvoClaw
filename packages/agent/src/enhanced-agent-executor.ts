@@ -55,7 +55,7 @@ export class EnhancedAgentExecutor {
   constructor(config: EnhancedAgentConfig) {
     this.config = config;
     this.hookRunner = createHookRunner(config.hookRegistry);
-    this.maxIterations = config.maxIterations ?? 20;
+    this.maxIterations = config.maxIterations ?? 300;
   }
 
   /**

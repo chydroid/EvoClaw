@@ -483,7 +483,7 @@ export class AgentModelExecutor {
     if (!budget) {
       const maxIter = isChildSession
         ? DEFAULT_CHILD_BUDGET
-        : (this.config.maxIterations ?? 20);
+        : (this.config.maxIterations ?? 300);
       budget = new IterationBudget({ maxIterations: maxIter, enableGraceCall: true });
       this.iterationBudgets.set(sessionId, budget);
     }
@@ -2955,6 +2955,8 @@ export class AgentModelExecutor {
           reply: guardrailedReply,
           permissionRequests:
             pendingPermissions.length > 0 ? [...pendingPermissions] : [],
+          contextLimit: effectiveContextWindow,
+          contextLimitSource: resolvedContextWindow.source,
         };
         this.runAgentEndHook(sessionId, agentId, channel, {
           reply: guardrailedReply,
@@ -3012,7 +3014,7 @@ export class AgentModelExecutor {
     }
 
     // ── Plugin hook: agent_end ──
-    const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions], toolsExecuted: false };
+    const finalResult = { reply, tokensUsed, duration: Date.now() - startTime, permissionRequests: [...pendingPermissions], toolsExecuted: false, contextLimit: effectiveContextWindow, contextLimitSource: resolvedContextWindow.source };
     if (tracing?.isEnabled()) {
       await tracing.withSpan("agent.plugin.end", async (s: Span) => {
         s.setAttribute("session.id", sessionId);
@@ -3234,6 +3236,7 @@ export class AgentModelExecutor {
       evalRunner: this.evalRunner ?? undefined,
       cronSuggestionManager: this.registry.resolveService("cronSuggestionManager") as import("./slash-commands").CronSuggestionManagerLike | undefined,
       blueprintCatalog: this.registry.resolveService("blueprintCatalog") as import("./slash-commands").BlueprintCatalogLike | undefined,
+      durableTaskRunner: this.durableRunner,
     };
     const result = await handleSlashCommandFn(deps, message, sessionId, startTime);
     if (!result) return null;

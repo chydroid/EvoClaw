@@ -11,7 +11,7 @@
  * output_schema}；action/subagent_id/message 为控制面参数。
  * 遗留参数（顶层 goal/context/output_schema/role/max_iterations/background）
  * 照 Hermes 语义接受但不宣传：goal 形态包装成单条 batch；role 由深度派生被忽略；
- * max_iterations 由子会话预算（50）替代；background 对顶层生效。
+ * max_iterations 由子会话预算（300）替代；background 对顶层生效。
  */
 
 import type { AgentModelExecutor } from "@evoclaw/agent";

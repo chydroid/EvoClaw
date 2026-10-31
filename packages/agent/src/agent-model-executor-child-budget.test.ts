@@ -27,18 +27,18 @@ describe("AgentModelExecutor > 子会话预算隔离", () => {
     expect(executor.isSubagentSessionId("eval23-o01")).toBe(false);
   });
 
-  it("子会话预算使用 DEFAULT_CHILD_BUDGET（50）而非父配置值", () => {
+  it("子会话预算使用 DEFAULT_CHILD_BUDGET（300）而非父配置值", () => {
     const sub = executor.getIterationBudget("subsession_test", executor.isSubagentSessionId("subsession_test"));
     expect(sub.getMax()).toBe(DEFAULT_CHILD_BUDGET);
-    expect(sub.getMax()).toBe(50);
+    expect(sub.getMax()).toBe(300);
   });
 
-  it("父会话预算使用配置值（未配置时默认 20）", () => {
+  it("父会话预算使用配置值（未配置时默认 300）", () => {
     const parent = executor.getIterationBudget("main", executor.isSubagentSessionId("main"));
-    expect(parent.getMax()).toBe(20);
+    expect(parent.getMax()).toBe(300);
   });
 
-  it("显式配置 maxIterations 时父会话跟随配置、子会话仍固定 50", () => {
+  it("显式配置 maxIterations 时父会话跟随配置、子会话仍固定 300", () => {
     const registry = new ServiceRegistry();
     const eventBus = new EventBus();
     const configured = new AgentModelExecutor(registry, eventBus, { maxIterations: 90 });
@@ -49,7 +49,7 @@ describe("AgentModelExecutor > 子会话预算隔离", () => {
   it("子会话预算实例按 sessionId 隔离（两个子会话互不影响）", async () => {
     const a = executor.getIterationBudget("subsession_a", true);
     const b = executor.getIterationBudget("subsession_b", true);
-    await a.consume(50);
+    await a.consume(300);
     expect(a.isExhausted).toBe(true);
     expect(b.isExhausted).toBe(false);
   });

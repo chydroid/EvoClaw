@@ -329,6 +329,59 @@ const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => (
   boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
 });
 
+/**
+ * 助手消息在任务序列中的位置（2026-10-31 用户诉求）。
+ * - "first"  —— 任务的第一条输出（base botMsgId，无后缀）
+ * - "middle" —— 中间轮次（${botMsgId}-r${n}）
+ * - "final"  —— 任务总结（${botMsgId}-summary, isFinalSummary: true）
+ *
+ * 仅 first / final 显示头像 + EvoClaw 字样；middle 只显示时间。
+ */
+function getAssistantMsgPosition(msg: { id: string; isFinalSummary?: boolean }): "first" | "middle" | "final" {
+  if (msg.isFinalSummary) return "final";
+  if (/-r\d+$/.test(msg.id)) return "middle";
+  return "first";
+}
+
+/**
+ * 消息容器样式（2026-10-31 用户诉求：助手消息不用气泡，直接显示）。
+ * - 助手：无背景/边框/圆角/阴影/内边距，仅保留排版属性
+ * - 用户：保留原气泡样式
+ */
+function getMessageContainerStyle(msg: { role: string; content: string }, hovered: boolean): CSSProperties {
+  if (msg.role === "assistant") {
+    // 助手消息默认不用气泡，直接显示（2026-10-31 用户诉求）；
+    // 鼠标悬停时用 inset box-shadow 模拟边框 + 辉光，避免 border/padding 变化导致重排。
+    return {
+      maxWidth: "min(85%, 1100px)",
+      color: "var(--text-primary, #c9d1d9)",
+      fontSize: "14px",
+      lineHeight: "1.6",
+      wordBreak: "break-word",
+      position: "relative",
+      border: "none",
+      boxShadow: hovered
+        ? "inset 0 0 0 1px var(--accent, #58a6ff), 0 0 12px rgba(88, 166, 255, 0.2)"
+        : "none",
+      borderRadius: "8px",
+      padding: "4px 0",
+      transition: "box-shadow 0.15s",
+    };
+  }
+  return {
+    ...messageBubbleStyle(msg.role, msg.content),
+    border: hovered
+      ? "1px solid var(--accent, #58a6ff)"
+      : messageBubbleStyle(msg.role, msg.content).border,
+    boxShadow: hovered
+      ? "0 0 12px rgba(88, 166, 255, 0.2)"
+      : "none",
+    transition: "border 0.15s, box-shadow 0.15s",
+    position: "relative",
+    paddingTop: "32px",
+  };
+}
+
 /** 各类轨迹条目的展示元数据 */
 const THINKING_KIND_META: Record<string, { icon: string; label: string; color: string }> = {
   reasoning: { icon: "\u{1F9E0}", label: "推理", color: "var(--accent, #58a6ff)" },
@@ -2385,10 +2438,13 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                 {/* Nickname + timestamp + avatar above bubble */}
                 {(() => {
                   const nick = getNickname(msg.role);
-                  if (!nick || !msg.timestamp) return null;
+                  if (!msg.timestamp) return null;
                   const isUser = msg.role === "user";
                   const avatarSrc = isUser ? avatars?.user : avatars?.bot;
                   const avatarSize = 28;
+                  // 助手消息：仅首条/总结显示头像+昵称，中间轮次只显示时间
+                  const pos = msg.role === "assistant" ? getAssistantMsgPosition(msg) : "first";
+                  const showFullHeader = isUser || pos === "first" || pos === "final";
                   return (
                     <div style={{
                       fontSize: "12px",
@@ -2406,49 +2462,42 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                           <span style={{ fontSize: "11px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace" }}>
                             {formatTime(msg.timestamp)}
                           </span>
-                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick}</span>
+                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick || "Me"}</span>
                           {avatarSrc && (
                             <img
                               src={avatarSrc}
                               style={{ width: avatarSize, height: avatarSize, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border, #30363d)" }}
-                              alt={nick}
+                              alt={nick || "Me"}
                             />
                           )}
                         </>
-                      ) : (
+                      ) : showFullHeader ? (
                         <>
                           {avatarSrc && (
                             <img
                               src={avatarSrc}
                               style={{ width: avatarSize, height: avatarSize, borderRadius: "50%", objectFit: "cover", border: "1px solid var(--border, #30363d)" }}
-                              alt={nick}
+                              alt={nick || "EvoClaw"}
                             />
                           )}
-                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick}</span>
+                          <span style={{ fontWeight: 500, color: "var(--text-secondary, #8b949e)" }}>{nick || "EvoClaw"}</span>
                           <span style={{ fontSize: "11px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace" }}>
                             {formatTime(msg.timestamp)}
                           </span>
                         </>
+                      ) : (
+                        <span style={{ fontSize: "11px", color: "var(--text-muted, #6e7681)", fontFamily: "monospace" }}>
+                          {formatTime(msg.timestamp)}
+                        </span>
                       )}
                     </div>
                   );
                 })()}
               <div
-                style={{
-                  ...messageBubbleStyle(msg.role, msg.content),
-                  border: hoveredMsgId === msg.id && msg.role === "assistant"
-                    ? "1px solid var(--accent, #58a6ff)"
-                    : messageBubbleStyle(msg.role, msg.content).border,
-                  boxShadow: hoveredMsgId === msg.id && msg.role === "assistant"
-                    ? "0 0 12px rgba(88, 166, 255, 0.2)"
-                    : "none",
-                  transition: "border 0.15s, box-shadow 0.15s",
-                  position: "relative",
-                  ...(msg.role === "assistant" ? { paddingTop: "32px" } : {}),
-                }}
+                style={getMessageContainerStyle(msg, hoveredMsgId === msg.id)}
               >
-                {/* 左侧复制按钮：鼠标悬停在消息气泡上时显示，对所有消息生效 */}
-                {hoveredMsgId === msg.id && (
+                {/* 左侧复制按钮：用户消息常显，助手消息悬停时显示 */}
+                {(hoveredMsgId === msg.id || msg.role === "user") && (
                   <button
                     style={{
                       position: "absolute",
@@ -2464,7 +2513,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      opacity: 0.5,
+                      opacity: msg.role === "user" ? 0.5 : 0.5,
                       transition: "opacity 0.15s, color 0.15s, background 0.15s",
                     }}
                     title={t("chat.copy_message")}

@@ -1,0 +1,92 @@
+📦 审计目标: /home/chy/EvoClaw
+
+================================================================
+ 依赖审计报告 — evoclaw v0.93.1
+================================================================
+ lockfile 类型 : pnpm-lock.yaml
+ 直接依赖数量 : 11
+ 唯一包总数   : 593
+
+📊 直接依赖清单:
+   @eslint/js                         ^9.18.0      → ^9.18.0
+   @types/node                        ^22.19.19    → ^22.19.19
+   @vitest/coverage-istanbul          3.1.3        → 3.1.3
+   @vitest/coverage-v8                3.1.3        → 3.1.3
+   eslint                             ^9.18.0      → 9.39.4
+   eslint-plugin-react-hooks          ^7.1.1       → 7.1.1
+   globals                            ^17.7.0      → 14.0.0, 17.7.0
+   typescript-eslint                  ^8.20.0      → 8.62.1
+   vitest                             3.1.3        → 3.1.3
+   better-sqlite3                     ^12.10.0     → 12.10.0
+   @tencent-weixin/openclaw-weixin    ^2.4.4       → ^2.4.4
+
+🚨 可疑包名（typosquatting，阈值 0.55）: 58
+   ⚠️ chalk ≈ chai (相似度 0.6, 传递依赖)
+   ⚠️ colorette ≈ colors (相似度 0.556, 传递依赖)
+   ⚠️ cors ≈ colors (相似度 0.667, 传递依赖)
+   ⚠️ cssom ≈ jsdom (相似度 0.6, 传递依赖)
+   ⚠️ domhandler ≈ commander (相似度 0.7, 传递依赖)
+   ⚠️ esbuild ≈ unbuild (相似度 0.714, 传递依赖)
+   ⚠️ eslint-plugin-react-hooks ≈ eslint-plugin-react (相似度 0.76, 直接依赖)
+   ⚠️ espree ≈ express (相似度 0.571, 传递依赖)
+   ⚠️ esquery ≈ jquery (相似度 0.714, 传递依赖)
+   ⚠️ eventsource-parser ≈ eventsource (相似度 0.611, 传递依赖)
+   ⚠️ gaxios ≈ axios (相似度 0.833, 传递依赖)
+   ⚠️ global-agent ≈ glob-parent (相似度 0.667, 传递依赖)
+   ⚠️ globals ≈ glob (相似度 0.571, 直接依赖)
+   ⚠️ guid-typescript ≈ typescript (相似度 0.667, 传递依赖)
+   ⚠️ is-glob ≈ glob (相似度 0.571, 传递依赖)
+   ⚠️ jsesc ≈ jest (相似度 0.6, 传递依赖)
+   ⚠️ jws ≈ ws (相似度 0.667, 传递依赖)
+   ⚠️ leac ≈ react (相似度 0.6, 传递依赖)
+   ⚠️ lodash.camelcase ≈ lodash.merge (相似度 0.625, 传递依赖)
+   ⚠️ lodash.defaults ≈ lodash.debounce (相似度 0.667, 传递依赖)
+   ⚠️ lodash.difference ≈ lodash.debounce (相似度 0.647, 传递依赖)
+   ⚠️ lodash.escaperegexp ≈ lodash.merge (相似度 0.579, 传递依赖)
+   ⚠️ lodash.flatten ≈ lodash.merge (相似度 0.571, 传递依赖)
+   ⚠️ lodash.groupby ≈ lodash.debounce (相似度 0.6, 传递依赖)
+   ⚠️ lodash.includes ≈ lodash.chunk (相似度 0.6, 传递依赖)
+   ⚠️ lodash.isarguments ≈ lodash.merge (相似度 0.556, 传递依赖)
+   ⚠️ lodash.isboolean ≈ lodash.debounce (相似度 0.563, 传递依赖)
+   ⚠️ lodash.isequal ≈ lodash.merge (相似度 0.571, 传递依赖)
+   ⚠️ lodash.isinteger ≈ lodash.merge (相似度 0.563, 传递依赖)
+   ⚠️ lodash.isnil ≈ lodash-es (相似度 0.583, 传递依赖)
+   ⚠️ lodash.isnumber ≈ lodash.clonedeep (相似度 0.563, 传递依赖)
+   ⚠️ lodash.isundefined ≈ lodash.clonedeep (相似度 0.556, 传递依赖)
+   ⚠️ lodash.once ≈ lodash.debounce (相似度 0.733, 传递依赖)
+   ⚠️ lodash.union ≈ lodash.debounce (相似度 0.6, 传递依赖)
+   ⚠️ lodash.uniq ≈ lodash.chunk (相似度 0.667, 传递依赖)
+   ⚠️ minimatch ≈ micromatch (相似度 0.7, 传递依赖)
+   ⚠️ minipass ≈ minimist (相似度 0.625, 传递依赖)
+   ⚠️ node-abi ≈ node-uuid (相似度 0.667, 传递依赖)
+   ⚠️ node-cron ≈ nodemon (相似度 0.667, 传递依赖)
+   ⚠️ node-gyp-build ≈ node-uuid (相似度 0.571, 传递依赖)
+   ⚠️ node-releases ≈ node-sass (相似度 0.615, 传递依赖)
+   ⚠️ pg-protocol ≈ pg-pool (相似度 0.636, 传递依赖)
+   ⚠️ picocolors ≈ colors (相似度 0.6, 传递依赖)
+   ⚠️ picomatch ≈ micromatch (相似度 0.8, 传递依赖)
+   ⚠️ playwright-core ≈ playwright-test (相似度 0.733, 传递依赖)
+   ⚠️ react-refresh ≈ react-router (相似度 0.615, 传递依赖)
+   ⚠️ router ≈ vue-router (相似度 0.6, 传递依赖)
+   ⚠️ saxes ≈ sass (相似度 0.6, 传递依赖)
+   ⚠️ shimmer ≈ immer (相似度 0.714, 传递依赖)
+   ⚠️ simple-concat ≈ simple-git (相似度 0.615, 传递依赖)
+   ⚠️ simple-get ≈ simple-git (相似度 0.9, 传递依赖)
+   ⚠️ split2 ≈ sqlite3 (相似度 0.571, 传递依赖)
+   ⚠️ sqlite-vec ≈ sqlite3 (相似度 0.6, 传递依赖)
+   ⚠️ tslog ≈ tslib (相似度 0.6, 传递依赖)
+   ⚠️ tunnel-agent ≈ superagent (相似度 0.583, 传递依赖)
+   ⚠️ typescript-eslint ≈ typescript (相似度 0.588, 直接依赖)
+   ⚠️ uuid ≈ unbuild (相似度 0.571, 传递依赖)
+   ⚠️ vite-node ≈ ts-node (相似度 0.667, 传递依赖)
+
+🐛 漏洞告警（内置 CVE 数据库）: 4
+   🔴 [HIGH] debug@2.6.9 — CVE-2017-16137: ReDoS（旧版 v2/v3） → 建议升级至 3.1.0
+   🔴 [HIGH] js-yaml@3.14.2 — GHSA-95qv-p5rx-2lpf: DoS via 循环引用 → 建议升级至 4.1.0
+   🔴 [HIGH] node-fetch@2.7.0 — CVE-2022-0235: Redirect 时泄露 Authorization 头 → 建议升级至 3.1.1
+   🔴 [HIGH] semver@6.3.1 — CVE-2022-25888: ReDoS via malformed version → 建议升级至 7.5.2
+
+⚙️  有构建/install 脚本的包: 0
+
+📄 完整 JSON 报告已写入: /home/chy/EvoClaw/audit-report-evoclaw.json
+================================================================

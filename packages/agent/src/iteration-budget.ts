@@ -3,7 +3,7 @@
  *
  * 借鉴 hermes-agent 的 iteration_budget.py 设计：
  * - 支持 consume / refund / used / remaining
- * - 父 agent 默认 90 次迭代，子 agent 默认 50 次
+ * - 父 agent 默认 300 次迭代，子 agent 默认 300 次
  * - 防止失控的递归或无限工具调用循环
  * - Grace Call：预算耗尽后允许一次无工具的最终调用
  *
@@ -14,8 +14,8 @@
  *   这些退款防止"工具调用本身"消耗预算，让预算真正反映"决策次数"。
  */
 
-export const DEFAULT_PARENT_BUDGET = 90;
-export const DEFAULT_CHILD_BUDGET = 50;
+export const DEFAULT_PARENT_BUDGET = 300;
+export const DEFAULT_CHILD_BUDGET = 300;
 
 /**
  * execute_code 类工具名称集合。

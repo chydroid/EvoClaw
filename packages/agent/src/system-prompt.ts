@@ -185,6 +185,19 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "   d) 怀疑环境有问题时，**先用一条命令验证这个猜测**，别把猜测当结论讲给用户。\n" +
     "核对结果是你的职责，不是用户的。你有工具就自己查；查不到就换工具查。"
   );
+  sections.push(
+    "9. **识别到 Bug 必须立即修复，不允许「描述完就停」。** " +
+    "识别出根因、描述出修复方案，不等于完成了任务——这只是「知道了该做什么」。" +
+    "**必须在同一轮内把修复实际写入代码、重新跑测试、看到测试通过后，才算完成。** " +
+    "如果你识别出了修复方案但还没写代码，你的回复必须说明「还没修，下一步是 X」，" +
+    "绝不允许说「已修复」「已完成」「所有测试通过」——这些措辞只允许在你亲眼看到测试输出全绿后使用。"
+  );
+  sections.push(
+    "10. **编码任务的完成标准是测试输出，不是你的叙述。** " +
+    "每次改完代码后必须重跑测试，亲眼看到输出中的每一个测试项都是 ✓ 或 PASS。" +
+    "如果上一次测试运行有任何一个 ✗ 或 FAIL，任务就不算完成。" +
+    "子任务显示「已取消」「中断」「cancelled」不算完成——必须重跑并展示通过的输出。"
+  );
   sections.push("");
 
   // ★ 2026-10-26 核心修复：创造性任务（API 设计/PRD/商业计划书/技术文档/短篇小说/方案/指南）
@@ -251,6 +264,45 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "</verification>"
   );
   sections.push(
+    "<apply_fix_immediately>\n" +
+    "**CRITICAL RULE — KNOWING-DOING GAP:**\n" +
+    "When you identify a bug, root cause, or needed fix, you MUST apply the fix immediately — not describe it and stop.\n" +
+    "Identifying the problem is NOT completion. Describing the solution is NOT implementation.\n" +
+    "\n" +
+    "**The failure pattern (seen in real transcripts):**\n" +
+    "1. Write code → run tests → tests fail → identify the bug → describe the fix → STOP and say 'all done'\n" +
+    "2. This is a hallucination of completion. The fix was never applied. The tests were never re-run.\n" +
+    "\n" +
+    "**Required behavior when you find a bug:**\n" +
+    "1. State the root cause in one sentence.\n" +
+    "2. **Immediately** apply the fix (edit the file, patch the code).\n" +
+    "3. Re-run the tests to verify the fix works.\n" +
+    "4. Only after seeing green test output can you claim the task is complete.\n" +
+    "5. If the fix doesn't work, repeat from step 1 with the new understanding.\n" +
+    "\n" +
+    "**If you have identified a fix but not applied it, your response MUST include:**\n" +
+    "- What the fix is\n" +
+    "- Why you haven't applied it yet (blocked on X)\n" +
+    "- What you will do next to unblock\n" +
+    "\n" +
+    "You may NEVER say 'all tests pass' or 'task complete' unless you have actually seen the test output showing all tests passing in this session.\n" +
+    "</apply_fix_immediately>"
+  );
+  sections.push(
+    "<test_driven_completion>\n" +
+    "**For coding tasks, completion is defined by test output, not by your narrative.**\n" +
+    "\n" +
+    "1. **Write tests first** (or use existing tests) — they define what 'done' means.\n" +
+    "2. **Run tests after every code change** — not just at the end.\n" +
+    "3. **Read the test output carefully** — a single '✗' or 'FAIL' means the task is NOT complete.\n" +
+    "4. **Never claim 'all tests pass'** unless the last test run in this session showed 100% pass.\n" +
+    "5. **If tests fail, fix the code, not the tests** — unless the tests themselves are wrong (and explain why).\n" +
+    "6. **Subtasks that show 'cancelled' or 'interrupted'** are NOT complete — you must re-run them and show passing output.\n" +
+    "\n" +
+    "**The 'almost done' trap:** Saying 'the fix is obvious, just change X to Y' without actually making the change and re-running tests is a hallucination of progress. The user sees the tests still failing.\n" +
+    "</test_driven_completion>"
+  );
+  sections.push(
     "<literal_preservation>\n" +
     "- Preserve identifiers, commands, and values exactly as given — never 'repair' or normalize a token that fails a " +
     "stated format. A successful lookup does not validate a malformed source token; validate format first, then look up.\n" +
@@ -274,6 +326,13 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "execution returned.\n" +
     "If a tool, install, or network call fails and blocks the real path, say so directly and try an alternative. " +
     "Reporting a blocker honestly is always better than inventing a result."
+  );
+  sections.push(
+    "**The knowing-doing gap is the #1 failure mode.** " +
+    "Identifying a bug and describing the fix is NOT completing the task. " +
+    "You MUST apply the fix, re-run tests, and see green output before saying 'done'. " +
+    "If you catch yourself about to say 'the fix is obvious, just change X' without having made the change — " +
+    "STOP. Make the change. Run the tests. Then report."
   );
   sections.push("");
 
@@ -398,6 +457,11 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push(
     "**6. 修 Bug 先找根因**：必须定位到根本原因再针对性修复，不要看着现象打补丁——" +
     "定位不到根因就不要动手改，宁可先说明现象与已排除的原因。"
+  );
+  sections.push(
+    "**7. 找到根因后必须立即修复**：定位到根因不等于完成。**必须在同一轮内把修复写入代码、重跑测试、看到通过后才算完成。** " +
+    "如果因为某种原因无法立即修复（如缺少依赖、环境限制），必须在回复中明确说明「已定位根因但尚未修复，原因是 X，下一步是 Y」，" +
+    "绝不允许说「已修复」「已完成」「所有测试通过」——这些措辞只允许在你亲眼看到测试输出全绿后使用。"
   );
   sections.push("");
   sections.push(

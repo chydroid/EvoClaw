@@ -71,6 +71,23 @@ export interface SlashCommandDeps {
   learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
   cronSuggestionManager?: CronSuggestionManagerLike;
   blueprintCatalog?: BlueprintCatalogLike;
+  /** DurableTaskRunner 单例，用于 /tasks 列出后台续跑任务 */
+  durableTaskRunner?: {
+    list(sessionId?: string): Array<{
+      id: string;
+      sessionId: string;
+      channel: string;
+      userRequest: string;
+      status: string;
+      createdAt: number;
+      updatedAt: number;
+      checkpointAt?: number;
+      progress: string[];
+      resumeCount: number;
+      finalReply?: string;
+      error?: string;
+    }>;
+  };
 }
 
 /** BlueprintCatalog 最小接口（避免 agent 包依赖 scheduler 包） */
@@ -180,7 +197,8 @@ export async function handleSlashCommand(
         "`/unfocus` — 取消上下文聚焦",
         "`/agents` — 列出可用上下文目标",
         "`/checkpoints` — 列出可恢复的执行检查点",
-        "`/resume <sessionId>` — 从检查点恢复中断的执行",
+        "`/tasks` — 列出后台续跑任务",
+        "`/resume <sessionId|taskId>` — 从检查点恢复中断的执行或后台续跑任务",
         "`/checkpoint <sessionId> <index>` — 查看指定快照详情",
         "`/pending` — 列出等待审批的操作",
         "`/approve <approvalId> [trust]` — 批准待审批操作（加 trust 自动信任后续同类操作）",
@@ -561,6 +579,43 @@ export async function handleSlashCommand(
       break;
     }
 
+    case "tasks": {
+      if (!deps.durableTaskRunner) {
+        reply = "⚠ DurableTaskRunner 未启用";
+        break;
+      }
+      const tasks = deps.durableTaskRunner.list(sessionId);
+      if (tasks.length === 0) {
+        reply = "✅ 没有后台续跑任务。所有任务均已完成或未创建。";
+      } else {
+        const lines = [`**📋 后台续跑任务** (${tasks.length})`, ""];
+        for (const task of tasks) {
+          const statusIcon =
+            task.status === "running" ? "🔄" :
+            task.status === "paused" ? "⏸️" :
+            task.status === "completed" ? "✅" :
+            task.status === "failed" ? "❌" :
+            task.status === "cancelled" ? "🚫" : "❓";
+          const timeStr = new Date(task.updatedAt).toLocaleString("zh-CN");
+          lines.push(`- ${statusIcon} \`${task.id}\` — ${task.status} | 续跑: ${task.resumeCount} 次 | ${timeStr}`);
+          lines.push(`  "${task.userRequest.slice(0, 80)}${task.userRequest.length > 80 ? "..." : ""}"`);
+          if (task.progress.length > 0) {
+            const lastProgress = task.progress[task.progress.length - 1];
+            lines.push(`  最新进度: ${lastProgress.slice(0, 120)}`);
+          }
+          if (task.error) {
+            lines.push(`  错误: ${task.error.slice(0, 200)}`);
+          }
+          if (task.finalReply) {
+            lines.push(`  最终回复: ${task.finalReply.slice(0, 200)}`);
+          }
+        }
+        lines.push("", "使用 `/resume <taskId>` 恢复执行");
+        reply = lines.join("\n");
+      }
+      break;
+    }
+
     case "checkpoints": {
       if (!deps.executionCheckpointStore) {
         reply = "⚠ 执行检查点存储不可用";
@@ -585,27 +640,44 @@ export async function handleSlashCommand(
     }
 
     case "resume": {
+      const target = args[0];
+      if (!target) {
+        reply = "用法: `/resume <sessionId|taskId>`\n使用 `/checkpoints` 或 `/tasks` 查看可恢复的执行";
+        break;
+      }
+      // 先尝试作为 durable task ID 查找
+      if (deps.durableTaskRunner) {
+        const durableTask = deps.durableTaskRunner.list().find((t) => t.id === target);
+        if (durableTask) {
+          if (durableTask.status === "completed") {
+            reply = `✅ 任务 \`${target}\` 已完成，无需恢复。`;
+            break;
+          }
+          if (durableTask.status === "cancelled") {
+            reply = `🚫 任务 \`${target}\` 已取消，无法恢复。`;
+            break;
+          }
+          reply = `🔄 正在恢复任务 \`${target}\` (状态: ${durableTask.status}, 续跑: ${durableTask.resumeCount} 次)...`;
+          break;
+        }
+      }
+      // 回退到 execution checkpoint 查找
       if (!deps.executionCheckpointStore) {
         reply = "⚠ 执行检查点存储不可用";
         break;
       }
-      const targetSessionId = args[0];
-      if (!targetSessionId) {
-        reply = "用法: `/resume <sessionId>`\n使用 `/checkpoints` 查看可恢复的执行";
-        break;
-      }
-      const execState = deps.executionCheckpointStore.getExecution(targetSessionId);
+      const execState = deps.executionCheckpointStore.getExecution(target);
       if (!execState) {
-        reply = `⚠ 未找到会话 \`${targetSessionId}\` 的执行状态`;
+        reply = `⚠ 未找到会话 \`${target}\` 的执行状态或任务 \`${target}\` 的 durable task。\n使用 \`/checkpoints\` 或 \`/tasks\` 查看可恢复的执行。`;
         break;
       }
       if (execState.status === "completed") {
-        reply = `✅ 会话 \`${targetSessionId}\` 已完成，无需恢复。`;
+        reply = `✅ 会话 \`${target}\` 已完成，无需恢复。`;
         break;
       }
       // Note: actual resume is handled by the caller (AgentModelExecutor)
       // This command returns a special action to trigger it
-      reply = `🔄 正在恢复会话 \`${targetSessionId}\` 的执行 (状态: ${execState.status}, 快照: ${execState.snapshots.length})...`;
+      reply = `🔄 正在恢复会话 \`${target}\` 的执行 (状态: ${execState.status}, 快照: ${execState.snapshots.length})...`;
       break;
     }
 

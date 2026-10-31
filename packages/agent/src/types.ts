@@ -11,7 +11,7 @@ export interface ModelConfig {
   temperature: number;
   timeout: number;
   topP?: number;
-  /** ReAct 循环最大迭代次数（默认 20，复杂任务可调高） */
+  /** ReAct 循环最大迭代次数（默认 300，复杂任务可调高） */
   maxIterations?: number;
   /** 单次 chat() 整体超时（毫秒），默认 0 = 禁用（靠 max_iterations 限制 + 用户中断）。
    * 对于需要长时间运行的编程任务，建议设为 0 或很大的值。 */

@@ -1,0 +1,5963 @@
+{
+  "generatedAt": "2026-10-30T13:52:27.124Z",
+  "project": {
+    "name": "evoclaw",
+    "version": "0.93.1"
+  },
+  "lockfile": "pnpm-lock.yaml",
+  "totals": {
+    "direct": 11,
+    "uniquePkgs": 593,
+    "typosquats": 58,
+    "vulns": 4,
+    "riskyLifecycle": 0
+  },
+  "directDependencies": [
+    {
+      "name": "@eslint/js",
+      "specifier": "^9.18.0",
+      "resolved": "^9.18.0",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "@types/node",
+      "specifier": "^22.19.19",
+      "resolved": "^22.19.19",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "@vitest/coverage-istanbul",
+      "specifier": "3.1.3",
+      "resolved": "3.1.3",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "@vitest/coverage-v8",
+      "specifier": "3.1.3",
+      "resolved": "3.1.3",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "eslint",
+      "specifier": "^9.18.0",
+      "resolved": "9.39.4",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "eslint-plugin-react-hooks",
+      "specifier": "^7.1.1",
+      "resolved": "7.1.1",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "globals",
+      "specifier": "^17.7.0",
+      "resolved": "14.0.0, 17.7.0",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "typescript-eslint",
+      "specifier": "^8.20.0",
+      "resolved": "8.62.1",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "vitest",
+      "specifier": "3.1.3",
+      "resolved": "3.1.3",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "better-sqlite3",
+      "specifier": "^12.10.0",
+      "resolved": "12.10.0",
+      "integrityHashCount": 0
+    },
+    {
+      "name": "@tencent-weixin/openclaw-weixin",
+      "specifier": "^2.4.4",
+      "resolved": "^2.4.4",
+      "integrityHashCount": 0
+    }
+  ],
+  "typosquatting": [
+    {
+      "pkg": "chalk",
+      "match": "chai",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 chai 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "colorette",
+      "match": "colors",
+      "similarity": 0.556,
+      "isDirect": false,
+      "note": "传递依赖与知名包 colors 相似（0.556），标记观察"
+    },
+    {
+      "pkg": "cors",
+      "match": "colors",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 colors 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "cssom",
+      "match": "jsdom",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 jsdom 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "domhandler",
+      "match": "commander",
+      "similarity": 0.7,
+      "isDirect": false,
+      "note": "传递依赖与知名包 commander 相似（0.700），标记观察"
+    },
+    {
+      "pkg": "esbuild",
+      "match": "unbuild",
+      "similarity": 0.714,
+      "isDirect": false,
+      "note": "传递依赖与知名包 unbuild 相似（0.714），标记观察"
+    },
+    {
+      "pkg": "eslint-plugin-react-hooks",
+      "match": "eslint-plugin-react",
+      "similarity": 0.76,
+      "isDirect": true,
+      "note": "直接依赖与知名包 eslint-plugin-react 高度相似（0.760），必须人工核对来源"
+    },
+    {
+      "pkg": "espree",
+      "match": "express",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 express 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "esquery",
+      "match": "jquery",
+      "similarity": 0.714,
+      "isDirect": false,
+      "note": "传递依赖与知名包 jquery 相似（0.714），标记观察"
+    },
+    {
+      "pkg": "eventsource-parser",
+      "match": "eventsource",
+      "similarity": 0.611,
+      "isDirect": false,
+      "note": "传递依赖与知名包 eventsource 相似（0.611），标记观察"
+    },
+    {
+      "pkg": "gaxios",
+      "match": "axios",
+      "similarity": 0.833,
+      "isDirect": false,
+      "note": "传递依赖与知名包 axios 相似（0.833），标记观察"
+    },
+    {
+      "pkg": "global-agent",
+      "match": "glob-parent",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 glob-parent 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "globals",
+      "match": "glob",
+      "similarity": 0.571,
+      "isDirect": true,
+      "note": "直接依赖与知名包 glob 高度相似（0.571），必须人工核对来源"
+    },
+    {
+      "pkg": "guid-typescript",
+      "match": "typescript",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 typescript 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "is-glob",
+      "match": "glob",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 glob 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "jsesc",
+      "match": "jest",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 jest 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "jws",
+      "match": "ws",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 ws 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "leac",
+      "match": "react",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 react 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "lodash.camelcase",
+      "match": "lodash.merge",
+      "similarity": 0.625,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.625），标记观察"
+    },
+    {
+      "pkg": "lodash.defaults",
+      "match": "lodash.debounce",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "lodash.difference",
+      "match": "lodash.debounce",
+      "similarity": 0.647,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.647），标记观察"
+    },
+    {
+      "pkg": "lodash.escaperegexp",
+      "match": "lodash.merge",
+      "similarity": 0.579,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.579），标记观察"
+    },
+    {
+      "pkg": "lodash.flatten",
+      "match": "lodash.merge",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "lodash.groupby",
+      "match": "lodash.debounce",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "lodash.includes",
+      "match": "lodash.chunk",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.chunk 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "lodash.isarguments",
+      "match": "lodash.merge",
+      "similarity": 0.556,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.556），标记观察"
+    },
+    {
+      "pkg": "lodash.isboolean",
+      "match": "lodash.debounce",
+      "similarity": 0.563,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.563），标记观察"
+    },
+    {
+      "pkg": "lodash.isequal",
+      "match": "lodash.merge",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "lodash.isinteger",
+      "match": "lodash.merge",
+      "similarity": 0.563,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.merge 相似（0.563），标记观察"
+    },
+    {
+      "pkg": "lodash.isnil",
+      "match": "lodash-es",
+      "similarity": 0.583,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash-es 相似（0.583），标记观察"
+    },
+    {
+      "pkg": "lodash.isnumber",
+      "match": "lodash.clonedeep",
+      "similarity": 0.563,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.clonedeep 相似（0.563），标记观察"
+    },
+    {
+      "pkg": "lodash.isundefined",
+      "match": "lodash.clonedeep",
+      "similarity": 0.556,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.clonedeep 相似（0.556），标记观察"
+    },
+    {
+      "pkg": "lodash.once",
+      "match": "lodash.debounce",
+      "similarity": 0.733,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.733），标记观察"
+    },
+    {
+      "pkg": "lodash.union",
+      "match": "lodash.debounce",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.debounce 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "lodash.uniq",
+      "match": "lodash.chunk",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 lodash.chunk 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "minimatch",
+      "match": "micromatch",
+      "similarity": 0.7,
+      "isDirect": false,
+      "note": "传递依赖与知名包 micromatch 相似（0.700），标记观察"
+    },
+    {
+      "pkg": "minipass",
+      "match": "minimist",
+      "similarity": 0.625,
+      "isDirect": false,
+      "note": "传递依赖与知名包 minimist 相似（0.625），标记观察"
+    },
+    {
+      "pkg": "node-abi",
+      "match": "node-uuid",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 node-uuid 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "node-cron",
+      "match": "nodemon",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 nodemon 相似（0.667），标记观察"
+    },
+    {
+      "pkg": "node-gyp-build",
+      "match": "node-uuid",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 node-uuid 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "node-releases",
+      "match": "node-sass",
+      "similarity": 0.615,
+      "isDirect": false,
+      "note": "传递依赖与知名包 node-sass 相似（0.615），标记观察"
+    },
+    {
+      "pkg": "pg-protocol",
+      "match": "pg-pool",
+      "similarity": 0.636,
+      "isDirect": false,
+      "note": "传递依赖与知名包 pg-pool 相似（0.636），标记观察"
+    },
+    {
+      "pkg": "picocolors",
+      "match": "colors",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 colors 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "picomatch",
+      "match": "micromatch",
+      "similarity": 0.8,
+      "isDirect": false,
+      "note": "传递依赖与知名包 micromatch 相似（0.800），标记观察"
+    },
+    {
+      "pkg": "playwright-core",
+      "match": "playwright-test",
+      "similarity": 0.733,
+      "isDirect": false,
+      "note": "传递依赖与知名包 playwright-test 相似（0.733），标记观察"
+    },
+    {
+      "pkg": "react-refresh",
+      "match": "react-router",
+      "similarity": 0.615,
+      "isDirect": false,
+      "note": "传递依赖与知名包 react-router 相似（0.615），标记观察"
+    },
+    {
+      "pkg": "router",
+      "match": "vue-router",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 vue-router 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "saxes",
+      "match": "sass",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 sass 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "shimmer",
+      "match": "immer",
+      "similarity": 0.714,
+      "isDirect": false,
+      "note": "传递依赖与知名包 immer 相似（0.714），标记观察"
+    },
+    {
+      "pkg": "simple-concat",
+      "match": "simple-git",
+      "similarity": 0.615,
+      "isDirect": false,
+      "note": "传递依赖与知名包 simple-git 相似（0.615），标记观察"
+    },
+    {
+      "pkg": "simple-get",
+      "match": "simple-git",
+      "similarity": 0.9,
+      "isDirect": false,
+      "note": "传递依赖与知名包 simple-git 相似（0.900），标记观察"
+    },
+    {
+      "pkg": "split2",
+      "match": "sqlite3",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 sqlite3 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "sqlite-vec",
+      "match": "sqlite3",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 sqlite3 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "tslog",
+      "match": "tslib",
+      "similarity": 0.6,
+      "isDirect": false,
+      "note": "传递依赖与知名包 tslib 相似（0.600），标记观察"
+    },
+    {
+      "pkg": "tunnel-agent",
+      "match": "superagent",
+      "similarity": 0.583,
+      "isDirect": false,
+      "note": "传递依赖与知名包 superagent 相似（0.583），标记观察"
+    },
+    {
+      "pkg": "typescript-eslint",
+      "match": "typescript",
+      "similarity": 0.588,
+      "isDirect": true,
+      "note": "直接依赖与知名包 typescript 高度相似（0.588），必须人工核对来源"
+    },
+    {
+      "pkg": "uuid",
+      "match": "unbuild",
+      "similarity": 0.571,
+      "isDirect": false,
+      "note": "传递依赖与知名包 unbuild 相似（0.571），标记观察"
+    },
+    {
+      "pkg": "vite-node",
+      "match": "ts-node",
+      "similarity": 0.667,
+      "isDirect": false,
+      "note": "传递依赖与知名包 ts-node 相似（0.667），标记观察"
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "pkg": "debug",
+      "version": "2.6.9",
+      "severity": "high",
+      "cve": "CVE-2017-16137",
+      "desc": "ReDoS（旧版 v2/v3）",
+      "fixed": "3.1.0",
+      "isDirect": false
+    },
+    {
+      "pkg": "js-yaml",
+      "version": "3.14.2",
+      "severity": "high",
+      "cve": "GHSA-95qv-p5rx-2lpf",
+      "desc": "DoS via 循环引用",
+      "fixed": "4.1.0",
+      "isDirect": false
+    },
+    {
+      "pkg": "node-fetch",
+      "version": "2.7.0",
+      "severity": "high",
+      "cve": "CVE-2022-0235",
+      "desc": "Redirect 时泄露 Authorization 头",
+      "fixed": "3.1.1",
+      "isDirect": false
+    },
+    {
+      "pkg": "semver",
+      "version": "6.3.1",
+      "severity": "high",
+      "cve": "CVE-2022-25888",
+      "desc": "ReDoS via malformed version",
+      "fixed": "7.5.2",
+      "isDirect": false
+    }
+  ],
+  "riskyLifecyclePackages": [],
+  "allPackages": [
+    {
+      "name": "abort-controller",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "accepts",
+      "versions": [
+        "1.3.8",
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "acorn-import-attributes",
+      "versions": [
+        "1.9.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "acorn-jsx",
+      "versions": [
+        "5.3.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "acorn",
+      "versions": [
+        "8.16.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "adm-zip",
+      "versions": [
+        "0.5.17"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "agent-base",
+      "versions": [
+        "7.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ajv-formats",
+      "versions": [
+        "3.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ajv",
+      "versions": [
+        "6.15.0",
+        "8.20.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ansi-regex",
+      "versions": [
+        "5.0.1",
+        "6.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ansi-styles",
+      "versions": [
+        "4.3.0",
+        "6.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "archiver-utils",
+      "versions": [
+        "2.1.0",
+        "3.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "archiver",
+      "versions": [
+        "5.3.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "argparse",
+      "versions": [
+        "1.0.10",
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "array-flatten",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "asn1.js",
+      "versions": [
+        "5.4.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "assertion-error",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "async",
+      "versions": [
+        "3.2.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "asynckit",
+      "versions": [
+        "0.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "atomic-sleep",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "axios",
+      "versions": [
+        "1.13.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "balanced-match",
+      "versions": [
+        "1.0.2",
+        "4.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "base64-js",
+      "versions": [
+        "1.5.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "baseline-browser-mapping",
+      "versions": [
+        "2.10.29"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "better-sqlite3",
+      "versions": [
+        "12.10.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "big-integer",
+      "versions": [
+        "1.6.52"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bignumber.js",
+      "versions": [
+        "9.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "binary",
+      "versions": [
+        "0.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bindings",
+      "versions": [
+        "1.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bl",
+      "versions": [
+        "4.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bluebird",
+      "versions": [
+        "3.4.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bn.js",
+      "versions": [
+        "4.12.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "body-parser",
+      "versions": [
+        "1.20.5",
+        "2.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "boolbase",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "boolean",
+      "versions": [
+        "3.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bottleneck",
+      "versions": [
+        "2.19.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bowser",
+      "versions": [
+        "2.14.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "brace-expansion",
+      "versions": [
+        "1.1.15",
+        "2.1.1",
+        "5.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "browserslist",
+      "versions": [
+        "4.28.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffer-crc32",
+      "versions": [
+        "0.2.13"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffer-equal-constant-time",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffer-from",
+      "versions": [
+        "1.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffer-indexof-polyfill",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffer",
+      "versions": [
+        "5.7.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "buffers",
+      "versions": [
+        "0.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bullmq",
+      "versions": [
+        "5.76.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "bytes",
+      "versions": [
+        "3.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cac",
+      "versions": [
+        "6.7.14"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "call-bind-apply-helpers",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "call-bound",
+      "versions": [
+        "1.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "callsites",
+      "versions": [
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "camelcase",
+      "versions": [
+        "5.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "caniuse-lite",
+      "versions": [
+        "1.0.30001792"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "chai",
+      "versions": [
+        "5.3.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "chainsaw",
+      "versions": [
+        "0.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "chalk",
+      "versions": [
+        "4.1.2",
+        "5.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "check-error",
+      "versions": [
+        "2.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "chokidar",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "chownr",
+      "versions": [
+        "1.1.4",
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cjs-module-lexer",
+      "versions": [
+        "1.4.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cliui",
+      "versions": [
+        "6.0.0",
+        "8.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cluster-key-slot",
+      "versions": [
+        "1.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "color-convert",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "color-name",
+      "versions": [
+        "1.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "colorette",
+      "versions": [
+        "2.0.20"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "combined-stream",
+      "versions": [
+        "1.0.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "commander",
+      "versions": [
+        "13.1.0",
+        "14.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "compress-commons",
+      "versions": [
+        "4.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "concat-map",
+      "versions": [
+        "0.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "content-disposition",
+      "versions": [
+        "0.5.4",
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "content-type",
+      "versions": [
+        "1.0.5",
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "convert-source-map",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cookie-signature",
+      "versions": [
+        "1.0.7",
+        "1.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cookie",
+      "versions": [
+        "0.7.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "core-util-is",
+      "versions": [
+        "1.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cors",
+      "versions": [
+        "2.8.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "crc-32",
+      "versions": [
+        "1.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "crc32-stream",
+      "versions": [
+        "4.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cron-parser",
+      "versions": [
+        "4.9.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "croner",
+      "versions": [
+        "10.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cross-spawn",
+      "versions": [
+        "7.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "css-select",
+      "versions": [
+        "5.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "css-what",
+      "versions": [
+        "6.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "cssom",
+      "versions": [
+        "0.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "csstype",
+      "versions": [
+        "3.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "data-uri-to-buffer",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dateformat",
+      "versions": [
+        "4.6.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dayjs",
+      "versions": [
+        "1.11.21"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "debug",
+      "versions": [
+        "2.6.9",
+        "4.4.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "decamelize",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "decompress-response",
+      "versions": [
+        "6.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "deep-eql",
+      "versions": [
+        "5.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "deep-extend",
+      "versions": [
+        "0.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "deep-is",
+      "versions": [
+        "0.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "deepmerge",
+      "versions": [
+        "4.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "define-data-property",
+      "versions": [
+        "1.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "define-properties",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "delayed-stream",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "denque",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "depd",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "destroy",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "detect-libc",
+      "versions": [
+        "2.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "detect-node",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "diff",
+      "versions": [
+        "8.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dijkstrajs",
+      "versions": [
+        "1.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "docx",
+      "versions": [
+        "9.7.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dom-serializer",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "domelementtype",
+      "versions": [
+        "2.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "domhandler",
+      "versions": [
+        "5.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "domutils",
+      "versions": [
+        "3.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dotenv",
+      "versions": [
+        "16.6.1",
+        "17.4.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "dunder-proto",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "duplexer2",
+      "versions": [
+        "0.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eastasianwidth",
+      "versions": [
+        "0.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ecdsa-sig-formatter",
+      "versions": [
+        "1.0.11"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ee-first",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "electron-to-chromium",
+      "versions": [
+        "1.5.354"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "emoji-regex",
+      "versions": [
+        "8.0.0",
+        "9.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "encodeurl",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "encoding-japanese",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "end-of-stream",
+      "versions": [
+        "1.4.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "entities",
+      "versions": [
+        "4.5.0",
+        "7.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es-define-property",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es-errors",
+      "versions": [
+        "1.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es-module-lexer",
+      "versions": [
+        "1.7.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es-object-atoms",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es-set-tostringtag",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "es6-error",
+      "versions": [
+        "4.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "esbuild",
+      "versions": [
+        "0.25.12"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "escalade",
+      "versions": [
+        "3.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "escape-html",
+      "versions": [
+        "1.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "escape-string-regexp",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eslint-plugin-react-hooks",
+      "versions": [
+        "7.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "eslint-scope",
+      "versions": [
+        "8.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eslint-visitor-keys",
+      "versions": [
+        "3.4.3",
+        "4.2.1",
+        "5.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eslint",
+      "versions": [
+        "9.39.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "espree",
+      "versions": [
+        "10.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "esprima",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "esquery",
+      "versions": [
+        "1.7.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "esrecurse",
+      "versions": [
+        "4.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "estraverse",
+      "versions": [
+        "5.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "estree-walker",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "esutils",
+      "versions": [
+        "2.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "etag",
+      "versions": [
+        "1.8.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "event-target-shim",
+      "versions": [
+        "5.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eventemitter3",
+      "versions": [
+        "5.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eventsource-parser",
+      "versions": [
+        "3.0.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "eventsource",
+      "versions": [
+        "3.0.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "exceljs",
+      "versions": [
+        "4.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "expand-template",
+      "versions": [
+        "2.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "expect-type",
+      "versions": [
+        "1.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "express-rate-limit",
+      "versions": [
+        "8.5.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "express",
+      "versions": [
+        "4.22.2",
+        "5.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "extend-shallow",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "extend",
+      "versions": [
+        "3.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-copy",
+      "versions": [
+        "4.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-csv",
+      "versions": [
+        "4.3.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-deep-equal",
+      "versions": [
+        "3.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-json-stable-stringify",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-levenshtein",
+      "versions": [
+        "2.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-safe-stringify",
+      "versions": [
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-string-truncated-width",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-string-width",
+      "versions": [
+        "3.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-uri",
+      "versions": [
+        "3.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-wrap-ansi",
+      "versions": [
+        "0.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-xml-builder",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fast-xml-parser",
+      "versions": [
+        "5.7.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fdir",
+      "versions": [
+        "6.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fetch-blob",
+      "versions": [
+        "3.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "file-entry-cache",
+      "versions": [
+        "8.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "file-type",
+      "versions": [
+        "22.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "file-uri-to-path",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "finalhandler",
+      "versions": [
+        "1.3.2",
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "find-up",
+      "versions": [
+        "4.1.0",
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "flat-cache",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "flatbuffers",
+      "versions": [
+        "25.9.23"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "flatted",
+      "versions": [
+        "3.4.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "follow-redirects",
+      "versions": [
+        "1.16.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "foreground-child",
+      "versions": [
+        "3.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "form-data",
+      "versions": [
+        "4.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "formdata-polyfill",
+      "versions": [
+        "4.0.10"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "forwarded-parse",
+      "versions": [
+        "2.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "forwarded",
+      "versions": [
+        "0.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fresh",
+      "versions": [
+        "0.5.2",
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fs-constants",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fs.realpath",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fsevents",
+      "versions": [
+        "2.3.2",
+        "2.3.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "fstream",
+      "versions": [
+        "1.0.12"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "function-bind",
+      "versions": [
+        "1.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "gaxios",
+      "versions": [
+        "6.7.1",
+        "7.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "gcp-metadata",
+      "versions": [
+        "6.1.1",
+        "8.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "gensync",
+      "versions": [
+        "1.0.0-beta.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "get-caller-file",
+      "versions": [
+        "2.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "get-east-asian-width",
+      "versions": [
+        "1.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "get-intrinsic",
+      "versions": [
+        "1.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "get-proto",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "github-from-package",
+      "versions": [
+        "0.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "glob-parent",
+      "versions": [
+        "6.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "glob",
+      "versions": [
+        "10.4.5",
+        "13.0.6",
+        "7.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "global-agent",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "globals",
+      "versions": [
+        "14.0.0",
+        "17.7.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "globalthis",
+      "versions": [
+        "1.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "google-auth-library",
+      "versions": [
+        "10.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "google-logging-utils",
+      "versions": [
+        "0.0.2",
+        "1.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "gopd",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "graceful-fs",
+      "versions": [
+        "4.2.11"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "grammy",
+      "versions": [
+        "1.43.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "gray-matter",
+      "versions": [
+        "4.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "guid-typescript",
+      "versions": [
+        "1.0.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "handlebars",
+      "versions": [
+        "4.7.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "has-flag",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "has-property-descriptors",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "has-symbols",
+      "versions": [
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "has-tostringtag",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hash.js",
+      "versions": [
+        "1.1.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hasown",
+      "versions": [
+        "2.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "he",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "help-me",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hermes-estree",
+      "versions": [
+        "0.25.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hermes-parser",
+      "versions": [
+        "0.25.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "highlight.js",
+      "versions": [
+        "10.7.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hono",
+      "versions": [
+        "4.12.23"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "hosted-git-info",
+      "versions": [
+        "9.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "html-escaper",
+      "versions": [
+        "2.0.2",
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "html-to-text",
+      "versions": [
+        "9.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "htmlparser2",
+      "versions": [
+        "10.1.0",
+        "8.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "http-errors",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "http-proxy-agent",
+      "versions": [
+        "7.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "http_ece",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "https-proxy-agent",
+      "versions": [
+        "7.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "https",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "iconv-lite",
+      "versions": [
+        "0.4.24",
+        "0.6.3",
+        "0.7.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ieee754",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ignore",
+      "versions": [
+        "5.3.2",
+        "7.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "image-size",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "imapflow",
+      "versions": [
+        "1.3.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "immediate",
+      "versions": [
+        "3.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "import-fresh",
+      "versions": [
+        "3.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "import-in-the-middle",
+      "versions": [
+        "1.15.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "imurmurhash",
+      "versions": [
+        "0.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "inflight",
+      "versions": [
+        "1.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "inherits",
+      "versions": [
+        "2.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ini",
+      "versions": [
+        "1.3.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ioredis",
+      "versions": [
+        "5.10.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ip-address",
+      "versions": [
+        "10.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ipaddr.js",
+      "versions": [
+        "1.9.1",
+        "2.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-core-module",
+      "versions": [
+        "2.16.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-extendable",
+      "versions": [
+        "0.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-extglob",
+      "versions": [
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-fullwidth-code-point",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-glob",
+      "versions": [
+        "4.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-promise",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "is-stream",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "isarray",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "isexe",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "istanbul-lib-coverage",
+      "versions": [
+        "3.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "istanbul-lib-instrument",
+      "versions": [
+        "6.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "istanbul-lib-report",
+      "versions": [
+        "3.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "istanbul-lib-source-maps",
+      "versions": [
+        "5.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "istanbul-reports",
+      "versions": [
+        "3.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jackspeak",
+      "versions": [
+        "3.4.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jiti",
+      "versions": [
+        "2.7.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jose",
+      "versions": [
+        "6.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "joycon",
+      "versions": [
+        "3.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "js-tokens",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "js-yaml",
+      "versions": [
+        "3.14.2",
+        "4.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jsesc",
+      "versions": [
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-bigint",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-buffer",
+      "versions": [
+        "3.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-schema-to-ts",
+      "versions": [
+        "3.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-schema-traverse",
+      "versions": [
+        "0.4.1",
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-schema-typed",
+      "versions": [
+        "8.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-stable-stringify-without-jsonify",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json-stringify-safe",
+      "versions": [
+        "5.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "json5",
+      "versions": [
+        "2.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jsonwebtoken",
+      "versions": [
+        "9.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jszip",
+      "versions": [
+        "3.10.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jwa",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "jws",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "keyv",
+      "versions": [
+        "4.5.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "kind-of",
+      "versions": [
+        "6.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "koffi",
+      "versions": [
+        "2.16.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "kysely",
+      "versions": [
+        "0.29.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lazystream",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "leac",
+      "versions": [
+        "0.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "levn",
+      "versions": [
+        "0.4.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "libbase64",
+      "versions": [
+        "1.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "libmime",
+      "versions": [
+        "5.3.7",
+        "5.3.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "libqp",
+      "versions": [
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lie",
+      "versions": [
+        "3.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "linkedom",
+      "versions": [
+        "0.18.12"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "linkify-it",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "listenercount",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "locate-path",
+      "versions": [
+        "5.0.0",
+        "6.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.camelcase",
+      "versions": [
+        "4.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.defaults",
+      "versions": [
+        "4.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.difference",
+      "versions": [
+        "4.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.escaperegexp",
+      "versions": [
+        "4.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.flatten",
+      "versions": [
+        "4.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.groupby",
+      "versions": [
+        "4.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.identity",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.includes",
+      "versions": [
+        "4.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isarguments",
+      "versions": [
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isboolean",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isequal",
+      "versions": [
+        "4.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isfunction",
+      "versions": [
+        "3.0.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isinteger",
+      "versions": [
+        "4.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isnil",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isnumber",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isplainobject",
+      "versions": [
+        "4.0.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isstring",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.isundefined",
+      "versions": [
+        "3.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.merge",
+      "versions": [
+        "4.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.once",
+      "versions": [
+        "4.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.pickby",
+      "versions": [
+        "4.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.union",
+      "versions": [
+        "4.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lodash.uniq",
+      "versions": [
+        "4.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "long",
+      "versions": [
+        "5.3.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "loupe",
+      "versions": [
+        "3.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "lru-cache",
+      "versions": [
+        "10.4.3",
+        "11.3.6",
+        "5.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "luxon",
+      "versions": [
+        "3.7.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "magic-string",
+      "versions": [
+        "0.30.21"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "magicast",
+      "versions": [
+        "0.3.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mailparser",
+      "versions": [
+        "3.9.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "make-dir",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "markdown-it",
+      "versions": [
+        "14.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "marked",
+      "versions": [
+        "15.0.12"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "matcher",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "math-intrinsics",
+      "versions": [
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mdurl",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "media-typer",
+      "versions": [
+        "0.3.0",
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "merge-descriptors",
+      "versions": [
+        "1.0.3",
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "methods",
+      "versions": [
+        "1.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mime-db",
+      "versions": [
+        "1.52.0",
+        "1.54.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mime-types",
+      "versions": [
+        "2.1.35",
+        "3.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mime",
+      "versions": [
+        "1.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mimic-response",
+      "versions": [
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "minimalistic-assert",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "minimatch",
+      "versions": [
+        "10.2.5",
+        "3.1.5",
+        "5.1.9",
+        "9.0.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "minimist",
+      "versions": [
+        "1.2.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "minipass",
+      "versions": [
+        "7.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "minizlib",
+      "versions": [
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mkdirp-classic",
+      "versions": [
+        "0.5.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "mkdirp",
+      "versions": [
+        "0.5.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "module-details-from-path",
+      "versions": [
+        "1.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ms",
+      "versions": [
+        "2.0.0",
+        "2.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "msgpackr-extract",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "msgpackr",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "nanoid",
+      "versions": [
+        "3.3.12",
+        "5.1.15"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "napi-build-utils",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "natural-compare",
+      "versions": [
+        "1.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "negotiator",
+      "versions": [
+        "0.6.3",
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "neo-async",
+      "versions": [
+        "2.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-abi",
+      "versions": [
+        "3.92.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-abort-controller",
+      "versions": [
+        "3.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-addon-api",
+      "versions": [
+        "8.8.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-cron",
+      "versions": [
+        "3.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-domexception",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-edge-tts",
+      "versions": [
+        "1.2.10"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-fetch",
+      "versions": [
+        "2.7.0",
+        "3.3.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-gyp-build-optional-packages",
+      "versions": [
+        "5.2.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-gyp-build",
+      "versions": [
+        "4.8.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "node-releases",
+      "versions": [
+        "2.0.44"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "nodemailer",
+      "versions": [
+        "7.0.13",
+        "8.0.5",
+        "8.0.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "normalize-path",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "nth-check",
+      "versions": [
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "object-assign",
+      "versions": [
+        "4.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "object-inspect",
+      "versions": [
+        "1.13.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "object-keys",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "on-exit-leak-free",
+      "versions": [
+        "2.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "on-finished",
+      "versions": [
+        "2.4.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "once",
+      "versions": [
+        "1.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "onnxruntime-common",
+      "versions": [
+        "1.24.0-dev.20251116-b39e144322",
+        "1.24.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "onnxruntime-node",
+      "versions": [
+        "1.24.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "onnxruntime-web",
+      "versions": [
+        "1.26.0-dev.20260416-b7804b056c"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "openai",
+      "versions": [
+        "6.26.0",
+        "6.38.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "openclaw",
+      "versions": [
+        "2026.5.22"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "optionator",
+      "versions": [
+        "0.9.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-limit",
+      "versions": [
+        "2.3.0",
+        "3.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-locate",
+      "versions": [
+        "4.1.0",
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-queue",
+      "versions": [
+        "8.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-retry",
+      "versions": [
+        "4.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-timeout",
+      "versions": [
+        "6.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "p-try",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "package-json-from-dist",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pako",
+      "versions": [
+        "1.0.11"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "parent-module",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "parseley",
+      "versions": [
+        "0.12.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "parseurl",
+      "versions": [
+        "1.3.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "partial-json",
+      "versions": [
+        "0.1.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-exists",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-expression-matcher",
+      "versions": [
+        "1.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-is-absolute",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-key",
+      "versions": [
+        "3.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-parse",
+      "versions": [
+        "1.0.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-scurry",
+      "versions": [
+        "1.11.1",
+        "2.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "path-to-regexp",
+      "versions": [
+        "0.1.13",
+        "8.4.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pathe",
+      "versions": [
+        "2.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pathval",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pdfjs-dist",
+      "versions": [
+        "5.7.284"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "peberminta",
+      "versions": [
+        "0.9.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pg-int8",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pg-protocol",
+      "versions": [
+        "1.14.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pg-types",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "picocolors",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "picomatch",
+      "versions": [
+        "4.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pino-abstract-transport",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pino-pretty",
+      "versions": [
+        "13.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pino-std-serializers",
+      "versions": [
+        "7.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pino",
+      "versions": [
+        "10.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pkce-challenge",
+      "versions": [
+        "5.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "platform",
+      "versions": [
+        "1.3.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "playwright-core",
+      "versions": [
+        "1.60.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "playwright",
+      "versions": [
+        "1.60.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pngjs",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "postcss",
+      "versions": [
+        "8.5.14"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "postgres-array",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "postgres-bytea",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "postgres-date",
+      "versions": [
+        "1.0.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "postgres-interval",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pptxgenjs",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "prebuild-install",
+      "versions": [
+        "7.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "prelude-ls",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "process-nextick-args",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "process-warning",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "proper-lockfile",
+      "versions": [
+        "4.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "protobufjs",
+      "versions": [
+        "7.6.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "proxy-addr",
+      "versions": [
+        "2.0.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "proxy-from-env",
+      "versions": [
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "pump",
+      "versions": [
+        "3.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "punycode.js",
+      "versions": [
+        "2.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "punycode",
+      "versions": [
+        "2.3.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "qrcode-terminal",
+      "versions": [
+        "0.12.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "qrcode",
+      "versions": [
+        "1.5.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "qs",
+      "versions": [
+        "6.15.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "queue",
+      "versions": [
+        "6.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "quick-format-unescaped",
+      "versions": [
+        "4.0.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "quickjs-wasi",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "range-parser",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "raw-body",
+      "versions": [
+        "2.5.3",
+        "3.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "rc",
+      "versions": [
+        "1.2.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "react-dom",
+      "versions": [
+        "19.2.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "react-refresh",
+      "versions": [
+        "0.17.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "react",
+      "versions": [
+        "19.2.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "readable-stream",
+      "versions": [
+        "2.3.8",
+        "3.6.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "readdir-glob",
+      "versions": [
+        "1.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "readdirp",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "real-require",
+      "versions": [
+        "0.2.0",
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "redis-errors",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "redis-parser",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "require-directory",
+      "versions": [
+        "2.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "require-from-string",
+      "versions": [
+        "2.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "require-in-the-middle",
+      "versions": [
+        "7.5.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "require-main-filename",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "resolve-from",
+      "versions": [
+        "4.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "resolve",
+      "versions": [
+        "1.22.12"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "retry",
+      "versions": [
+        "0.12.0",
+        "0.13.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "rimraf",
+      "versions": [
+        "2.7.1",
+        "6.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "roarr",
+      "versions": [
+        "2.15.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "rollup",
+      "versions": [
+        "4.60.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "router",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "safe-buffer",
+      "versions": [
+        "5.1.2",
+        "5.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "safe-stable-stringify",
+      "versions": [
+        "2.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "safer-buffer",
+      "versions": [
+        "2.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sax",
+      "versions": [
+        "1.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "saxes",
+      "versions": [
+        "5.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "scheduler",
+      "versions": [
+        "0.27.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "section-matter",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "secure-json-parse",
+      "versions": [
+        "4.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "selderee",
+      "versions": [
+        "0.11.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "semver-compare",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "semver",
+      "versions": [
+        "6.3.1",
+        "7.8.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "send",
+      "versions": [
+        "0.19.2",
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "serialize-error",
+      "versions": [
+        "7.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "serve-static",
+      "versions": [
+        "1.16.3",
+        "2.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "set-blocking",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "setimmediate",
+      "versions": [
+        "1.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "setprototypeof",
+      "versions": [
+        "1.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sharp",
+      "versions": [
+        "0.34.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "shebang-command",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "shebang-regex",
+      "versions": [
+        "3.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "shimmer",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "side-channel-list",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "side-channel-map",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "side-channel-weakmap",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "side-channel",
+      "versions": [
+        "1.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "siginfo",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "signal-exit",
+      "versions": [
+        "3.0.7",
+        "4.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "simple-concat",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "simple-get",
+      "versions": [
+        "4.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sisteransi",
+      "versions": [
+        "1.0.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "smart-buffer",
+      "versions": [
+        "4.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "socks",
+      "versions": [
+        "2.8.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sonic-boom",
+      "versions": [
+        "4.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "source-map-js",
+      "versions": [
+        "1.2.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "source-map-support",
+      "versions": [
+        "0.5.21"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "source-map",
+      "versions": [
+        "0.6.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "split2",
+      "versions": [
+        "4.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sprintf-js",
+      "versions": [
+        "1.0.3",
+        "1.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec-darwin-arm64",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec-darwin-x64",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec-linux-arm64",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec-linux-x64",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec-windows-x64",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "sqlite-vec",
+      "versions": [
+        "0.1.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "stackback",
+      "versions": [
+        "0.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "standard-as-callback",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "statuses",
+      "versions": [
+        "2.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "std-env",
+      "versions": [
+        "3.10.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "string-width",
+      "versions": [
+        "4.2.3",
+        "5.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "string_decoder",
+      "versions": [
+        "1.1.1",
+        "1.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "strip-ansi",
+      "versions": [
+        "6.0.1",
+        "7.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "strip-bom-string",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "strip-json-comments",
+      "versions": [
+        "2.0.1",
+        "3.1.1",
+        "5.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "strnum",
+      "versions": [
+        "2.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "strtok3",
+      "versions": [
+        "10.3.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "supports-color",
+      "versions": [
+        "7.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "supports-preserve-symlinks-flag",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tar-fs",
+      "versions": [
+        "2.1.4"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tar-stream",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tar",
+      "versions": [
+        "7.5.13",
+        "7.5.15"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "test-exclude",
+      "versions": [
+        "7.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "thread-stream",
+      "versions": [
+        "4.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinybench",
+      "versions": [
+        "2.9.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinyexec",
+      "versions": [
+        "0.3.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinyglobby",
+      "versions": [
+        "0.2.16"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinypool",
+      "versions": [
+        "1.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinyrainbow",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tinyspy",
+      "versions": [
+        "3.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tlds",
+      "versions": [
+        "1.261.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tmp",
+      "versions": [
+        "0.2.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "toidentifier",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "token-types",
+      "versions": [
+        "6.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tokenjuice",
+      "versions": [
+        "0.7.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tr46",
+      "versions": [
+        "0.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "traverse",
+      "versions": [
+        "0.3.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tree-sitter-bash",
+      "versions": [
+        "0.25.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ts-algebra",
+      "versions": [
+        "2.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ts-api-utils",
+      "versions": [
+        "2.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tslib",
+      "versions": [
+        "2.8.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tslog",
+      "versions": [
+        "4.10.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "tunnel-agent",
+      "versions": [
+        "0.6.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "type-check",
+      "versions": [
+        "0.4.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "type-fest",
+      "versions": [
+        "0.13.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "type-is",
+      "versions": [
+        "1.6.18",
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "typebox",
+      "versions": [
+        "1.1.38"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "typescript-eslint",
+      "versions": [
+        "8.62.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "typescript",
+      "versions": [
+        "5.9.3",
+        "6.0.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uc.micro",
+      "versions": [
+        "2.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uglify-js",
+      "versions": [
+        "3.19.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uhyphen",
+      "versions": [
+        "0.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uint8array-extras",
+      "versions": [
+        "1.5.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "undici-types",
+      "versions": [
+        "6.21.0",
+        "7.24.6"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "undici",
+      "versions": [
+        "8.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "unpipe",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "unzipper",
+      "versions": [
+        "0.10.14"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "update-browserslist-db",
+      "versions": [
+        "1.2.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uri-js",
+      "versions": [
+        "4.4.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "util-deprecate",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "utils-merge",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "uuid",
+      "versions": [
+        "8.3.2",
+        "9.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "vary",
+      "versions": [
+        "1.1.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "vite-node",
+      "versions": [
+        "3.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "vite",
+      "versions": [
+        "6.4.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "vitest",
+      "versions": [
+        "3.1.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": true
+    },
+    {
+      "name": "web-push",
+      "versions": [
+        "3.6.7"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "web-streams-polyfill",
+      "versions": [
+        "3.3.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "web-tree-sitter",
+      "versions": [
+        "0.26.9"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "webidl-conversions",
+      "versions": [
+        "3.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "whatwg-url",
+      "versions": [
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "which-module",
+      "versions": [
+        "2.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "which",
+      "versions": [
+        "2.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "why-is-node-running",
+      "versions": [
+        "2.3.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "word-wrap",
+      "versions": [
+        "1.2.5"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "wordwrap",
+      "versions": [
+        "1.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "wrap-ansi",
+      "versions": [
+        "6.2.0",
+        "7.0.0",
+        "8.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "wrappy",
+      "versions": [
+        "1.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "ws",
+      "versions": [
+        "8.20.1",
+        "8.21.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "xml-js",
+      "versions": [
+        "1.6.11"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "xml-naming",
+      "versions": [
+        "0.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "xml",
+      "versions": [
+        "1.0.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "xmlchars",
+      "versions": [
+        "2.2.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "xtend",
+      "versions": [
+        "4.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "y18n",
+      "versions": [
+        "4.0.3",
+        "5.0.8"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "yallist",
+      "versions": [
+        "3.1.1",
+        "5.0.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "yaml",
+      "versions": [
+        "2.9.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "yargs-parser",
+      "versions": [
+        "18.1.3",
+        "21.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "yargs",
+      "versions": [
+        "15.4.1",
+        "17.7.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "yocto-queue",
+      "versions": [
+        "0.1.0"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "zip-stream",
+      "versions": [
+        "4.1.1"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "zod-to-json-schema",
+      "versions": [
+        "3.25.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "zod-validation-error",
+      "versions": [
+        "4.0.2"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    },
+    {
+      "name": "zod",
+      "versions": [
+        "3.25.76",
+        "4.4.3"
+      ],
+      "integrityHashes": [],
+      "hasBuildScript": false,
+      "isDirect": false
+    }
+  ]
+}

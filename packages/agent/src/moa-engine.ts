@@ -531,7 +531,7 @@ export class MoaEngine {
       // ── 子会话预算隔离（2026-10-18，对齐 hermes subagent 预算语义）──
       // MoA 各阶段（proposer/aggregator/synthesizer）都是「子 agent」——
       // 用 subsession_ 前缀的独立 sessionId，让它们吃 DEFAULT_CHILD_BUDGET
-      // （50）而不是父配置的 maxIterations，避免与主对话会话共用/互耗预算。
+      // （300）而不是父配置的 maxIterations，避免与主对话会话共用/互耗预算。
       // 前缀与 agent-model-executor.isSubagentSessionId 的判定保持一致。
       ctx.sessionId = `subsession_moa-${Date.now()}-${++moaSessionSeq}`;
       const res = await executor.chat(prompt, ctx);

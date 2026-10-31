@@ -8,12 +8,12 @@ describe("IterationBudget", () => {
     budget = new IterationBudget(10);
   });
 
-  it("应使用默认父 agent 预算 90", () => {
-    expect(DEFAULT_PARENT_BUDGET).toBe(90);
+  it("应使用默认父 agent 预算 300", () => {
+    expect(DEFAULT_PARENT_BUDGET).toBe(300);
   });
 
-  it("应使用默认子 agent 预算 50", () => {
-    expect(DEFAULT_CHILD_BUDGET).toBe(50);
+  it("应使用默认子 agent 预算 300", () => {
+    expect(DEFAULT_CHILD_BUDGET).toBe(300);
   });
 
   it("consume 应返回 true 直到预算耗尽", async () => {
