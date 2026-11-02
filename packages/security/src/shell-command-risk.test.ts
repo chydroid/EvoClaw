@@ -97,6 +97,39 @@ describe("assessShellCommand — blocked（注入信号，硬拦不接受审批�
   });
 });
 
+describe("assessShellCommand — 安全换行（heredoc / 引号内多行）", () => {
+  it("引号 heredoc（<<'EOF' ... EOF）中的换行是安全的", () => {
+    const cmd = "python3 <<'EOF'\nprint('hello')\nprint('world')\nEOF";
+    expect(assessShellCommand(cmd).level).not.toBe("blocked");
+  });
+
+  it("双引号 heredoc（<<\"EOF\" ... EOF）中的换行是安全的", () => {
+    const cmd = 'python3 <<"EOF"\nprint("hello")\nEOF';
+    expect(assessShellCommand(cmd).level).not.toBe("blocked");
+  });
+
+  it("引号内多行字符串（python3 -c）的换行是安全的", () => {
+    const cmd = 'python3 -c "import os\nprint(os.getcwd())"';
+    expect(assessShellCommand(cmd).level).not.toBe("blocked");
+  });
+
+  it("单引号内多行字符串的换行是安全的", () => {
+    const cmd = "echo 'line1\nline2\nline3'";
+    expect(assessShellCommand(cmd).level).not.toBe("blocked");
+  });
+
+  it("引号外换行仍被硬拦", () => {
+    expect(assessShellCommand("ls\nrm -rf /").rule).toBe("newline_injection");
+    expect(assessShellCommand("echo foo\nbar").level).toBe("blocked");
+  });
+
+  it("heredoc 内的 rm -rf / 仍被 critical 捕获", () => {
+    // heredoc 内容虽剥离了换行注入检查，但 rm -rf / 本身是 critical
+    const cmd = "python3 <<'EOF'\nimport os\nos.system('rm -rf /')\nEOF";
+    expect(assessShellCommand(cmd).level).toBe("critical");
+  });
+});
+
 describe("assessShellCommand — caution（放行但标记）", () => {
   it("相对路径递归删除判为 caution 而非 critical", () => {
     const a = assessShellCommand("rm -rf ./build");

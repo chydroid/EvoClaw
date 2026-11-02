@@ -80,6 +80,45 @@ const CAUTION_RULES: Array<{ id: string; re: RegExp; reason: string }> = [
   { id: "process_signal", re: /\bkill\s+-\d|\bkillall\b|\btaskkill\b/i, reason: "发送信号终止进程" },
 ];
 
+/**
+ * 检测命令中的换行是否"安全"（位于 heredoc 或引号内）。
+ * 安全换行是数据传递，不是命令注入——模型大量使用 `python3 <<'EOF' ... EOF`
+ * 或 `python3 -c "多行\n脚本"` 传数据，这些应放行。
+ * 只有引号/heredoc **之外**的换行才可能是命令注入（`echo foo\nrm -rf /`）。
+ *
+ * 仅剥离带引号的 heredoc 定界符（<<'EOF' / <<"EOF"），未引号定界符
+ * （<<EOF）仍会被 shell 展开，其中的命令替换应保留检查。
+ */
+function hasOnlySafeNewlines(command: string): boolean {
+  // 剥离引号 heredoc 内容：<<'EOF' ... EOF / <<"EOF" ... EOF
+  const stripped = command.replace(
+    /<<['"](\w+)['"][\r\n]([\s\S]*?)[\r\n]\1/g,
+    " <<HEREDOC>",
+  );
+  // 追踪引号状态：引号内的换行是安全的
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < stripped.length; i++) {
+    const ch = stripped[i];
+    if (ch === "\\" && (inSingle || inDouble)) {
+      i++; // 跳过转义字符
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if ((ch === "\n" || ch === "\r") && !inSingle && !inDouble) {
+      return false; // 不安全换行（引号外）
+    }
+  }
+  return true;
+}
+
 /** 对单条命令做风险分级。永不抛出。 */
 export function assessShellCommand(command: string): ShellRiskAssessment {
   if (typeof command !== "string" || command.trim() === "") {
@@ -89,7 +128,15 @@ export function assessShellCommand(command: string): ShellRiskAssessment {
 
   // 1. 注入特征优先：攻击信号不接受审批
   for (const rule of INJECTION_RULES) {
-    if (rule.re.test(cmd)) {
+    if (rule.id === "newline_injection") {
+      // ★ 2026-11-02 修复：仅拦截引号/heredoc 之外的换行
+      // 旧规则拦截所有换行，误杀 heredoc（python3 <<'EOF' ... EOF）和
+      // 引号内多行字符串（python3 -c "行1\n行2"），模型被迫改用
+      // file_write+execute_code 绕行，浪费轮次与 token。
+      if (!hasOnlySafeNewlines(cmd)) {
+        return { level: "blocked", reason: rule.reason, rule: rule.id };
+      }
+    } else if (rule.re.test(cmd)) {
       return { level: "blocked", reason: rule.reason, rule: rule.id };
     }
   }
