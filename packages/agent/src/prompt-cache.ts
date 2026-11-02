@@ -153,13 +153,11 @@ export function applyAnthropicCacheControl(
     }
   }
 
-  // ── 断点 2-4：volatile 区域之前的最后 3 条非 system 消息（history 尾部） ──
-  // 旧实现把断点放在最早 3 条非 system 消息上——仅当易变内容位于 history
-  // 之后时才成立。P0-5 布局 [sys, history..., skills?, tail?, user] 下，
-  // 最后 3 条非 system 消息（排除末尾 user）即 history 尾部——它们是逐轮
-  // 字节不变的稳定前缀，断点可稳定命中，缓存覆盖 system + 几乎全部 history。
-  // history 不足 3 条时，断点只挂在实际存在的 history 尾部消息上（少挂几条），
-  // 不会顺延给 skills/tail——它们是 system 角色，本步只遍历非 system 消息。
+  // ── 断点 2-4：最后 3 条非 system 消息（history 尾部） ──
+  // P0-7 布局 [sys, skills?, tail?, history..., user] 下，skills/tail 为 system
+  // 角色不参与本步遍历，最后 3 条非 system 消息（排除末尾 user）即 history 尾部
+  // ——它们是逐轮字节不变的稳定前缀，断点可稳定命中，缓存覆盖 system + 几乎全部
+  // history。history 不足 3 条时，断点只挂在实际存在的 history 尾部消息上（少挂几条）。
   // 注意：**末尾 user 消息永远不挂断点**（逐轮必变，挂上只是浪费槽位）。
   const nonSysIndices: number[] = [];
   for (let i = 0; i < result.length; i++) {

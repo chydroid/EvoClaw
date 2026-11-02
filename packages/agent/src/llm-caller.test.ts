@@ -618,18 +618,18 @@ describe("P1-4 applyAnthropicCacheControl — 稳定段拆分断点", () => {
   });
 });
 
-describe("P0-5 applyAnthropicCacheControl — volatile 区域前 history 尾部断点", () => {
-  // P0-5 布局：[sys_frozen, ...history, skills?, tail?, user]
-  // 断点 2-4 落在 volatile 区域（skills/tail/user）之前的最后 3 条非 system 消息。
+describe("P0-7 applyAnthropicCacheControl — 新布局下 history 尾部断点", () => {
+  // P0-7 布局：[sys_frozen, skills?, tail?, ...history, user]
+  // 断点 2-4 落在最后 3 条非 system 消息（history 尾部，排除末尾 user）。
   const layoutMsgs = () => [
     { role: "system", content: "SYS_FROZEN" },
+    { role: "system", content: "SKILLS_SECTION" },
+    { role: "system", content: "DYNAMIC_TAIL" },
     { role: "user", content: "h1" },
     { role: "assistant", content: "a1" },
     { role: "user", content: "h2" },
     { role: "assistant", content: "a2" },
     { role: "user", content: "h3" },
-    { role: "system", content: "SKILLS_SECTION" },
-    { role: "system", content: "DYNAMIC_TAIL" },
     { role: "user", content: "current-question" },
   ];
 
@@ -637,13 +637,14 @@ describe("P0-5 applyAnthropicCacheControl — volatile 区域前 history 尾部�
     const r = applyAnthropicCacheControl(layoutMsgs());
     // system 断点
     expect(r[0].cache_control).toEqual({ type: "ephemeral" });
-    // history 尾部（索引 4=a2, 5=h3, 3=h2）挂断点
-    expect(r[5].cache_control).toEqual({ type: "ephemeral" }); // h3
-    expect(r[4].cache_control).toEqual({ type: "ephemeral" }); // a2
-    expect(r[3].cache_control).toEqual({ type: "ephemeral" }); // h2
-    // volatile 区域（skills=6, tail=7, user=8）不带断点
-    expect(r[6].cache_control).toBeUndefined();
-    expect(r[7].cache_control).toBeUndefined();
+    // history 尾部（索引 7=h3, 6=a2, 5=h2）挂断点
+    expect(r[7].cache_control).toEqual({ type: "ephemeral" }); // h3
+    expect(r[6].cache_control).toEqual({ type: "ephemeral" }); // a2
+    expect(r[5].cache_control).toEqual({ type: "ephemeral" }); // h2
+    // volatile 区域（skills=1, tail=2）不带断点
+    expect(r[1].cache_control).toBeUndefined();
+    expect(r[2].cache_control).toBeUndefined();
+    // 末尾 user 不带断点
     expect(r[8].cache_control).toBeUndefined();
   });
 

@@ -3796,19 +3796,20 @@ export interface TryCallLLMOptions {
   rawUserMessage?: string;
   systemPrompt: string;
   /**
-   * ★ P0-5（2026-10-27）：skills 元数据段（"## Available Capabilities" 标题 +
+   * ★ P0-7（2026-11-02）：skills 元数据段（"## Available Capabilities" 标题 +
    * 工具说明 + web 策略 + <available_skills> 列表）。由 agent-model-executor 构建后传入，
-   * 作为独立 system 消息放在 **history 之后、动态尾之前**——不再拼进 frozen system
-   * 前缀。skill 集合变化（安装/卸载/curator 改描述）只击穿该消息之后的字节，
-   * frozen + history 缓存不受影响。空串 = 无 skills 段。
+   * 作为独立 system 消息放在 **首条 system 之后、history 之前**的固定位置。
+   * 跨轮布局纯追加（history 增长只在末尾），前缀缓存逐轮不击穿。
+   * 空串 = 无 skills 段。
    */
   skillsMessage?: string;
   /**
-   * ★ P0-5（2026-10-27）：动态尾（plan/chain/stale-context/记忆检索等易变
-   * 内容）。非空时作为独立 system 消息置于 **history 之后、当前 user 消息之前**。
-   * 旧位置（index 1，frozen 与 history 之间）使逐轮变化内容毒化 history 前缀，
-   * 导致 history 永不命中缓存；移到 history 之后，跨轮公共前缀 = frozen + 全部
-   * history，provider 前缀缓存覆盖除 tail + user 外的全部 token。
+   * ★ P0-7（2026-11-02）：动态尾（plan/chain/stale-context/记忆检索等易变
+   * 内容）。非空时作为独立 system 消息置于 **skills 段之后、history 之前**的固定位置。
+   * P0-5 曾置于 history 之后，但每轮位置位移（从 history 前移到 history 后）
+   * 击穿前缀缓存；P0-7 固定前置，跨轮公共前缀 = frozen + ephemeral + skills + tail +
+   * 全部 history（追加式增长）。内容会话内高度稳定（skills 哈希 4 轮不变、tail 3 轮不变），
+   * 变化仅 ~每 4 轮一次（记忆刷新）。
    */
   dynamicSystemTail?: string;
   installedSkills: unknown[];
@@ -4108,7 +4109,7 @@ export async function tryCallLLM(
           })();
 
       // 易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/记忆召回）
-      // 全部放在 history 之后、当前 user 消息之前（见 P0-5 布局说明）。
+      // 全部放在 history 之前的固定位置（见 P0-7 布局说明）。
       const dynamicNotice = searchPreDone
         ? `**Search has already been performed.** Skip searching and go directly to analysis or code execution.\n` +
           PromptRegistry.getInstance().format("search.already_completed", {})
@@ -4200,11 +4201,16 @@ export async function tryCallLLM(
       // separation, bootstrap files, token-aware truncation), use its messages
       // instead of building them manually. This ensures consistent context management.
       //
-      // ★ P0-5 布局：[sys_frozen, ...history, sys_skills?, sys_tail?, user]
-      // 易变内容（skills 段 + 动态尾）全部位于 history 之后、当前 user 消息之前。
-      // 跨轮公共前缀 = frozen + 全部 history → provider 前缀缓存覆盖除
-      // skills/tail/user 外的全部 token；旧布局把逐轮变化的 tail 插在 history
-      // 之前，导致 history 永不进缓存（缓存覆盖仅 frozen 前缀）。
+      // ★ P0-7 布局（2026-11-02）：[sys_frozen, sys_ephemeral, sys_skills?, sys_tail?, ...history, user]
+      // 易变内容（skills 段 + 动态尾）置于 history **之前**的固定位置。
+      // 跨轮公共前缀 = frozen + ephemeral + skills + tail + 全部 history（追加式增长）
+      // → provider 前缀缓存逐轮只 miss 新增的 user/assistant/tool 消息。
+      // P0-5 曾把易变内容放在 history 之后，但每轮 skills/tail 从「history 前」位移到
+      // 「history 后」，字节序列在 history 起点处分叉 → 每轮首调用前缀缓存击穿
+      // （实测 4 轮探针：轮首 hit 94%→72%→34%、93%→71%、95%→33%，轮内恢复 99%）。
+      // P0-7 改为固定前置：轮边界纯追加，hit 不再逐轮跌落。skills/tail 内容
+      // 会话内高度稳定（实测 skills 哈希 4 轮不变、tail 3 轮不变），变化仅 ~每 4 轮
+      // 一次（记忆刷新），代价远低于 P0-5 的逐轮位移。
       let messages: Array<LLMMessage>;
       if (deps.contextEngineResult) {
         // Use ContextEngine's pre-assembled messages (frozen system + truncated history +
@@ -4213,30 +4219,27 @@ export async function tryCallLLM(
           role: m.role,
           content: m.content,
         })) as Array<LLMMessage>;
-        // P0-5：skills 段与动态尾插入**最后一条 user 消息之前**（history 之后）。
+        // P0-7：skills 段与动态尾插入**首条 system 之后、history 之前**（固定位置）。
+        // CE messages[0] = frozen + ephemeral 合并体（applyAnthropicCacheControl
+        // 稍后拆成两条），故插入点为 index 1。
+        const volatileInsertIdx = 1;
         if (skillsMessage) {
-          const pos = lastIndexOfRole(messages, "user");
-          messages.splice(pos >= 0 ? pos : messages.length, 0, { role: "system", content: skillsMessage });
+          messages.splice(volatileInsertIdx, 0, { role: "system", content: skillsMessage });
         }
         if (dynamicSystemTail) {
-          const pos = lastIndexOfRole(messages, "user");
-          messages.splice(pos >= 0 ? pos : messages.length, 0, { role: "system", content: dynamicSystemTail });
+          messages.splice(volatileInsertIdx + (skillsMessage ? 1 : 0), 0, { role: "system", content: dynamicSystemTail });
         }
         process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
-        // Fallback: manual message assembly — ★ P0-5：history 先于易变内容。
+        // Fallback: manual message assembly — ★ P0-7：易变内容前置，history 在后。
         // stableSystemPrompt 追加 ephemeralSuffix（时区/平台），与 CE 路径
         // messages[0] = frozen + ephemeral 结构一致，两路径切换不失效缓存。
         messages = [
           { role: "system", content: stableSystemPrompt + ephemeralSuffix },
+          ...(skillsMessage ? [{ role: "system", content: skillsMessage }] : []),
+          ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
           ...history,
         ];
-        if (skillsMessage) {
-          messages.push({ role: "system", content: skillsMessage });
-        }
-        if (dynamicSystemTail) {
-          messages.push({ role: "system", content: dynamicSystemTail });
-        }
       }
 
       // ── ContextPruning: trim large tool results and clear old ones ──
@@ -4251,11 +4254,13 @@ export async function tryCallLLM(
       // 字节稳定，缓存前缀不再漂移。
       //
       // history 在 messages 中的切片边界（CE 路径 history 可能被 CE 截断为尾部）：
-      const historyStartIdx = 1;
+      // P0-7 布局 [sys, skills?, tail?, ...history, user?] 下 history 起点 =
+      // 1 + volatileTailCount（跳过 system + 易变段）。
       const volatileTailCount = (skillsMessage ? 1 : 0) + (dynamicSystemTail ? 1 : 0);
+      const historyStartIdx = 1 + volatileTailCount;
       const historyEndIdx = deps.contextEngineResult
-        ? messages.length - volatileTailCount - 1 // CE: 末尾还有当前 user 消息
-        : 1 + history.length;                      // 非 CE: user 消息尚未 push
+        ? messages.length - 1 // CE: 末尾还有当前 user 消息
+        : 1 + volatileTailCount + history.length;  // 非 CE: user 消息尚未 push
 
       // ── ToolOutputPruner: 3-pass 工具输出裁剪（对标 Hermes _prune_old_tool_results）──
       // Pass 1: 去重（MD5 哈希，保留最新一份）
@@ -4555,12 +4560,9 @@ export async function tryCallLLM(
 
       let conversationMessages = [...messages];
 
-      // ★ P0-5：记录 volatile 区域起始索引（skills 消息位置；无 skills 段时为
-      // 动态尾位置；再无则为 user 消息位置）。布局：[sys, ...history, skills?, tail?, user]
-      deps.volatileSystemStartIdx = conversationMessages.length
-        - 1 // 末尾 user 消息
-        - (skillsMessage ? 1 : 0)
-        - (dynamicSystemTail ? 1 : 0);
+      // ★ P0-7：记录 volatile 区域起始索引。布局 [sys, skills?, tail?, ...history, user]
+      // 下易变 system 消息固定在 index 1-2，volatileStartIdx = 1（有任一易变段时）。
+      deps.volatileSystemStartIdx = skillsMessage || dynamicSystemTail ? 1 : -1;
 
       // ★ 2026-10-26 修复：创造性任务的模型首次响应太短（589 chars），
       //   触发 auto-continuation 额外轮次（+106s），总时间超 300s。
@@ -5002,12 +5004,12 @@ export async function tryCallLLM(
           if (classified.shouldCompact) {
             process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             await compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
-            // ★ P0-5：与主路径同布局——history 在前，skills 段 + 动态尾在后。
+            // ★ P0-7：与主路径同布局——易变内容前置，history 在后。
             conversationMessages = [
               { role: "system", content: stableSystemPrompt + ephemeralSuffix },
-              ...(deps.conversationHistory.get(sessionId) || []),
               ...(skillsMessage ? [{ role: "system", content: skillsMessage }] : []),
               ...(dynamicSystemTail ? [{ role: "system", content: dynamicSystemTail }] : []),
+              ...(deps.conversationHistory.get(sessionId) || []),
             ];
             if (imageAtts && imageAtts.length > 0) {
               const retryParts: ChatContent[] = [];
@@ -5019,15 +5021,11 @@ export async function tryCallLLM(
             } else {
               conversationMessages.push({ role: "user", content: message });
             }
-            // ★ P0-5：重建后重新执行 Anthropic volatile system 合并（见主路径注释；
+            // ★ P0-7：重建后重新执行 Anthropic volatile system 合并（见主路径注释；
             // 必须在 user push 之后，合并目标是当前 user 消息）。
-            // 压缩会缩短 history → skills/tail 索引前移，须按重建后的布局重算
-            // volatileSystemStartIdx（否则合并漏掉 skills/tail 消息）。
+            // 易变段固定在 index 1-2，volatileSystemStartIdx 恒为 1（有任一易变段时）。
             if (providers.some((p) => p.provider === "anthropic")) {
-              deps.volatileSystemStartIdx = conversationMessages.length
-                - 1 // 末尾 user 消息
-                - (skillsMessage ? 1 : 0)
-                - (dynamicSystemTail ? 1 : 0);
+              deps.volatileSystemStartIdx = skillsMessage || dynamicSystemTail ? 1 : -1;
               conversationMessages = mergeVolatileSystemIntoUser(
                 conversationMessages,
                 deps.volatileSystemStartIdx,

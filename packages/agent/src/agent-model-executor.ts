@@ -2590,14 +2590,14 @@ export class AgentModelExecutor {
     // which provides frozen/ephemeral prompt separation, bootstrap file loading,
     // token-aware context truncation, and cache control annotations.
     //
-    // ★ P0-5：skills 段构建为**独立消息**（skillsMessage），不再拼进 CE frozen
+    // ★ P0-7：skills 段构建为**独立消息**（skillsMessage），不再拼进 CE frozen
     // 段（skillsContext）或 fallback 的 stableSystemPrompt 后缀——由 llm-caller
-    // 放在 history 之后、动态尾之前。skill 集合变化只击穿该消息之后的字节，
-    // frozen + history 缓存不受影响。构建时机在 CE 块外（两条路径都需要）。
+    // 放在首条 system 之后、history 之前的固定位置。跨轮布局纯追加，前缀缓存
+    // 逐轮不击穿。构建时机在 CE 块外（两条路径都需要）。
     // P1-1 Bot Mode：按当前会话路由到的 agent 过滤 skills 白名单（与旧
     // deps.buildSkillsPromptForRun 包装器行为一致）。
     const agentSkillAllowlist = this._agentSkillFilters.get(agentId);
-    // ★ P0-5：传入当前消息 + sessionId 启用 skill 按需选择（>阈值时相关性 + 粘性）。
+    // ★ P0-7：传入当前消息 + sessionId 启用 skill 按需选择（>阈值时相关性 + 粘性）。
     const skillsPrompt = await this.buildSkillsPromptForRun(agentSkillAllowlist, effectiveMessage, sessionId);
     const skillsMessage = skillsPrompt
       ? `## Available Capabilities\n\n### Tools\nYou have access to tools including: **web_search** (search the web for live information), **web_fetch** (fetch and extract content from web pages), **skill_manage** (execute installed skills like tavily-search, baidu-search), and many more.\n\n${PromptRegistry.getInstance().format("web.tool_strategy", {})}\n\n### Skills\nScan the available skills below. If one clearly applies, use skill_manage to invoke it. For search tasks, prefer **tavily-search** or **baidu-search** over generic web_search.\nOne skill up front max. Never guess or fabricate skill paths.\nWhen you need a skill's full instructions, call skill_view with level 2 before executing it.\nSkills not listed here can still be discovered via skill_list.\n${skillsPrompt}`
