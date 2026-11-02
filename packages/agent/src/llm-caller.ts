@@ -5459,7 +5459,7 @@ export async function tryCallLLM(
               });
               // 追加 nudge 消息，引导 LLM 基于工具结果回复
               conversationMessages.push(assistantMsg);
-              conversationMessages.push({
+              pendingTransient.push({
                 role: "user",
                 content: "工具已执行完毕，请根据以上工具执行结果回答我的问题。",
               });
@@ -6470,12 +6470,12 @@ export async function tryCallLLM(
               const reflectionResult = await deps.checkAndReflect(sessionId);
               if (reflectionResult) {
                 if (reflectionResult.shouldReplan) {
-                  conversationMessages.push({
+                  pendingTransient.push({
                     role: "system",
                     content: `[反思] ${reflectionResult.analysis}\n建议: ${reflectionResult.nextStepSuggestion || "重新规划任务"}`,
                   });
                 } else if (reflectionResult.shouldRetry && reflectionResult.retrySuggestion) {
-                  conversationMessages.push({
+                  pendingTransient.push({
                     role: "system",
                     content: `[反思] ${reflectionResult.analysis}\n重试建议: ${reflectionResult.retrySuggestion}`,
                   });
@@ -6491,7 +6491,7 @@ export async function tryCallLLM(
 
           // R1-3: 工具循环阻断检查（sequential 执行后）
           if (toolLoopHaltFlag) {
-            conversationMessages.push({
+            pendingTransient.push({
               role: "user",
               content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
             });
@@ -6501,7 +6501,7 @@ export async function tryCallLLM(
 
         // R1-3: 工具循环阻断检查（parallel 执行后）
         if (toolLoopHaltFlag && sequentialCalls.length === 0) {
-          conversationMessages.push({
+          pendingTransient.push({
             role: "user",
             content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
           });
