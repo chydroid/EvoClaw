@@ -4559,6 +4559,12 @@ export async function tryCallLLM(
       const isAction = hasActionIntentFn(message);
 
       let conversationMessages = [...messages];
+      // ★ P0-8：transient 消息不持久化到 history。
+      // nudge/warning/directive 等 mid-history 消息如果 push 到 conversationMessages，
+      // 其内容变化（round count/file paths/trigger reasons）会击穿前缀缓存，
+      // 影响后续所有调用。改为 transient 注入：只在当前 LLM 调用的消息数组末尾
+      // 追加，不写入 conversationMessages → 下一轮 history 保持纯追加式增长。
+      let pendingTransient: LLMMessage[] = [];
 
       // ★ P0-7：记录 volatile 区域起始索引。布局 [sys, skills?, tail?, ...history, user]
       // 下易变 system 消息固定在 index 1-2，volatileStartIdx = 1（有任一易变段时）。
@@ -4843,7 +4849,7 @@ export async function tryCallLLM(
         if (deps.getSteerMessage) {
           const steerMsg = deps.getSteerMessage(sessionId);
           if (steerMsg) {
-            conversationMessages.push({ role: "system", content: steerMsg });
+            pendingTransient.push({ role: "system", content: steerMsg });
           }
         }
 
@@ -4862,7 +4868,7 @@ export async function tryCallLLM(
         const tc: "auto" | "none" = isCreativeTask && successfulToolCalls >= 2 ? "none" : "auto";
         if (isCreativeTask && successfulToolCalls >= 2) {
           process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
-          conversationMessages.push({
+          pendingTransient.push({
             role: "user",
             content: PromptRegistry.getInstance().format("tool_loop.nudge_final_answer", {}),
           });
@@ -4887,7 +4893,12 @@ export async function tryCallLLM(
         //   调用后即触发 → 几乎每个编码轮都会翻转一次）。改为始终下发 tools +
         //   显式 tool_choice:"none"（见 callLLMOnce 注释）；个别网关若无视该指令
         //   仍返回 tool_calls，由下方 toolCallsNoneRefusals 兜底拒绝执行。
-        const result = await callLLMOnce(callProvider, conversationMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
+        // ★ P0-8：构造本轮调用的消息数组 = conversationMessages + pendingTransient。
+        // transient 消息（nudge/warning/directive）只影响当前调用，不写入 history。
+        // 下一轮 conversationMessages 保持纯追加式增长，前缀缓存不被 mid-history 变化击穿。
+        const callMessages = [...conversationMessages, ...pendingTransient];
+        pendingTransient = [];
+        const result = await callLLMOnce(callProvider, callMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
 
         if (!result) {
           consecutiveErrors++;
@@ -5132,11 +5143,11 @@ export async function tryCallLLM(
         const TOKEN_BUDGET = 1800000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
-          conversationMessages.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
+          pendingTransient.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
         }
         if (totalTokensUsed > TOKEN_BUDGET * 0.8 && totalTokensUsed <= TOKEN_BUDGET * 0.8 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget warning: ${totalTokensUsed}/${TOKEN_BUDGET} (80%) for session "${sessionId}"\n`);
-          conversationMessages.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_80", {}) });
+          pendingTransient.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_80", {}) });
         }
         if (totalTokensUsed > TOKEN_BUDGET) {
           process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.\n`);
@@ -5598,7 +5609,7 @@ export async function tryCallLLM(
                     `— kanban worker stopped without terminal board tool; nudging to complete\n`,
                   );
                   conversationMessages.push(assistantMsg);
-                  conversationMessages.push({ role: "user", content: kanbanNudge });
+                  pendingTransient.push({ role: "user", content: kanbanNudge });
                   if (finalReply) {
                     lastReplyBackup = finalReply;
                   }
@@ -5628,7 +5639,7 @@ export async function tryCallLLM(
                   thinkingSteps: trace.toJSON(),
                 });
                 conversationMessages.push(assistantMsg);
-                conversationMessages.push({ role: "user", content: nudge! });
+                pendingTransient.push({ role: "user", content: nudge! });
                 if (finalReply) {
                   lastReplyBackup = finalReply;
                   pendingVerificationReply = finalReply;
@@ -5697,7 +5708,7 @@ export async function tryCallLLM(
                 thinkingSteps: trace.toJSON(),
               });
               conversationMessages.push(assistantMsg);
-              conversationMessages.push({ role: "user", content: directive });
+              pendingTransient.push({ role: "user", content: directive });
               // 保留一份备份，防止续跑后产不出新回复时返回空
               if (finalReply) lastReplyBackup = finalReply;
               // 清空本轮 finalReply：避免下一轮模型若返回空内容时误用旧的"停顿版"回复
