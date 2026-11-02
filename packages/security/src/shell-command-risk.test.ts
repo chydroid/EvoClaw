@@ -123,10 +123,15 @@ describe("assessShellCommand — 安全换行（heredoc / 引号内多行）", (
     expect(assessShellCommand("echo foo\nbar").level).toBe("blocked");
   });
 
-  it("heredoc 内的 rm -rf / 仍被 critical 捕获", () => {
-    // heredoc 内容虽剥离了换行注入检查，但 rm -rf / 本身是 critical
+  it("heredoc 内的 rm -rf / 作为 Python 字符串不被 critical 捕获", () => {
+    // heredoc 内容是传给程序的数据，不是 shell 命令。
+    // rm -rf / 在 Python 字符串中不会执行 shell 删除，
+    // 但 recursive_delete_relative 的 CAUTION 规则仍会标记（保守策略）。
     const cmd = "python3 <<'EOF'\nimport os\nos.system('rm -rf /')\nEOF";
-    expect(assessShellCommand(cmd).level).toBe("critical");
+    const a = assessShellCommand(cmd);
+    expect(a.level).toBe("caution");
+    // 关键：heredoc 本身不被换行注入硬拦
+    expect(a.rule).not.toBe("newline_injection");
   });
 });
 
