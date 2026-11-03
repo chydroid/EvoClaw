@@ -503,7 +503,7 @@ export class GatewayServer {
 
     this.protocolHandler.registerMethod("agent", async (params, client) => {
       const agentExecutor = this.registry.resolveService<{
-        execute(message: string, sessionId?: string): Promise<string>;
+        chat(message: string, context?: Record<string, unknown>): Promise<{ reply: string }>;
       }>("agentModelExecutor");
       if (!agentExecutor) {
         throw new Error("Agent executor not available");
@@ -512,8 +512,10 @@ export class GatewayServer {
       if (!message || typeof message !== "string") {
         throw new Error("message parameter is required");
       }
-      const result = await agentExecutor.execute(message, params.sessionId as string | undefined);
-      return { response: result };
+      const ctx: Record<string, unknown> = {};
+      if (params.sessionId) ctx.sessionId = params.sessionId;
+      const result = await agentExecutor.chat(message, ctx);
+      return { response: result.reply };
     });
 
     this.protocolHandler.registerMethod("message.send", async (params) => {

@@ -21,7 +21,14 @@ import { atomicWriteFileSync } from "@evoclaw/core";
 import type { MemoryEntry, MemorySearchQuery, MemorySearchResult } from "@evoclaw/core";
 
 /** 默认活动窗口轮次（1 轮 = 1 条 user 消息及其后的 assistant/tool 消息） */
-export const DEFAULT_WINDOW_ROUNDS = 10;
+/**
+ * 默认活动窗口轮数。
+ * ★ P0-9 缓存稳定化：从 10 提高到 20。
+ * 旧值 10 导致 >10 轮的会话每轮丢弃最老历史 → 请求前缀在丢弃边界处变化 →
+ * 所有下游缓存断点 miss。20 轮覆盖大多数会话，>20 轮的会话仍会丢弃
+ * （此时 compaction 通常先触发，属预期行为）。
+ */
+export const DEFAULT_WINDOW_ROUNDS = 20;
 
 /** 归档条目的 tag，便于按会话检索 */
 export const ARCHIVE_TAG = "session_archive";

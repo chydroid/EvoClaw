@@ -76,8 +76,8 @@ describe("computeKeepFromIndex", () => {
     expect(computeKeepFromIndex([], 10)).toBe(0);
   });
 
-  it("默认窗口为 10 轮", () => {
-    expect(DEFAULT_WINDOW_ROUNDS).toBe(10);
+  it("默认窗口为 20 轮", () => {
+    expect(DEFAULT_WINDOW_ROUNDS).toBe(20);
   });
 });
 

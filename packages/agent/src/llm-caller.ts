@@ -4110,11 +4110,20 @@ export async function tryCallLLM(
 
       // 易变成分（searchPreDone 提示 + 调用方传入的动态尾：计划/工具链/记忆召回）
       // 全部放在 history 之前的固定位置（见 P0-7 布局说明）。
-      const dynamicNotice = searchPreDone
-        ? `**Search has already been performed.** Skip searching and go directly to analysis or code execution.\n` +
-          PromptRegistry.getInstance().format("search.already_completed", {})
-        : "";
-      const dynamicSystemTail = [dynamicNotice, callerDynamicSystemTail || ""].filter(Boolean).join("");
+      // ★ P0-9：searchPreDone 提示改为 transient 注入（不进 tail）。
+      // 旧实现把提示拼进 dynamicSystemTail → 本轮 searchPreDone=true 有提示、
+      // 下轮 false 无提示 → tail 字节变化 → history 缓存在 tail 处断掉。
+      // 改为 transient：只在当前调用末尾追加，不写入 conversationMessages →
+      // tail 字节逐轮稳定。
+      let pendingTransient: LLMMessage[] = [];
+      if (searchPreDone) {
+        pendingTransient.push({
+          role: "system",
+          content: `**Search has already been performed.** Skip searching and go directly to analysis or code execution.\n` +
+            PromptRegistry.getInstance().format("search.already_completed", {}),
+        });
+      }
+      const dynamicSystemTail = callerDynamicSystemTail || "";
 
       const sessionPDeps = getSessionPersistenceDeps(deps);
 
@@ -4564,7 +4573,7 @@ export async function tryCallLLM(
       // 其内容变化（round count/file paths/trigger reasons）会击穿前缀缓存，
       // 影响后续所有调用。改为 transient 注入：只在当前 LLM 调用的消息数组末尾
       // 追加，不写入 conversationMessages → 下一轮 history 保持纯追加式增长。
-      let pendingTransient: LLMMessage[] = [];
+      // （pendingTransient 已在上方声明，searchPreDone 提示也走同一通道）
 
       // ★ P0-7：记录 volatile 区域起始索引。布局 [sys, skills?, tail?, ...history, user]
       // 下易变 system 消息固定在 index 1-2，volatileStartIdx = 1（有任一易变段时）。
@@ -6877,8 +6886,14 @@ export async function tryCallLLM(
           process.stderr.write(`[AgentModelExecutor] Session persistence failed: ${persistErr instanceof Error ? persistErr.message : String(persistErr)}\n`);
         }
 
+        // ★ P0-9 缓存稳定化：history 存**原始**用户消息，而非增强消息。
+        // 旧实现存 `message`（= finalEnhancedMessage，含搜索/新闻注入的 URL 优先级
+        // 提示等）→ 内存 history 与 transcript（存原始消息，agent-model-executor.ts:2021）
+        // 字节不一致 → 下轮从 transcript 重建后，同位置字节不同 → 请求前缀不连续 →
+        // 用户消息边界处缓存断裂。存原始消息后，内存与 transcript 逐字节一致，
+        // 前缀跨轮连续。
         const cleanHistory: SessionHistoryEntry[] = [
-          { role: "user", content: message },
+          { role: "user", content: rawUserMessage ?? message },
           { role: "assistant", content: finalReply },
         ];
         // ★ P0-5：末尾必须重新读取 conversationHistory。本轮剪枝写回（见上方

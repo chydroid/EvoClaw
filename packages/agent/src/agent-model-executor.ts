@@ -638,6 +638,20 @@ export class AgentModelExecutor {
   /** P0-4 缓存稳定化：skills prompt 字符串缓存（避免每次调用重新构建） */
   private _cachedSkillsPrompt: string | null = null;
   private _cachedSkillsPromptHash: string | null = null;
+  /**
+   * ★ P0-9 缓存稳定化：bootstrap 前缀按 sessionId 缓存。
+   * 旧实现每轮 buildSystemPrompt → bootstrapManager.getContext() 重读 6 个
+   * bootstrap 文件 → agent 按 AGENTS.md 指令自改文件后，冻结字节变化 →
+   * 全部 4 个缓存断点 miss。现按 session 缓存首读结果，agent 的修改在
+   * 下一 session 生效（长期记忆的合理延迟）。
+   */
+  private _bootstrapPrefixBySession = new Map<string, string>();
+  /**
+   * ★ P0-9 缓存稳定化：工具链匹配上下文按 session 粘性缓存。
+   * 旧实现每轮 findRelevantChain → 本轮命中、下轮不命中 → tail 字节变化 →
+   * history 缓存 miss。现首次命中后缓存，后续轮复用，保证 tail 字节稳定。
+   */
+  private _chainContextBySession = new Map<string, string>();
 
   /**
    * ★ P0-5（skill 按需加载）：已安装 skill > 阈值时，每轮只注入**相关性选中**
@@ -795,7 +809,7 @@ export class AgentModelExecutor {
 
     // ── 会话窗口化 + 长期记忆归档 ──
     // 解除"不限时长任务受最大上下文长度封顶"：活动上下文只保留最近
-    // windowRounds 轮（默认 10），更早轮次归档到长期记忆，需要时再检索读回。
+    // windowRounds 轮（默认 20），更早轮次归档到长期记忆，需要时再检索读回。
     this.sessionArchive = new SessionArchiveStore(
       this.runtimeOptions.storeDir || path.join(process.cwd(), "data")
     );
@@ -919,6 +933,8 @@ export class AgentModelExecutor {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.loadBootstrapFiles();
+    // ★ P0-9：workspace 变更后清空 bootstrap 前缀缓存（下一 session 重新读取）
+    this._bootstrapPrefixBySession.clear();
   }
 
   getWorkspacePath(): string {
@@ -1314,16 +1330,30 @@ export class AgentModelExecutor {
     this.providerStats.set(providerId, stats);
   }
 
-  buildSystemPrompt(promptMode?: PromptMode, context?: { skillsPrompt?: string; workspacePath?: string; bootstrapFiles?: Array<{ path: string; content: string }>; channel?: string }): string {
+  buildSystemPrompt(promptMode?: PromptMode, context?: { skillsPrompt?: string; workspacePath?: string; bootstrapFiles?: Array<{ path: string; content: string }>; channel?: string; sessionId?: string }): string {
     const toolNames = Array.from(this.registeredTools.keys());
     const mode = promptMode || "full";
 
     // Inject bootstrap context (AGENTS.md, SOUL.md, IDENTITY.md, etc.) at the top
+    // ★ P0-9：按 sessionId 缓存 bootstrap 前缀，避免逐轮重读磁盘导致冻结字节漂移。
     let bootstrapPrefix = "";
     if (this.bootstrapManager) {
       try {
-        const ctx = this.bootstrapManager.getContext();
-        bootstrapPrefix = this.bootstrapManager.buildSystemPromptInjection(ctx);
+        const sessionId = context?.sessionId;
+        if (sessionId) {
+          const cached = this._bootstrapPrefixBySession.get(sessionId);
+          if (cached !== undefined) {
+            bootstrapPrefix = cached;
+          } else {
+            const ctx = this.bootstrapManager.getContext();
+            bootstrapPrefix = this.bootstrapManager.buildSystemPromptInjection(ctx);
+            this._bootstrapPrefixBySession.set(sessionId, bootstrapPrefix);
+          }
+        } else {
+          // 无 sessionId（外部直接调用）：每次重读（不缓存）
+          const ctx = this.bootstrapManager.getContext();
+          bootstrapPrefix = this.bootstrapManager.buildSystemPromptInjection(ctx);
+        }
         if (bootstrapPrefix.trim()) {
           bootstrapPrefix += "\n\n---\n\n";
         }
@@ -1383,6 +1413,25 @@ export class AgentModelExecutor {
 
   private getCachedSkillNames(): Set<string> {
     return this._cachedSkillNames;
+  }
+
+  /**
+   * ★ P0-9 缓存稳定化：在 buildSystemPrompt 之前预填充 _cachedSkillNames。
+   * 旧实现 _cachedSkillNames 初始为空 → 首轮 buildSystemPrompt 用空集合过滤
+   * skills（只匹配 description.includes("skill")）→ 次轮起匹配名称 → frozen
+   * 字节不同 → 每会话一次性 frozen miss。现首轮前预填，消除漂移。
+   */
+  private async prewarmSkillNames(): Promise<void> {
+    if (this._cachedSkillNames.size > 0) return;
+    const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ name: string }>> }>("skillManager");
+    if (skillManager) {
+      try {
+        const installed = await skillManager.listSkills();
+        if (Array.isArray(installed)) {
+          this._cachedSkillNames = new Set(installed.map((s) => s.name));
+        }
+      } catch { /* best-effort */ }
+    }
   }
 
   async buildSkillsPromptForRun(allowedSkillNames?: string[], message?: string, sessionId?: string): Promise<string> {
@@ -1578,6 +1627,8 @@ export class AgentModelExecutor {
       this.sessionAbortControllers.delete(sessionId);
       this.sessionToolGroups.delete(sessionId);
       this._tailMemoryCache.delete(sessionId);
+      this._bootstrapPrefixBySession.delete(sessionId);
+      this._chainContextBySession.delete(sessionId);
     } else {
       this.conversationHistory.clear();
       this.sequentialThinkingHistory.clear();
@@ -1592,6 +1643,8 @@ export class AgentModelExecutor {
       this._contextEngineResults.clear();
       this.sessionAbortControllers.clear();
       this.sessionToolGroups.clear();
+      this._bootstrapPrefixBySession.clear();
+      this._chainContextBySession.clear();
     }
   }
 
@@ -2572,7 +2625,9 @@ export class AgentModelExecutor {
     // persona/memory 是逐轮检索的动态内容，移出主体、并入动态尾
     // （dynamicSystemTail → 第二条 system 消息，见 tryCallLLM），
     // 让 provider 前缀缓存命中稳定的主体段。
-    const systemPrompt = this.buildSystemPrompt(undefined, { channel });
+    // ★ P0-9：buildSystemPrompt 前预填 _cachedSkillNames，消除首轮/次轮 frozen 漂移。
+    await this.prewarmSkillNames();
+    const systemPrompt = this.buildSystemPrompt(undefined, { channel, sessionId });
 
     // ── 解析本次生效的上下文窗口（分母）──
     // 顺序：用户显式设置 > 内置模型库按当前模型解析 > 兜底。
@@ -2668,11 +2723,19 @@ export class AgentModelExecutor {
     const installedSkills = await skillManager?.listSkills() || [];
 
     // ── ToolChain: check if a predefined tool chain matches this request ──
-    let chainContext = "";
+    // ★ P0-9 缓存稳定化：工具链匹配上下文按 session 粘性缓存。
+    // 旧实现每轮 findRelevantChain(effectiveMessage) → 本轮命中、下轮不命中 →
+    // chainContext 从 "[工具链匹配]..." 变 "" → tail 字节变化 → history 缓存 miss。
+    // 现首次命中后缓存，后续轮复用（即使当前消息不再命中也保留），保证 tail 字节稳定。
+    let chainContext = this._chainContextBySession.get(sessionId) ?? "";
     if (this.toolChainRegistry) {
       const matchedChain = this.toolChainRegistry.findRelevantChain(effectiveMessage);
       if (matchedChain) {
         chainContext = `[工具链匹配] 检测到任务可使用预定义工具链 "${matchedChain.name}" (${matchedChain.description})，包含 ${matchedChain.steps.length} 个步骤。建议按此链执行。`;
+        // 仅在缓存值变化时更新（首次命中或切换到不同链 → 一次性 tail 漂移）
+        if (chainContext !== this._chainContextBySession.get(sessionId)) {
+          this._chainContextBySession.set(sessionId, chainContext);
+        }
         process.stdout.write(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"\n`);
         onProgress?.({ type: "status", phase: "planning", detail: `匹配到工具链: ${matchedChain.name}`, progress: 20 });
       }

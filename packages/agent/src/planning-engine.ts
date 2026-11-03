@@ -517,45 +517,29 @@ export class PlanningEngine {
 
   /**
    * Format the plan as a string for injection into the LLM system prompt.
+   *
+   * ★ P0-9 缓存稳定化：此函数输出必须**逐轮字节恒定**（在 plan 不变的前提下）。
+   * 旧实现渲染每步的状态图标（⬜→🔄→✅）、result/error 文本、Next step 行——
+   * 这些内容随步骤完成逐轮变化，而计划块位于 dynamicSystemTail（history 之前的
+   * tail 段）→ tail 字节逐轮漂移 → history 段缓存每轮边界 miss。
+   * 现只保留生成时固定的字段（goal / Plan ID / Steps 数 / 每步 id+description+tool+deps），
+   * 进度信息由模型从对话历史中推断（finalReply 通常包含进度摘要）。
    */
   formatPlanForContext(plan: ExecutionPlan): string {
-    const statusIcon: Record<PlanStep["status"], string> = {
-      pending: "⬜",
-      in_progress: "🔄",
-      completed: "✅",
-      failed: "❌",
-      skipped: "⏭️",
-    };
-
     const lines: string[] = [
       `## Execution Plan: ${plan.goal}`,
-      `Plan ID: ${plan.id} | Status: ${plan.status} | Steps: ${plan.steps.length} | Replans: ${plan.replanCount}`,
+      `Plan ID: ${plan.id} | Steps: ${plan.steps.length}`,
       "",
     ];
 
-    if (plan.reflectionNotes) {
-      lines.push(`Reflection: ${plan.reflectionNotes}`);
-      lines.push("");
-    }
-
     for (const step of plan.steps) {
-      const icon = statusIcon[step.status];
       const deps = (step.dependsOn?.length ?? 0) > 0 ? ` (depends: ${step.dependsOn!.join(", ")})` : "";
       const tool = step.toolHint ? ` [${step.toolHint}]` : "";
-      const result = step.result ? ` → ${step.result.slice(0, 100)}` : "";
-      const error = step.error ? ` ⚠ ${step.error.slice(0, 100)}` : "";
-
-      lines.push(`${icon} ${step.id}: ${step.description}${tool}${deps}${result}${error}`);
+      lines.push(`- ${step.id}: ${step.description}${tool}${deps}`);
     }
 
-    const nextStep = this.getNextStep(plan);
-    if (nextStep) {
-      lines.push("");
-      lines.push(`Next step: ${nextStep.id} — ${nextStep.description}`);
-    } else if (plan.steps.every((s) => s.status === "completed" || s.status === "skipped")) {
-      lines.push("");
-      lines.push("All steps completed.");
-    }
+    lines.push("");
+    lines.push("(Check the conversation above for step progress.)");
 
     return lines.join("\n");
   }
