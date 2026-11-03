@@ -81,6 +81,7 @@ function validatePathWithinBase(resolvedPath: string, baseDir: string): string |
  * 剥掉模型习惯性带上的 workspace 前缀。
  * `data/workspace/x`、`.\data\workspace\x`、甚至多套几层的
  * `data/workspace/data/workspace/x` 都归一为 `x`。
+ * 同时处理绝对路径：`/home/chy/EvoClaw/data/workspace/packages/x` → `/home/chy/EvoClaw/packages/x`
  */
 function stripWorkspacePrefix(filePath: string): string {
   let candidate = filePath.replace(/^\.[\\/]+/, "");
@@ -89,6 +90,15 @@ function stripWorkspacePrefix(filePath: string): string {
     const lower = candidate.toLowerCase().replace(/\\/g, "/");
     if (!lower.startsWith(p)) break;
     candidate = candidate.slice(p.length);
+  }
+  // ★ 2026-11-03 修复：绝对路径中的 data/workspace/ 段也要剥离
+  //   模型有时会传 /home/chy/EvoClaw/data/workspace/packages/xxx 这种绝对路径，
+  //   但实际文件在 /home/chy/EvoClaw/packages/xxx
+  const lower = candidate.toLowerCase().replace(/\\/g, "/");
+  const marker = "/data/workspace/";
+  const idx = lower.indexOf(marker);
+  if (idx >= 0) {
+    candidate = candidate.slice(0, idx) + candidate.slice(idx + marker.length);
   }
   return candidate;
 }
@@ -104,7 +114,9 @@ export function resolveToolPath(
   // 脚本写进了嵌套目录，后续 `node xxx.js` 报 SyntaxError（读到了另一个文件），
   // 模型据此误判为「file_create 往内容里注入了东西」，整整绕了几轮。
   // 这里先剥掉模型习惯性带上的 workspace 前缀再解析。
-  const effective = workspaceBase && !path.isAbsolute(filePath)
+  // ★ 2026-11-03 修复：对所有路径（含绝对路径）都执行 stripWorkspacePrefix，
+  //   因为模型可能传绝对路径 /home/chy/EvoClaw/data/workspace/packages/xxx
+  const effective = workspaceBase
     ? stripWorkspacePrefix(filePath)
     : filePath;
   const resolved = path.isAbsolute(effective)
