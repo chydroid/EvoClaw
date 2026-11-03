@@ -58,6 +58,11 @@ export function stripWebNoise(input: string): string {
 export function summarizeToolResult(toolName: string, result: string): string {
   if (!result || result.length < 2000) return result;
 
+  // ★ 2026-11-03 修复：file_read/code_search 不做摘要截断，
+  //   完整内容交给下游 truncateToolResult（file_read 32K 上限）处理。
+  //   默认 8K 首尾拼接截断会让 agent 只能看到文件头尾，中间整段丢失 → 死循环。
+  if (toolName === "file_read" || toolName === "code_search") return result;
+
   // shell_exec: 保留首尾行，压缩中间重复
   if (toolName === "shell_exec") {
     return summarizeShellOutput(result);
