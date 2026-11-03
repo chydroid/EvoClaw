@@ -287,6 +287,12 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       "build",
       ".next",
       "target",
+      ".vitest",
+      ".github",
+      ".vscode",
+      ".idea",
+      "logs",
+      "__pycache__",
     ]);
     const excludeExts = new Set([
       ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".woff", ".woff2",

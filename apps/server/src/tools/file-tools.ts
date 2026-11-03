@@ -332,11 +332,11 @@ export function registerFileTools(
     "file_read",
     {
       name: "file_read",
-      description: "Read the contents of a file",
+      description: "Read the contents of a file. For large files, use offset (1-based line number) and limit (max lines) to read in chunks. Each read returns up to 16000 characters.",
       parameters: {
         path: { type: "string", description: "File path to read", required: true },
         offset: { type: "string", description: "Line number to start reading from (1-based, default: 1)", required: false },
-        limit: { type: "string", description: "Number of lines to read (default: all)", required: false },
+        limit: { type: "string", description: "Number of lines to read (default: all up to 16K char limit)", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

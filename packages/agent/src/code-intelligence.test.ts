@@ -194,7 +194,7 @@ describe("CodeIntelligence", () => {
     expect(ci.detectLanguage("foo.unknown")).toBe("unknown");
   });
 
-  it("parseSymbols 应解析 TS 文件的函数/类/接口/类型/变量", async () => {
+  it("parseSymbols 应解析 TS 文件的函数/类/接口/类型/变量/类方法", async () => {
     const tsContent = [
       "export function foo() { return 1; }",
       "export class Bar { baz() {} }",
@@ -211,14 +211,37 @@ describe("CodeIntelligence", () => {
     expect(names).toContain("Qux");
     expect(names).toContain("Quux");
     expect(names).toContain("x");
+    // 类方法应被提取
+    expect(names).toContain("baz");
 
     const fooSym = symbols.find((s) => s.name === "foo");
     expect(fooSym?.kind).toBe("function");
     expect(fooSym?.language).toBe("typescript");
     expect(fooSym?.startLine).toBe(1);
 
+    const bazSym = symbols.find((s) => s.name === "baz");
+    expect(bazSym?.kind).toBe("method");
+
     const quxSym = symbols.find((s) => s.name === "Qux");
     expect(quxSym?.kind).toBe("interface");
+  });
+
+  it("searchSymbols 应能找到类方法（回归：之前只提取 function/class 声明，不提取方法）", async () => {
+    const tsContent = [
+      "export class AgentModelExecutor {",
+      "  async chat(message: string) { return message; }",
+      "  private async tryCallLLM(msg: string) { return msg; }",
+      "}",
+    ].join("\n");
+    fs.writeFileSync(path.join(tmpDir, "methods.ts"), tsContent);
+    const ci = new CodeIntelligence(tmpDir);
+    const chatResults = await ci.searchSymbols("chat");
+    expect(chatResults.length).toBeGreaterThan(0);
+    expect(chatResults.some((r) => r.symbol.name === "chat")).toBe(true);
+
+    const tryCallResults = await ci.searchSymbols("tryCallLLM");
+    expect(tryCallResults.length).toBeGreaterThan(0);
+    expect(tryCallResults.some((r) => r.symbol.name === "tryCallLLM")).toBe(true);
   });
 
   it("parseSymbols 应解析 Python 文件的 def/class", async () => {

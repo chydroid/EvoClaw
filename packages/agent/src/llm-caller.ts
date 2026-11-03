@@ -6440,7 +6440,10 @@ export async function tryCallLLM(
           if (toolName === "sequential_thinking") {
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: "思考步骤已记录。请继续或给出最终回复。" };
           }
-          return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult) };
+          // ★ 2026-11-03 修复：file_read 使用更高上限（16K），避免大文件只返回 4K
+          //   导致 agent 陷入反复分块读取的死循环。其他工具保持 4K 上限不变。
+          const maxChars = toolName === "file_read" ? 16_000 : TOOL_RESULT_MAX_CHARS;
+          return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
         };
 
         // ── Execute parallel-safe tools concurrently ──

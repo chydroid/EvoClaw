@@ -49,7 +49,7 @@ export interface RenamePlan {
   totalOccurrences: number;
 }
 
-const MAX_FILES_SCAN = 1000;
+const MAX_FILES_SCAN = 5000;
 const MAX_SEARCH_RESULTS = 50;
 
 // 文件扩展名 → 语言映射
@@ -86,11 +86,14 @@ const PATTERNS: Record<string, SymbolPattern[]> = {
     { kind: "interface", regex: /\b(?:export\s+)?interface\s+([A-Za-z_$][\w$]*)\s*\{/ },
     { kind: "type", regex: /\b(?:export\s+)?type\s+([A-Za-z_$][\w$]*)\s*=/ },
     { kind: "variable", regex: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/ },
+    // 类方法：排除控制流关键字（if/for/while/switch/catch），匹配 async methodName( 或 methodName(
+    { kind: "method", regex: /\b(?!if\b|for\b|while\b|switch\b|catch\b)(?:async\s+)?(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+|abstract\s+|override\s+)*([A-Za-z_$][\w$]*)\s*\(/ },
   ],
   javascript: [
     { kind: "function", regex: /\b(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/ },
     { kind: "class", regex: /\bclass\s+([A-Za-z_$][\w$]*)\s*[<{]/ },
     { kind: "variable", regex: /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/ },
+    { kind: "method", regex: /\b(?!if\b|for\b|while\b|switch\b|catch\b)(?:async\s+)?(?:public\s+|private\s+|protected\s+|static\s+|readonly\s+|abstract\s+|override\s+)*([A-Za-z_$][\w$]*)\s*\(/ },
   ],
   python: [
     { kind: "method", regex: /\bdef\s+([A-Za-z_][\w]*)\s*\(self/ },
@@ -468,7 +471,11 @@ function levenshtein(a: string, b: string): number {
 /** 收集工作区源码文件（限制 maxFiles） */
 async function collectSourceFiles(root: string, maxFiles: number): Promise<string[]> {
   const result: string[] = [];
-  const skipDirs = new Set(["node_modules", ".git", "dist", "build", ".next", "target", "vendor"]);
+  const skipDirs = new Set([
+    "node_modules", ".git", "dist", "build", ".next", "target", "vendor",
+    "data", ".vitest", ".cache", "coverage", ".github", ".vscode", ".idea",
+    "logs", "__pycache__", ".pytest_cache",
+  ]);
 
   async function walk(dir: string): Promise<void> {
     if (result.length >= maxFiles) return;

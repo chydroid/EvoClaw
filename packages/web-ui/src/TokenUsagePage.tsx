@@ -275,63 +275,8 @@ export default function TokenUsagePage() {
             </Card>
           </Section>
 
-          {/* 本地前缀缓存（估算）——与上方 provider 真值区分 */}
-          {promptCacheStats && (
-            <Section title={t("tokenUsage.promptCache.title", "本地前缀缓存（估算）")} style={{ marginTop: 20 }}>
-              <Card>
-                {promptCacheStats.enabled === false ? (
-                  <EmptyState title={t("tokenUsage.promptCache.disabled", "Prompt 缓存未启用")} />
-                ) : (
-                  <div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 16 }}>
-                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.hitRate", "命中率")}</div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
-                          {((promptCacheStats.hitRate ?? 0) * 100).toFixed(1)}%
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.hits", "命中")}</div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--success)" }}>
-                          {(promptCacheStats.totalHits ?? 0).toLocaleString(locale)}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.misses", "未命中")}</div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--text-muted)" }}>
-                          {(promptCacheStats.totalMisses ?? 0).toLocaleString(locale)}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "center", padding: "12px 8px", background: "var(--bg-hover)", borderRadius: 8 }}>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>{t("tokenUsage.promptCache.entries", "条目数")}</div>
-                        <div style={{ fontSize: 22, fontWeight: 700, color: "var(--accent)" }}>
-                          {promptCacheStats.entries ?? 0}
-                        </div>
-                      </div>
-                    </div>
-                    {/* 节省 Token */}
-                    <div style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "12px 16px", borderRadius: 8,
-                      background: "var(--success-bg)", border: "1px solid var(--success)",
-                    }}>
-                      <div>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "var(--success)" }}>
-                          {t("tokenUsage.promptCache.savedTokens", "节省 Token")}
-                        </div>
-                        <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                          {t("tokenUsage.promptCache.savedDesc", "通过缓存命中避免重复计算的 Token")}
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 26, fontWeight: 700, color: "var(--success)" }}>
-                        {formatTokens(promptCacheStats.savedTokens ?? 0)}
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </Card>
-            </Section>
-          )}
+          {/* 本地前缀缓存已移除——实际缓存效果由上方 LLM 侧真值反映 */}
+
 
           <Section title={t("tokenUsage.recentUsage")} style={{ marginTop: 24 }}>
             <Card>
