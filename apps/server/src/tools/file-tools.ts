@@ -98,7 +98,8 @@ function stripWorkspacePrefix(filePath: string): string {
   const marker = "/data/workspace/";
   const idx = lower.indexOf(marker);
   if (idx >= 0) {
-    candidate = candidate.slice(0, idx) + candidate.slice(idx + marker.length);
+    // idx 指向 marker 开头的 /，slice(0, idx+1) 保留这个 /
+    candidate = candidate.slice(0, idx + 1) + candidate.slice(idx + marker.length);
   }
   return candidate;
 }

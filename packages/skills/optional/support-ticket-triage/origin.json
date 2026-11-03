@@ -1,0 +1,13 @@
+{
+  "format": 1,
+  "files": {
+    "SKILL.md": "87c9d4dc53759e28ccdb181ab9b4840071f4e0f9b487ecafb1e1c0b20037e6e0"
+  },
+  "skillId": "9209a6fb-c151-4504-b083-97f4b94c711f",
+  "name": "support-ticket-triage",
+  "version": "1.0.0",
+  "source": "local",
+  "sourceUrl": "/home/chy/EvoClaw/packages/skills/optional/support-ticket-triage/SKILL.md",
+  "installedAt": "2026-11-03T14:28:36.960Z",
+  "installedBy": "system"
+}
