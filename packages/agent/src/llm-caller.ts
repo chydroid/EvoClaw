@@ -6094,7 +6094,10 @@ export async function tryCallLLM(
                 }
                 toolResult = JSON.stringify(r);
               }
-              const MAX_RESULT_LEN = isBrowser ? 8000 : 16000;
+              // ★ 2026-11-03 修复：file_read/code_search 使用更高上限（32K），
+              //   因为 JSON 序列化后比原始内容大 5-10%（引号/换行转义），
+              //   20K 文件序列化后 ~22K 超过 16K 被截断 → agent 反复分块读取死循环。
+              const MAX_RESULT_LEN = isBrowser ? 8000 : (toolName === "file_read" || toolName === "code_search" ? 32000 : 16000);
               if (toolResult.length > MAX_RESULT_LEN) {
                 toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
               }
@@ -6440,9 +6443,9 @@ export async function tryCallLLM(
           if (toolName === "sequential_thinking") {
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: "思考步骤已记录。请继续或给出最终回复。" };
           }
-          // ★ 2026-11-03 修复：file_read 使用更高上限（16K），避免大文件只返回 4K
-          //   导致 agent 陷入反复分块读取的死循环。其他工具保持 4K 上限不变。
-          const maxChars = toolName === "file_read" ? 16_000 : TOOL_RESULT_MAX_CHARS;
+          // ★ 2026-11-03 修复：file_read/code_search 使用 32K 上限，
+          //   与上方 MAX_RESULT_LEN 保持一致。其他工具保持 4K 上限不变。
+          const maxChars = (toolName === "file_read" || toolName === "code_search") ? 32_000 : TOOL_RESULT_MAX_CHARS;
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
         };
 
