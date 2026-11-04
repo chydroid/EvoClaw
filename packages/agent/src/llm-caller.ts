@@ -16,6 +16,7 @@ import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudg
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
+import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
@@ -6904,6 +6905,69 @@ export async function tryCallLLM(
             // 安全包不可用时不阻断主流程
             process.stderr.write(`[AgentModelExecutor] Output security filter skipped: ${importErr instanceof Error ? importErr.message : String(importErr)}\n`);
           }
+        }
+
+        // ── Turn Finalizer：终末安全网（对标 hermes-agent turn_finalizer.py）──
+        // 在回复组装完毕后、持久化前运行。三个结构机制：
+        //   1. 静默停止检测：turn 以工具结果结尾、无后续 assistant 文本时，合成状态摘要
+        //   2. 碎片终止守卫：turn 做了工具工作后以碎片结束时，追加状态块
+        //   3. 完成状态强制：回复不含完成状态标记时，追加结构状态块
+        // 这是确定性后处理（不调 LLM），不是提示词 nudge——模型无法忽略。
+        // 对标 sess_mw23sp1y_e557da27 场景：模型做完只读调查后戛然而止，无完成状态汇报。
+        try {
+          // 从工具执行记录构建统计
+          const toolStats: ToolExecutionStats = {
+            successful: successfulToolCalls,
+            failed: failedTools.length,
+            createdFiles: createdFiles.map((f) => f.path),
+            modifiedFiles: writeOps()
+              .filter((w) => w.name !== "shell_exec")
+              .map((w) => {
+                // 从 write op 的 args 中提取路径
+                try {
+                  const args = JSON.parse(w.args) as Record<string, unknown>;
+                  return String(args.path ?? args.filePath ?? args.file_path ?? "");
+                } catch {
+                  return "";
+                }
+              })
+              .filter((p) => p.length > 0),
+            executedCommands: extractExecutedShellCommands(executedToolCalls),
+          };
+          const liteMessages: Array<ConversationMessageLite> = conversationMessages.map((m) => ({
+            role: m.role,
+            content: m.content as string | null | undefined,
+            tool_calls: m.tool_calls as unknown,
+            tool_call_id: m.tool_call_id,
+            name: m.name,
+          }));
+          const finalizerResult = runTurnFinalizer(finalReply, liteMessages, toolStats);
+          if (finalizerResult.silentStopSynthesized) {
+            process.stdout.write(
+              `[AgentModelExecutor] Turn finalizer: silent stop synthesized status summary for session "${sessionId}"\n`,
+            );
+          }
+          if (finalizerResult.completionStatusAppended) {
+            process.stdout.write(
+              `[AgentModelExecutor] Turn finalizer: completion status block appended for session "${sessionId}"\n`,
+            );
+          }
+          if (finalizerResult.degenerateFinalDetected) {
+            // 碎片终止：在回复末尾追加结构状态块（one-shot，不续跑）
+            // 对标 Hermes degenerate-final guard 的简化版——
+            // 在 turn 末尾无法续跑，故追加状态块而非注入 nudge
+            finalReply = finalizerResult.finalReply;
+            process.stdout.write(
+              `[AgentModelExecutor] Turn finalizer: degenerate final detected — appended status block for session "${sessionId}"\n`,
+            );
+          } else {
+            finalReply = finalizerResult.finalReply;
+          }
+        } catch (finalizerErr) {
+          // 终末安全网失败不得阻断主流程
+          process.stderr.write(
+            `[AgentModelExecutor] Turn finalizer skipped: ${finalizerErr instanceof Error ? finalizerErr.message : String(finalizerErr)}\n`,
+          );
         }
 
         if (deps.sessionManager) {
