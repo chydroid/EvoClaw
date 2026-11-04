@@ -4496,9 +4496,13 @@ export async function tryCallLLM(
       // ★ P0-2：会话级工具组单调并集（旧：按当前消息激活，逐轮漂移破坏
       // provider 缓存前缀；现：只增不减，稳态下 tools JSON 字节恒定）。
       // 首消息 / 无 base 时保持 fresh-session 语义（与旧行为字节一致）。
+      // ★ 2026-11-04：关键词激活用 rawMessage（用户原始输入），不用增强后的 message。
+      //   后者含搜索注入内容（最多 60K 字符），任意网页文本可能触发无关工具组
+      //   （如抓取页面含"浏览器/截图" → 激活 19 个浏览器工具），导致跨会话
+      //   工具数无意义波动。与创造性任务检测（4540 行）策略一致。
       const baseTools = sessionId ? deps.toolGroupStore?.get(sessionId) : undefined;
       const activeOut: { activeTools?: Set<string> } = {};
-      let tools = buildOpenAITools(deps.registeredTools, message, deps.checkFnEvaluator, baseTools, activeOut);
+      let tools = buildOpenAITools(deps.registeredTools, rawMessage, deps.checkFnEvaluator, baseTools, activeOut);
       if (sessionId && deps.toolGroupStore && activeOut.activeTools) {
         deps.toolGroupStore.set(sessionId, activeOut.activeTools);
       }
