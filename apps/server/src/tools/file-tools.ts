@@ -309,6 +309,10 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
+      // ★ DEBUG: 2026-11-04 排查 ENOENT 问题
+      if (filePath.includes("data/workspace/packages") || filePath.includes("llm-caller") || filePath.includes("agent-model-executor")) {
+        console.log(`[DEBUG file_read] filePath="${filePath}" workspaceBase="${workspaceBase}" fsBase="${fsBase}"`);
+      }
       const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, true);
       if (!pf.ok) return { success: false, error: pf.error };
@@ -358,6 +362,10 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
+      // ★ DEBUG: 2026-11-04 排查 ENOENT 问题
+      if (filePath.includes("data/workspace/packages") || filePath.includes("llm-caller") || filePath.includes("agent-model-executor")) {
+        console.log(`[DEBUG file_read] filePath="${filePath}" workspaceBase="${workspaceBase}" fsBase="${fsBase}"`);
+      }
       const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
