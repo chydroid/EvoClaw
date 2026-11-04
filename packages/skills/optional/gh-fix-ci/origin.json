@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "files": {
+    "SKILL.md": "742acfa84fe29bda13317afe75788ef292d5678cb8a5e4618b965e452240e503",
+    "scripts/inspect_pr_checks.py": "a2aacff13a18a9c8e8578d31d8f2a004ac591dfded292ad4f06b98ec643fbac9"
+  },
+  "skillId": "6d0584ed-d4c5-40fe-a7ba-284fedd24e58",
+  "name": "gh-fix-ci",
+  "version": "1.0.0",
+  "source": "local",
+  "sourceUrl": "/home/chy/EvoClaw/packages/skills/optional/gh-fix-ci/SKILL.md",
+  "installedAt": "2026-11-04T06:46:16.647Z",
+  "installedBy": "system"
+}
