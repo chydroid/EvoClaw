@@ -117,9 +117,11 @@ export function resolveToolPath(
   // 这里先剥掉模型习惯性带上的 workspace 前缀再解析。
   // ★ 2026-11-03 修复：对所有路径（含绝对路径）都执行 stripWorkspacePrefix，
   //   因为模型可能传绝对路径 /home/chy/EvoClaw/data/workspace/packages/xxx
-  const effective = workspaceBase
-    ? stripWorkspacePrefix(filePath)
-    : filePath;
+  // ★ 2026-11-04 强化：无条件调用 stripWorkspacePrefix——该函数对不含
+  //   data/workspace/ 的路径是 no-op，安全；含该段的路径一律剥离。
+  //   之前依赖 workspaceBase 是否存在来决定是否剥离，但 workspaceBase
+  //   可能未设置（undefined），导致含 data/workspace/ 的路径未被剥离 → ENOENT。
+  const effective = stripWorkspacePrefix(filePath);
   const resolved = path.isAbsolute(effective)
     ? path.resolve(fsBase, effective)
     : path.resolve(workspaceBase || fsBase, effective);
@@ -358,9 +360,32 @@ export function registerFileTools(
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
       // 「一般安全」档允许读取沙箱外的一般文件；只有严格档会在这里被拒（pf.ok=false）
+      // ★ 2026-11-04 ENOENT 兜底：stripWorkspacePrefix 在 resolveToolPath 中已无条件调用，
+      //   但若服务器加载了旧 dist（或路径经过其他组件改写后重新拼回 data/workspace/），
+      //   读取仍可能 ENOENT。这里在 readTarget 内层捕获 ENOENT，自动尝试剥离后的路径。
       const readTarget = pf.insideSandbox
-        ? () => fsMgr.readFile(fsPath)
-        : () => Promise.resolve(fs.readFileSync(resolvedPath, "utf-8")) as Promise<string>;
+        ? async () => {
+            try {
+              return await fsMgr.readFile(fsPath);
+            } catch (err: unknown) {
+              if (err && typeof err === "object" && (err as { code?: string }).code === "ENOENT") {
+                const stripped = stripWorkspacePrefix(fsPath);
+                if (stripped !== fsPath) return await fsMgr.readFile(stripped);
+              }
+              throw err;
+            }
+          }
+        : async () => {
+            try {
+              return fs.readFileSync(resolvedPath, "utf-8");
+            } catch (err: unknown) {
+              if (err && typeof err === "object" && (err as { code?: string }).code === "ENOENT") {
+                const stripped = stripWorkspacePrefix(resolvedPath);
+                if (stripped !== resolvedPath) return fs.readFileSync(stripped, "utf-8");
+              }
+              throw err;
+            }
+          };
       return await errRecovery.executeWithRetry("file_read", fsPath, async () => {
         let content = await readTarget();
         const parsedOffset = params.offset ? parseInt(String(params.offset), 10) : 1;
