@@ -120,6 +120,10 @@ export function resolveToolPath(
   const effective = workspaceBase
     ? stripWorkspacePrefix(filePath)
     : filePath;
+  // ★ DEBUG: 2026-11-04 排查 ENOENT 问题
+  if (filePath.includes("data/workspace/packages") || filePath.includes("ws-protocol") || filePath.includes("gateway-server")) {
+    console.log(`[DEBUG resolveToolPath] input="${filePath}" wsBase="${workspaceBase}" effective="${effective}" fsBase="${fsBase}"`);
+  }
   const resolved = path.isAbsolute(effective)
     ? path.resolve(fsBase, effective)
     : path.resolve(workspaceBase || fsBase, effective);
