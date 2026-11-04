@@ -2009,8 +2009,11 @@ const TOOL_GROUPS: Record<string, ToolGroupDef> = {
   },
   memory: {
     // 记忆/会话检索组：memory（语义记忆）/ session_search（历史会话全文检索）
+    // 关键词收紧：移除「存储/检索/session」等过度宽泛词——这些词在技术讨论中
+    // 频繁出现但并不意味着用户需要记忆/会话检索能力，反而会导致 memory 组被
+    // 误激活，增加 tools 数组大小，影响缓存前缀稳定性。
     tools: ["memory", "session_search"],
-    keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "存储", "检索", "历史会话", "之前的对话", "上次聊", "会话记录", "session"],
+    keywords: ["memory", "记忆", "记住", "回忆", "remember", "recall", "忘记", "历史会话", "之前的对话", "上次聊", "会话记录"],
   },
   // ── 以下 7 组为 P0-5 新增：把原先「不分组 → 逐轮常驻」的领域工具收进分组 ──
   git: {
