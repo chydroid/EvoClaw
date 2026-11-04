@@ -7,6 +7,7 @@ import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type NativeFetchResponse } from "./llm-caller";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
+import { getProcessTimeZone, getCachedLocaleDateString } from "./local-time";
 import * as fs from "fs";
 import * as path from "path";
 import {
@@ -2670,13 +2671,13 @@ export class AgentModelExecutor {
           // P0-3：记忆段改走动态尾（dynamicSystemTail），不再进 CE frozen 段
           memoryContext: undefined,
           compactionSummary: undefined, // handled by compactionManager separately
-          pluginPrependContext: undefined,
-          pluginAppendContext: undefined,
-          currentTask: effectiveMessage,
-          maxContextTokens: effectiveContextWindow,
-          // P0-3：天级「今天是」放进 CE ephemeral 尾部（主体不再带分钟时钟）
-          userTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai",
-        });
+        pluginPrependContext: undefined,
+        pluginAppendContext: undefined,
+        currentTask: effectiveMessage,
+        maxContextTokens: effectiveContextWindow,
+        // P0-3：天级「今天是」放进 CE ephemeral 尾部（主体不再带分钟时钟）
+        userTimezone: getProcessTimeZone(),
+      });
         if (contextEngineResult.warnings.length > 0) {
           process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
         }
@@ -2840,10 +2841,10 @@ export class AgentModelExecutor {
     // （旧行为每轮随检索结果漂移 frozen hash），改由动态尾携带——同一份内容
     // 只出现一次（tail），CE 的 system 消息因此也保持稳定。
     // 日期上下文从 system-prompt.ts frozen 主体移出，跨日变化只影响动态尾。
-    const _tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Shanghai";
-    const _dateStr = new Date().toLocaleDateString("zh-CN", {
-      timeZone: _tz, year: "numeric", month: "long", day: "numeric", weekday: "long",
-    });
+    // P0-1 性能优化（2026-11-04）：时区进程内恒定、日期字符串天级不变——
+    // 模块级缓存（local-time.ts），输出字节与旧实现完全一致。
+    const _tz = getProcessTimeZone();
+    const _dateStr = getCachedLocaleDateString();
     const dateContext = `## Current Date & Time\nToday is: ${_dateStr} (timezone: ${_tz})\nWhen the user says '今天/昨天/明天/前天/后天' etc., interpret them as actual dates based on the date above.`;
     let dynamicSystemTail = [
       dateContext,

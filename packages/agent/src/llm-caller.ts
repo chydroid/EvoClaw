@@ -4749,6 +4749,18 @@ export async function tryCallLLM(
         } catch { /* best-effort — stability analysis must never block LLM calls */ }
       }
 
+      // ★ 2026-11-04 修复：调查循环检测器。
+      // 根因：用户说「好的，开始实现P0/P1」后，模型连续 10 轮只做只读调查
+      // （file_read / shell_exec grep / code_search），从未调用编辑工具，
+      // 烧掉 918K tokens 后仅产出 40 字符。系统无任何机制提醒模型「该动手了」。
+      // 修复：连续 ≥3 轮只读工具（无 file_write/apply_patch/file_delete）且
+      // 用户消息含「实现/修复/写代码/修改/edit/implement/fix」意图时，注入 transient
+      // nudge 提醒模型使用编辑工具实际改动代码。
+      const EDIT_TOOLS = new Set([
+        "file_write", "file_delete", "apply_patch", "write_file", "edit_file",
+      ]);
+      let consecutiveReadOnlyRounds = 0;
+
       for (let round = 0; round < maxToolRounds; round++) {
         // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
         // In-flight fetches are already cancelled via the abort signal wired into
@@ -6528,6 +6540,32 @@ export async function tryCallLLM(
             content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
           });
           break;
+        }
+
+        // ── 调查循环检测器（2026-11-04）──
+        // 连续 ≥3 轮只读工具 + 用户意图含「实现/修复/写代码/修改」→ 注入 transient nudge
+        if (roundToolNames.length > 0) {
+          const usedEditTool = roundToolNames.some((n) => EDIT_TOOLS.has(n));
+          if (usedEditTool) {
+            consecutiveReadOnlyRounds = 0;
+          } else {
+            consecutiveReadOnlyRounds++;
+          }
+          if (consecutiveReadOnlyRounds >= 3) {
+            // 检查用户消息是否含实现/修复意图
+            const userMsg = String(message || "");
+            const implIntent = /实现|修复|写代码|修改|编辑|implement|fix|edit|write.*code|apply.*patch/i.test(userMsg);
+            if (implIntent && consecutiveReadOnlyRounds === 3) {
+              process.stdout.write(
+                `[AgentModelExecutor] Investigation loop detected (${consecutiveReadOnlyRounds} consecutive read-only rounds) — nudging model to start editing\n`,
+              );
+              pendingTransient.push({
+                role: "user",
+                content: "[系统提示] 你已连续多轮只做只读调查（读文件/grep/搜索），但尚未实际修改任何代码。请立即使用 file_write / apply_patch 等编辑工具对目标文件做出实际改动。如果已经调查充分，就直接动手实现，不要再继续读文件了。",
+              });
+              consecutiveReadOnlyRounds = 0; // 重置，避免重复 nudge
+            }
+          }
         }
 
         // ── IterationBudget: execute_code 退款 ──
