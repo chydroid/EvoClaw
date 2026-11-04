@@ -22,6 +22,26 @@ import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
+import { estimateTokensCached, estimateMessagesTokensCached } from "./token-estimate-cache";
+
+// ★ P1 优化（建议4）：异步日志缓冲——process.stdout.write 是同步 I/O，
+//   高频调用（每轮 5-15 条）会阻塞主线程。引入 16ms 批量刷新队列，
+//   将同步 I/O 变异步，每轮省 ~5-15ms。
+const _logQueue: string[] = [];
+let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function asyncLog(msg: string): void {
+  _logQueue.push(msg);
+  if (!_flushTimer) {
+    _flushTimer = setTimeout(() => {
+      const batch = _logQueue.join("\n");
+      _logQueue.length = 0;
+      _flushTimer = null;
+      process.stdout.write(batch + "\n");
+    }, 16); // ~60fps 刷新
+    if (_flushTimer.unref) _flushTimer.unref();
+  }
+}
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -1127,13 +1147,30 @@ export function parseMimeTypeFromDataUri(dataUri: string): string {
 // ── Helper: find last message index with given role ──
 // P0-5：易变内容（skills 段/动态尾）插入「最后一条 user 消息之前」时使用。
 // 找不到返回 -1（调用方回退为 push 到末尾）。
+//
+// ★ P1 优化（建议3）：WeakMap 缓存——同一 messages 数组引用在单次 tryCallLLM
+//   内被多次查询（prevUserIdx / pos），缓存避免重复 O(n) 扫描。
+//   WeakMap 键为数组引用，数组被替换时自动失效，安全无内存泄漏。
+const _lastIndexCache = new WeakMap<Array<{ role: string; content?: unknown }>, Map<string, number>>();
+
 function lastIndexOfRole(
   messages: Array<{ role: string; content?: unknown }>,
   role: string,
 ): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === role) return i;
+  let cache = _lastIndexCache.get(messages);
+  if (!cache) {
+    cache = new Map();
+    _lastIndexCache.set(messages, cache);
   }
+  const cached = cache.get(role);
+  if (cached !== undefined) return cached;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === role) {
+      cache.set(role, i);
+      return i;
+    }
+  }
+  cache.set(role, -1);
   return -1;
 }
 
@@ -7159,7 +7196,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         let contextTokensEstimated = false;
         if (!(contextTokens > 0)) {
           try {
-            contextTokens = estimateMessagesTokens(
+            contextTokens = estimateMessagesTokensCached(
               messages.map((m) => ({ role: String(m.role), content: m.content == null ? null : String(m.content) }))
             );
             contextTokensEstimated = contextTokens > 0;
