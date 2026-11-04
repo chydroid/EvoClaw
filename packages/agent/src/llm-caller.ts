@@ -6211,11 +6211,13 @@ if (deps.contextPruningManager && !prunerNoop) {
               }
 
               // Cache result（副作用工具不缓存：结果非 args 纯函数，见 NO_RESULT_CACHE_TOOLS）
+              // ★ P0 性能优化：JSON.stringify(args) 只调用一次，复用给两个缓存 key
+              const argsKey = `${toolName}:${JSON.stringify(args)}`;
               if (deps.toolResultCache && !NO_RESULT_CACHE_TOOLS.has(toolName)) {
-                deps.toolResultCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
+                deps.toolResultCache.set(argsKey, { result: toolResult, timestamp: Date.now() });
               }
               if (IDEMPOTENT_TOOLS.has(toolName)) {
-                idempotencyCache.set(`${toolName}:${JSON.stringify(args)}`, { result: toolResult, timestamp: Date.now() });
+                idempotencyCache.set(argsKey, { result: toolResult, timestamp: Date.now() });
               }
 
               // ★ 只在**真的执行过搜索类工具**时才注入。
