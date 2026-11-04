@@ -52,6 +52,8 @@ export interface ToolExecutionStats {
   modifiedFiles: string[];
   /** 本轮执行的 shell 命令 */
   executedCommands: string[];
+  /** 失败的文件写入操作（path + error）——用于文件变更 footer */
+  failedFileMutations?: Array<{ path: string; error: string }>;
 }
 
 /** 对话消息的最小结构（用于静默停止检测） */
@@ -103,6 +105,10 @@ export interface FinalizerVerdict {
   completionStatusAppended: boolean;
   /** 是否检测到碎片终止 */
   degenerateFinalDetected: boolean;
+  /** 是否追加了文件变更 footer（对标 Hermes _append_file_mutation_footer） */
+  fileMutationFooterAppended: boolean;
+  /** 是否追加了异常退出说明（对标 Hermes _explain_abnormal_exit） */
+  abnormalExitExplained: boolean;
   /** 是否需要续跑（碎片终止时为 true） */
   shouldContinue: boolean;
   /** 诊断信息 */
@@ -450,15 +456,119 @@ export function detectDegenerateFinal(
   };
 }
 
+// ── 文件变更 Footer（对标 Hermes _append_file_mutation_footer）──────────────────
+
+/**
+ * 构建文件变更失败的 footer。
+ *
+ * 对标 Hermes turn_finalizer._append_file_mutation_footer：
+ * 当 write_file/patch 调用失败且未被后续成功写入覆盖时，
+ * 在最终回复末尾追加一个验证者 footer，使 over-claiming 结构性不可能。
+ *
+ * 关键设计（对标 Hermes）：
+ *   - 只在有真实文本回复且用户未中断时追加
+ *   - 空回复/中断回复由其他机制处理，不追加 footer
+ *   - footer 是确定性的——从失败记录构建，不调 LLM
+ *
+ * @param failedMutations 失败的文件写入操作列表
+ * @param finalReply 最终回复文本
+ * @returns 追加 footer 后的回复，或 null 表示不需要追加
+ */
+export function buildFileMutationFooter(
+  failedMutations: Array<{ path: string; error: string }>,
+  finalReply: string,
+): string | null {
+  const replyText = (finalReply || "").trim();
+
+  // 只在有真实文本回复时追加
+  if (!replyText) return null;
+
+  if (failedMutations.length === 0) return null;
+
+  // 过滤掉已被成功写入覆盖的路径
+  const stillFailed = failedMutations; // 简化：不追踪覆盖，由调用方传入已过滤的列表
+
+  const pathList = stillFailed.slice(0, 8).map((m) => `- \`${m.path}\`：${m.error.slice(0, 80)}`).join("\n");
+  const more = stillFailed.length > 8 ? `\n- ... 另有 ${stillFailed.length - 8} 个失败` : "";
+
+  const footer =
+    "\n\n---\n\n⚠️ **文件写入验证**：以下文件写入操作失败，未成功保存：\n\n" +
+    pathList + more +
+    "\n\n以上文件可能未被成功写入，请以实际执行结果为准。";
+
+  return replyText.replace(/\s+$/, "") + footer;
+}
+
+// ── Turn 完成说明器（对标 Hermes _explain_abnormal_exit）───────────────────────
+
+/** Turn 退出原因说明映射 */
+const EXIT_REASON_EXPLANATIONS: Record<string, string> = {
+  "budget_exhausted":
+    "⚠️ 迭代预算耗尽——模型在达到最大工具调用轮数前未能完成总结。请发送「继续」让模型基于已有结果给出总结。",
+  "max_iterations_reached":
+    "⚠️ 达到最大迭代轮数——任务可能未完全完成。请发送「继续」让模型完成剩余工作。",
+  "session_persistence_failed":
+    "⚠️ 会话持久化失败——对话记录可能未完全保存。请检查服务状态后重试。",
+  "guardrail_halt":
+    "⚠️ 工具护栏拦截——某个工具调用被安全策略阻止。请调整请求后重试。",
+  "content_filter":
+    "⚠️ 内容过滤触发——响应可能被安全策略截断。请调整请求后重试。",
+  "deterministic_empty":
+    "⚠️ 模型确定性空响应——当前 provider 对本上下文持续返回空内容。建议切换 provider 或模型。",
+  "partial_stream_recovery":
+    "⚠️ 流式响应部分恢复——响应在传输中被截断。请发送「继续」获取完整回复。",
+};
+
+/**
+ * 在异常退出时追加说明。
+ *
+ * 对标 Hermes turn_finalizer._explain_abnormal_exit：
+ * 当 turn 以异常方式结束时（空回复、碎片、异常退出原因），
+ * 从退出原因构建一段确定性的说明追加到回复末尾。
+ *
+ * 只在无可用回复时追加（空、"(empty)"、或短碎片无句末标点）。
+ * text_response(...) 退出保持沉默——正常文本回复不需要解释。
+ *
+ * @param finalReply 最终回复文本
+ * @param turnExitReason turn 退出原因
+ * @returns 追加说明后的回复
+ */
+export function explainAbnormalExit(
+  finalReply: string,
+  turnExitReason: string,
+): string {
+  const replyText = (finalReply || "").trim();
+
+  // 只在无可用回复时追加
+  const isEmptyTerminal = replyText === "" || replyText === "(empty)";
+  const isPartialFragment =
+    !isEmptyTerminal &&
+    !replyText.startsWith("text_response") &&
+    replyText.length <= 24 &&
+    !/[。！？.!?]/.test(replyText);
+
+  if (!isEmptyTerminal && !isPartialFragment) return finalReply;
+
+  const explanation = EXIT_REASON_EXPLANATIONS[turnExitReason];
+  if (!explanation) return finalReply;
+
+  if (isEmptyTerminal) {
+    return explanation;
+  }
+  return replyText + "\n\n" + explanation;
+}
+
 // ── 综合终末安全网 ──────────────────────────────────────────────────────────────
 
 /**
  * Turn Finalizer 总入口。
  *
- * 执行顺序：
+ * 执行顺序（对标 Hermes turn_finalizer.finalize_turn 的后处理管线）：
  * 1. 静默停止检测 → 若触发，合成状态摘要作为 finalReply
- * 2. 碎片终止检测 → 若触发，返回 shouldContinue=true（调用方注入 nudge 续跑）
+ * 2. 碎片终止检测 → 若触发，标记 shouldContinue
  * 3. 完成状态强制 → 若触发，追加结构状态块
+ * 4. 文件变更 Footer → 若触发，追加失败文件说明（对标 Hermes _append_file_mutation_footer）
+ * 5. 异常退出说明 → 若触发，追加退出原因解释（对标 Hermes _explain_abnormal_exit）
  *
  * 设计原则：
  *   - 纯函数，不调 LLM
@@ -470,6 +580,7 @@ export function detectDegenerateFinal(
  * @param conversationMessages 本轮对话消息
  * @param toolStats 工具执行统计
  * @param degenerateNudgeAttempts 碎片终止 nudge 已尝试次数
+ * @param turnExitReason turn 退出原因（用于异常退出说明）
  * @returns 终末安全网总结果
  */
 export function runTurnFinalizer(
@@ -477,12 +588,15 @@ export function runTurnFinalizer(
   conversationMessages: Array<ConversationMessageLite>,
   toolStats: ToolExecutionStats,
   degenerateNudgeAttempts: number = 0,
+  turnExitReason: string = "",
 ): FinalizerVerdict {
   const diagnostics: string[] = [];
   let reply = finalReply || "";
   let silentStopSynthesized = false;
   let completionStatusAppended = false;
   let degenerateFinalDetected = false;
+  let fileMutationFooterAppended = false;
+  let abnormalExitExplained = false;
   let shouldContinue = false;
 
   // 1. 静默停止检测
@@ -523,11 +637,44 @@ export function runTurnFinalizer(
     }
   }
 
+  // 4. 文件变更 Footer（对标 Hermes _append_file_mutation_footer）
+  // 当 write_file/patch 调用失败时，追加验证者 footer
+  // "structurally prevents over-claiming past the model"
+  if (!shouldContinue && toolStats.failedFileMutations && toolStats.failedFileMutations.length > 0) {
+    try {
+      const footerResult = buildFileMutationFooter(toolStats.failedFileMutations, reply);
+      if (footerResult !== null) {
+        reply = footerResult;
+        fileMutationFooterAppended = true;
+        diagnostics.push(`File mutation footer appended: ${toolStats.failedFileMutations.length} failed mutation(s)`);
+      }
+    } catch (err) {
+      diagnostics.push(`File mutation footer failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // 5. 异常退出说明（对标 Hermes _explain_abnormal_exit）
+  // 当 turn 以异常方式结束时（空回复、碎片），追加退出原因解释
+  if (!shouldContinue && turnExitReason) {
+    try {
+      const explained = explainAbnormalExit(reply, turnExitReason);
+      if (explained !== reply) {
+        reply = explained;
+        abnormalExitExplained = true;
+        diagnostics.push(`Abnormal exit explained: reason=${turnExitReason}`);
+      }
+    } catch (err) {
+      diagnostics.push(`Abnormal exit explanation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   return {
     finalReply: reply,
     silentStopSynthesized,
     completionStatusAppended,
     degenerateFinalDetected,
+    fileMutationFooterAppended,
+    abnormalExitExplained,
     shouldContinue,
     diagnostics,
   };

@@ -9,6 +9,7 @@
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
 import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "@evoclaw/core";
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
@@ -17,6 +18,7 @@ import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-gu
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
+import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
@@ -3552,9 +3554,10 @@ export async function callLLMOnce(
     // ── 临时诊断：prompt 组成转储（EVOCLAW_DEBUG_PROMPT_DUMP=1 时启用）──
     // 用途：缓存命中率专项——测量每轮请求各段（system/history/skills/tail/user/tools）
     // 的字符数与内容哈希，定位逐轮漂移的段。仅调试用，默认关闭。
-    if (process.env.EVOCLAW_DEBUG_PROMPT_DUMP) {
-      try {
-        const msgLines = (body?.messages as Array<{ role: string; content: unknown; cache_control?: unknown }> | undefined)?.map((m, i) => {
+let bodyJson = "";
+if (process.env.EVOCLAW_DEBUG_PROMPT_DUMP) {
+try {
+const msgLines = (body?.messages as Array<{ role: string; content: unknown; cache_control?: unknown }> | undefined)?.map((m, i) => {
           const c = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
           const h = crypto.createHash("sha256").update(c, "utf-8").digest("hex").slice(0, 12);
           const cc = m.cache_control ? "CC" : "--";
@@ -3567,26 +3570,31 @@ export async function callLLMOnce(
           const n = t?.function?.name ?? "?";
           return { n, c: JSON.stringify(t).length };
         }) ?? [];
-        fs.appendFileSync(
-          "/tmp/prompt-dump.log",
-          JSON.stringify({
-            ts: Date.now(),
-            model: provider.model,
-            baseURL: provider.baseURL,
-            msgs: msgLines,
-            toolsChars,
-            toolList,
-            bodyChars: JSON.stringify(body).length,
-          }) + "\n",
-        );
+// ★ P0-4 优化：请求体序列化一次（bodyJson），dump 与 nativeFetch 复用，省一次 MB 级序列化
+const bodyJson = JSON.stringify(body);
+// ★ P0-4：同步 appendFileSync 改为异步队列（fire-and-forget），不阻塞热路径
+fsPromises.appendFile(
+"/tmp/prompt-dump.log",
+JSON.stringify({
+ts: Date.now(),
+model: provider.model,
+baseURL: provider.baseURL,
+msgs: msgLines,
+toolsChars,
+toolList,
+bodyChars: bodyJson.length,
+}) + "\n",
+).catch(() => { /* best-effort */ });
       } catch { /* best-effort */ }
     }
 
-    const response = await nativeFetch(apiURL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: controller.signal,
+// ★ P0-4：dump 开启时复用已序列化的 bodyJson，省一次全量序列化；
+//   dump 关闭时保持原行为
+const response = await nativeFetch(apiURL, {
+method: "POST",
+headers,
+body: bodyJson || JSON.stringify(body), // dump 开启时 bodyJson 已序列化，复用
+signal: controller.signal,
       // Enforce a connection-level timeout as well so nativeFetch aborts even
       // when the TCP handshake or TLS negotiation hangs.
       timeout: timeout + 5000,
@@ -4348,7 +4356,18 @@ export async function tryCallLLM(
         // best-effort — pruning failure should not break the LLM call
       }
 
-      if (deps.contextPruningManager) {
+      // ★ P0-5 短路：ToolOutputPruner 本轮无任何裁剪产出（stats 全 0）时，
+//   其下游 ContextPruningManager 的输入与原 messages 逐字节一致。
+//   ContextPruningManager.prune() 是纯函数（soft-trim 幂等、hard-clear 幂等），
+//   上一轮若已对同内容做过 soft-trim/hard-clear，本轮再次执行也必然无产出。
+//   因此 stats 全 0 → 跳过第二轮全量 map 拷贝 + 逐条比较，省 O(history) 分配。
+//   注意：pruner stats 非 0 或 pruner 不存在时，仍无条件走第二轮（保守）。
+const prunerNoop = !pruneResult || (
+pruneResult.stats.deduplicated === 0 &&
+pruneResult.stats.summarized === 0 &&
+pruneResult.stats.argsTruncated === 0
+);
+if (deps.contextPruningManager && !prunerNoop) {
         // Cast to expected type — prune() only modifies string content (tool results)
         const pruningInput = messages.map(m => ({
           role: m.role,
@@ -4665,6 +4684,10 @@ export async function tryCallLLM(
       // 若验证门续跑后预算耗尽，用此备份兜底（借鉴 hermes-agent
       // _pending_verification_response 的保留语义）。
       let pendingVerificationReply = "";
+      // Turn 退出原因追踪（对标 Hermes turn_finalizer._explain_abnormal_exit）：
+      // 在循环 break 时设置，供终末安全网的异常退出说明器使用。
+      // 正常完成时保持空字符串（"" = 正常退出，不追加说明）。
+      let turnExitReason = "";
 
       // ── IterationBudget integration ──
       // When available, use the Hermes-style budget system instead of the
@@ -4760,7 +4783,17 @@ export async function tryCallLLM(
       const EDIT_TOOLS = new Set([
         "file_write", "file_delete", "apply_patch", "write_file", "edit_file",
       ]);
+      // HOUSEKEEPING_TOOLS（对标 Hermes turn_tool_round.housekeeping）：
+      // 只读维护类工具——正常工作流程中预期使用，不计入"进度"但也不触发
+      // 调查循环 nudge（除非连续 ≥3 轮且用户有实现意图）。
+      const HOUSEKEEPING_TOOLS = new Set([
+        "file_read", "file_list", "code_search", "memory_retrieve",
+        "web_search", "web_fetch", "skill_list", "skill_view", "skill_manage",
+        "sequential_thinking", "assess_coding_capability",
+      ]);
       let consecutiveReadOnlyRounds = 0;
+      // Run-budget wrap-up notice 是否已注入（每 turn 只注入一次）
+      let wrapUpNoticeInjected = false;
 
       for (let round = 0; round < maxToolRounds; round++) {
         // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
@@ -4853,6 +4886,7 @@ export async function tryCallLLM(
                 `3. 重新描述需求，我会从已有进度继续`,
               ].filter(Boolean).join("\n");
             }
+            turnExitReason = "budget_exhausted";
             break;
           }
           budget.consume(1);
@@ -4873,6 +4907,25 @@ export async function tryCallLLM(
         if (round === maxToolRounds - 5) {
           onProgress?.({ type: "rounds_warning", phase: "thinking", detail: `即将达到最大轮次限制（${maxToolRounds} 轮），剩余 5 轮`, progress: 88 });
         }
+
+        // ── Run-budget wrap-up notice（对标 Hermes turn_finalizer 80% 提醒）──
+        // 在工具轮次达到 80% 时注入 transient 提醒，让模型知道接近上限、
+        // 需要开始收尾。这是确定性注入（不调 LLM），与提示词 nudge 不同。
+        if (maxToolRounds > 0 && round >= Math.floor(maxToolRounds * 0.8) && round < maxToolRounds - 1) {
+          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${maxToolRounds}（${Math.round((round + 1) / maxToolRounds * 100)}%），接近上限。请基于已有结果开始收尾，避免继续调用工具。如果任务已完成，请直接输出完成状态汇报。`;
+          // 只在当前轮次第一次达到 80% 时注入一次
+          if (!wrapUpNoticeInjected) {
+            pendingTransient.push({ role: "user", content: wrapUpNotice });
+            wrapUpNoticeInjected = true;
+            process.stdout.write(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / maxToolRounds * 100)}% for session "${sessionId}"\n`);
+          }
+        }
+
+        // ── Activity stamp（对标 Hermes TurnLivenessWatchdog.touch）──
+        // 每轮有 LLM 响应后调用，保持 watchdog 活跃，防止飞行中卡死误判。
+        try {
+          getTurnLivenessWatchdog().touch(sessionId);
+        } catch { /* best-effort — watchdog 不可用时不阻断 */ }
 
         // ── Steer: inject real-time instructions ──
         if (deps.getSteerMessage) {
@@ -4938,9 +4991,13 @@ export async function tryCallLLM(
           // 盲重试直接 failover——省 1 次调用 + 1 个 backoff 周期。
           if (consecutiveDeterministicEmpty >= 2) {
             process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" (${provider.model}) returned ${consecutiveDeterministicEmpty} consecutive empty responses — deterministic, skipping remaining retries\n`);
+            turnExitReason = "deterministic_empty";
             break;
           }
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            turnExitReason = "max_iterations_reached";
+            break;
+          }
           continue;
         }
 
@@ -5154,10 +5211,16 @@ export async function tryCallLLM(
             process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type} (non-transient)\n`);
             // R1-2: 持久化到 skip list，同 session 内不再重复尝试
             getProviderSkipList().add(sessionId, provider.id, classified.type);
+            turnExitReason = classified.type === LLMErrorType.CONTENT_POLICY
+              ? "content_filter"
+              : "guardrail_halt";
             break;
           }
 
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            turnExitReason = "max_iterations_reached";
+            break;
+          }
           continue;
         }
 
@@ -5180,6 +5243,7 @@ export async function tryCallLLM(
         }
         if (totalTokensUsed > TOKEN_BUDGET) {
           process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.\n`);
+          turnExitReason = "budget_exhausted";
           break;
         }
 
@@ -5290,7 +5354,10 @@ export async function tryCallLLM(
           process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" returned safety-filter rejection for session "${sessionId}": ${finalReply.slice(0, 200)}\n`);
           recordProviderFailure(provider.name);
           consecutiveErrors++;
-          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) break;
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            turnExitReason = "content_filter";
+            break;
+          }
           continue;
         }
 
@@ -6530,6 +6597,7 @@ export async function tryCallLLM(
               role: "user",
               content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
             });
+            turnExitReason = "guardrail_halt";
             break;
           }
         }
@@ -6540,6 +6608,7 @@ export async function tryCallLLM(
             role: "user",
             content: `[系统提示] 检测到工具调用循环（${toolLoopHaltDet}）。已停止工具调用。请基于已完成的工具执行结果，总结当前进展并给出回复。不要再调用相同的工具。`,
           });
+          turnExitReason = "guardrail_halt";
           break;
         }
 
@@ -6907,15 +6976,39 @@ export async function tryCallLLM(
           }
         }
 
+        // ── Turn-end activity stamp（对标 Hermes TurnLivenessWatchdog.stop）──
+        // turn 结束时调用 touch 保持活跃，防止后续 watchdog 误判为卡死。
+        try {
+          getTurnLivenessWatchdog().touch(sessionId);
+        } catch { /* best-effort */ }
+
         // ── Turn Finalizer：终末安全网（对标 hermes-agent turn_finalizer.py）──
-        // 在回复组装完毕后、持久化前运行。三个结构机制：
+        // 在回复组装完毕后、持久化前运行。五个结构机制：
         //   1. 静默停止检测：turn 以工具结果结尾、无后续 assistant 文本时，合成状态摘要
         //   2. 碎片终止守卫：turn 做了工具工作后以碎片结束时，追加状态块
         //   3. 完成状态强制：回复不含完成状态标记时，追加结构状态块
+        //   4. 文件变更 Footer：写文件失败时追加验证者 footer（对标 Hermes _append_file_mutation_footer）
+        //   5. 异常退出说明：异常退出时追加原因解释（对标 Hermes _explain_abnormal_exit）
         // 这是确定性后处理（不调 LLM），不是提示词 nudge——模型无法忽略。
         // 对标 sess_mw23sp1y_e557da27 场景：模型做完只读调查后戛然而止，无完成状态汇报。
         try {
           // 从工具执行记录构建统计
+          // 构建 failedFileMutations：从 failedTools 中筛选写文件类工具，提取路径
+          const FILE_MUTATING_TOOLS = new Set(["file_write", "file_delete"]);
+          const failedFileMutations: Array<{ path: string; error: string }> = [];
+          for (const ft of failedTools) {
+            if (!FILE_MUTATING_TOOLS.has(ft.name)) continue;
+            // 从 executedToolCalls 中查找对应的 args 以提取路径
+            const entry = executedToolCalls.find((c) => c.name === ft.name);
+            let path = "";
+            if (entry) {
+              const args = entry.arguments as Record<string, unknown>;
+              path = String(args?.path ?? args?.filePath ?? args?.file_path ?? "");
+            }
+            if (path) {
+              failedFileMutations.push({ path, error: ft.error });
+            }
+          }
           const toolStats: ToolExecutionStats = {
             successful: successfulToolCalls,
             failed: failedTools.length,
@@ -6933,6 +7026,7 @@ export async function tryCallLLM(
               })
               .filter((p) => p.length > 0),
             executedCommands: extractExecutedShellCommands(executedToolCalls),
+            failedFileMutations: failedFileMutations.length > 0 ? failedFileMutations : undefined,
           };
           const liteMessages: Array<ConversationMessageLite> = conversationMessages.map((m) => ({
             role: m.role,
@@ -6941,7 +7035,7 @@ export async function tryCallLLM(
             tool_call_id: m.tool_call_id,
             name: m.name,
           }));
-          const finalizerResult = runTurnFinalizer(finalReply, liteMessages, toolStats);
+          const finalizerResult = runTurnFinalizer(finalReply, liteMessages, toolStats, 0, turnExitReason);
           if (finalizerResult.silentStopSynthesized) {
             process.stdout.write(
               `[AgentModelExecutor] Turn finalizer: silent stop synthesized status summary for session "${sessionId}"\n`,
@@ -6950,6 +7044,16 @@ export async function tryCallLLM(
           if (finalizerResult.completionStatusAppended) {
             process.stdout.write(
               `[AgentModelExecutor] Turn finalizer: completion status block appended for session "${sessionId}"\n`,
+            );
+          }
+          if (finalizerResult.fileMutationFooterAppended) {
+            process.stdout.write(
+              `[AgentModelExecutor] Turn finalizer: file mutation footer appended (${toolStats.failedFileMutations?.length ?? 0} failed mutations) for session "${sessionId}"\n`,
+            );
+          }
+          if (finalizerResult.abnormalExitExplained) {
+            process.stdout.write(
+              `[AgentModelExecutor] Turn finalizer: abnormal exit explanation appended (reason=${turnExitReason}) for session "${sessionId}"\n`,
             );
           }
           if (finalizerResult.degenerateFinalDetected) {
