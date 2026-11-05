@@ -26,13 +26,15 @@ const TOKEN_CACHE_MAX = 500;
  */
 export function estimateTokensCached(text: string): number {
   if (!text || text.length === 0) return 0;
+  // 与 ContextEngine.estimateTokens 语义一致：CJK（汉字/假名/谚文）约 1.5
+  // 字符/token，其他约 4 字符/token，再按 CJK 占比线性内插。
+  const estimate = estimateCjkAware(text);
 
   // 短文本直接缓存完整内容
   if (text.length <= 1000) {
     const key = `s:${text}`;
     const cached = tokenEstimateCache.get(key);
     if (cached !== undefined) return cached;
-    const estimate = Math.ceil(text.length / 3);
     cacheSet(key, estimate);
     return estimate;
   }
@@ -42,9 +44,28 @@ export function estimateTokensCached(text: string): number {
   const key = `l:${prefix}:${text.length}`;
   const cached = tokenEstimateCache.get(key);
   if (cached !== undefined) return cached;
-  const estimate = Math.ceil(text.length / 3);
   cacheSet(key, estimate);
   return estimate;
+}
+
+/** CJK 感知 token 估算（与 ContextEngine.estimateTokens 同一公式，带缓存） */
+export function estimateCjkAware(text: string): number {
+  let cjkCount = 0;
+  let otherCount = 0;
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (
+      (code >= 0x4e00 && code <= 0x9fff) || // CJK 统一表意
+      (code >= 0x3400 && code <= 0x4dbf) || // CJK 扩展A
+      (code >= 0x3040 && code <= 0x30ff) || // 日文假名
+      (code >= 0xac00 && code <= 0xd7af)    // 韩文音节
+    ) {
+      cjkCount++;
+    } else {
+      otherCount++;
+    }
+  }
+  return Math.ceil(cjkCount / 1.5 + otherCount / 4);
 }
 
 /**

@@ -5507,14 +5507,24 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
         // Check if LLM used web_search or tavily-search but user intent matches an installed skill
         // Also check if SearchPreprocessor auto-executed a search (searchPreDone)
+        // ★ P1 性能优化：每个 tool_call 只读一次 arguments，复用原始字符串，
+        // 原先 2 × N(tc) 次 JSON.stringify 降为 0 次（arguments 本身即字符串；
+        // 与原逻辑 `arguments || {}` 的 JSON.stringify 等价：null/undefined→"{}"，
+        // 字符串→原样，非字符串才 stringify，原代码该场景同样按 0/异常处理）。
+        const tcArgsRaw = (tc: NonNullable<typeof toolCalls> extends Array<infer T> ? T : never) => {
+          const raw = (tc as { function?: { arguments?: unknown } }).function?.arguments;
+          if (typeof raw === "string") return raw;
+          if (raw == null) return "{}";
+          return JSON.stringify(raw);
+        };
         const usedWebSearch = toolCalls && toolCalls.some(tc => {
-          const args = JSON.stringify(tc.function.arguments || {});
+          const args = tcArgsRaw(tc);
           return tc.function.name === "web_search" ||
             (tc.function.name === "skill_manage" && args.includes("tavily")) ||
             (tc.function.name === "web_fetch" && args.includes("stealth"));
         });
         const usedCiccSkill = toolCalls && toolCalls.some(tc => {
-          const args = JSON.stringify(tc.function.arguments || {});
+          const args = tcArgsRaw(tc);
           return (tc.function.name === "skill_manage" && args.includes("cicc")) ||
             (tc.function.name === "shell_exec" && args.includes("cicc"));
         });
@@ -5939,6 +5949,13 @@ if (deps.contextPruningManager && !prunerNoop) {
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
           }
 
+          // ★ P0 性能优化（performance-analysis.md 建议 1）：args 序列化只做一次。
+          // 幂等缓存键（L6136）与工具结果缓存键（原 L6289）此前各自
+          // JSON.stringify(args)，大参数（文件内容/搜索结果可达数百 KB）时
+          // 重复序列化纯浪费。现在在解析完成后序列化一次，全流程复用；
+          // 字符串即最终键，等价替换，无行为变化。
+          const argsKey = `${toolName}:${JSON.stringify(args)}`;
+
           // ★ 决策入轨迹的**唯一**位置（2026-10-11）：此处三条来源（流式
           //   tool_calls / 非流式 tool_calls / 正文 XML 解析）已汇合，参数也已
           //   完整解析，因此无论走哪条路径、参数取哪个早退分支，轨迹里都能看到
@@ -6128,7 +6145,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           // 的第二次写入被误判为重复而**静默跳过**，风险高于收益。
           if (IDEMPOTENT_TOOLS.has(toolName)) {
             cleanIdempotencyCache();
-            const cacheKey = `${toolName}:${JSON.stringify(args)}`;
+            const cacheKey = argsKey;
             const cached = idempotencyCache.get(cacheKey);
             if (cached && Date.now() - cached.timestamp < IDEMPOTENCY_TTL) {
               process.stdout.write(`[AgentModelExecutor] Idempotent cache hit for ${toolName}\n`);
@@ -6138,7 +6155,9 @@ if (deps.contextPruningManager && !prunerNoop) {
 
           // ── Tool result cache ──
           if (deps.toolResultCache) cleanToolCache(deps.toolResultCache);
-          const cachedResult = lookupCachedToolResult(deps.toolResultCache, toolName, args, 300_000);
+          // ★ P0 性能优化：直接命中精确 key（与下方写入侧同键），避免
+          // lookupCachedToolResult 内部再 JSON.stringify(args) 一次。
+          const cachedResult = deps.toolResultCache?.get(argsKey)?.result ?? null;
           if (cachedResult !== null) {
             process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult };
@@ -6285,8 +6304,8 @@ if (deps.contextPruningManager && !prunerNoop) {
               }
 
               // Cache result（副作用工具不缓存：结果非 args 纯函数，见 NO_RESULT_CACHE_TOOLS）
-              // ★ P0 性能优化：JSON.stringify(args) 只调用一次，复用给两个缓存 key
-              const argsKey = `${toolName}:${JSON.stringify(args)}`;
+              // ★ P0 性能优化：argsKey 在 args 解析后一次性构造（见上方），
+              // 此处直接复用，消除本行历史上的第二次 JSON.stringify(args)。
               if (deps.toolResultCache && !NO_RESULT_CACHE_TOOLS.has(toolName)) {
                 deps.toolResultCache.set(argsKey, { result: toolResult, timestamp: Date.now() });
               }

@@ -1,6 +1,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
+// ★ P1 性能优化（performance-analysis.md 建议 3）：估算结果 LRU 缓存。
+// 同一段 system prompt / 历史消息在多轮、多估算点间反复计算，命中率可观。
+import { estimateTokensCached } from "./token-estimate-cache";
 
 export type PromptLayer = "frozen" | "ephemeral";
 
@@ -283,7 +286,7 @@ export class ContextEngine {
     // 但原 availableTokens 计算只扣除 systemContent（含 "Current task:" 前缀版本），
     // 未扣除作为 user 消息的 currentTask，导致实际 token 数超出预算。
     const currentTaskTokens = input.currentTask
-      ? this.estimateTokens(input.currentTask)
+      ? estimateTokensCached(input.currentTask)
       : 0;
     // 生效窗口：优先用本次调用解析出的真实模型窗口，回退到配置值。
     const effectiveMaxTokens =
@@ -294,15 +297,17 @@ export class ContextEngine {
         : this.config.maxContextTokens;
     const availableTokens = Math.max(
       0,
-      effectiveMaxTokens - this.estimateTokens(systemContent) - this.config.reserveTokens - currentTaskTokens,
+      effectiveMaxTokens - estimateTokensCached(systemContent) - this.config.reserveTokens - currentTaskTokens,
     );
 
     const reversedHistory: typeof input.conversationHistory = [];
 
     for (let i = input.conversationHistory.length - 1; i >= 0; i--) {
       const msg = input.conversationHistory[i];
-      const msgTokens = this.estimateTokens(msg.content ?? "") +
-        this.estimateTokens(JSON.stringify(msg.tool_calls ?? {}));
+      // tool_calls 序列化结果也走缓存（同一历史对象在多轮间不变）
+      const toolCallsStr = JSON.stringify(msg.tool_calls ?? {});
+      const msgTokens = estimateTokensCached(msg.content ?? "") +
+        (toolCallsStr ? estimateTokensCached(toolCallsStr) : 0);
 
       if (historyTokens + msgTokens > availableTokens) {
         // availableTokens 为 0 时不强制 push 第一条消息（上下文已满）
@@ -329,7 +334,7 @@ export class ContextEngine {
       messages.push({ role: "user", content: input.currentTask });
     }
 
-    const tokenEstimate = this.estimateTokens(
+    const tokenEstimate = estimateTokensCached(
       messages.map((m) => m.content ?? "").join(""),
     );
 
@@ -446,10 +451,10 @@ export class ContextEngine {
     maxContextTokens?: number,
   ): boolean {
     const historyTokens = conversationHistory.reduce(
-      (sum, m) => sum + this.estimateTokens(m.content ?? ""),
+      (sum, m) => sum + estimateTokensCached(m.content ?? ""),
       0,
     );
-    const systemTokens = this.estimateTokens(systemPrompt);
+    const systemTokens = estimateTokensCached(systemPrompt);
     const totalEstimate = systemTokens + historyTokens;
     const effectiveMax =
       typeof maxContextTokens === "number" &&
@@ -462,7 +467,7 @@ export class ContextEngine {
   }
 
   getAvailableTokens(currentContext: string, maxContextTokens?: number): number {
-    const used = this.estimateTokens(currentContext);
+    const used = estimateTokensCached(currentContext);
     const effectiveMax =
       typeof maxContextTokens === "number" &&
       Number.isFinite(maxContextTokens) &&
@@ -476,7 +481,7 @@ export class ContextEngine {
     messages: Array<{ role: string; content: string | null }>,
   ): number {
     return messages.reduce((sum, m) => {
-      let tokens = this.estimateTokens(m.content ?? "");
+      let tokens = estimateTokensCached(m.content ?? "");
       tokens += 4;
       return sum + tokens;
     }, 0);
