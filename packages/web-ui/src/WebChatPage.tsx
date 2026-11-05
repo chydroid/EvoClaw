@@ -853,6 +853,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   const abortControllerRef = useRef<AbortController | null>(null);
   const statusAbortControllerRef = useRef<AbortController | null>(null);
   const voiceAbortControllerRef = useRef<AbortController | null>(null);
+  /**
+   * Durable 后台续跑任务轮询句柄（任务 ID → 定时器）。
+   * SSE done / 非流式响应带 durableTaskId（⏳ 检查点回复）时，
+   * 后台续跑完成事件没有 WebSocket 投递路径（web-ui 不连 WS，
+   * 也没有 durable 完成推送端点），前端必须自己轮询
+   * /api/durable-tasks/:id 直到终态，否则用户永远看不到后台完成的结果。
+   */
+  const durablePollingRef = useRef<{ timer: ReturnType<typeof setInterval>; taskId: string } | null>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const intervalsRef = useRef<ReturnType<typeof setInterval>[]>([]);
   const dequeueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1147,6 +1155,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       });
       intervalsRef.current.forEach(id => clearInterval(id));
       intervalsRef.current = [];
+      if (durablePollingRef.current) {
+        clearInterval(durablePollingRef.current.timer);
+        durablePollingRef.current = null;
+      }
       timersRef.current.forEach(id => clearTimeout(id));
       timersRef.current = [];
       statusAbortControllerRef.current?.abort();
@@ -1285,6 +1297,95 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         data: f.data || null,
       })) : undefined;
 
+      // ── Durable 后台续跑轮询 ─────────────────────────────────────────
+      // 当本轮以 ⏳ 检查点回复结束（done / 非流式响应带 durableTaskId）时，
+      // 启动对 /api/durable-tasks/:id 的轮询（10s 一次），直到任务进入
+      // 终态（completed / failed / cancelled）。完成后把 finalReply 追加
+      // 为新的助手气泡，让"任务后台完成 → 用户看到结果"的链路闭环。
+      // 用户切会话/卸载时清理（durablePollingRef 随组件卸载清空）。
+      const startDurablePolling = (durableTaskId: string) => {
+        if (durablePollingRef.current?.taskId === durableTaskId) return;
+        if (durablePollingRef.current) clearInterval(durablePollingRef.current.timer);
+        const MAX_POLLS = 60; // ~10 分钟上限，超时后保留 ⏳ 状态由用户 /resume
+        let polls = 0;
+        const timer = setInterval(async () => {
+          polls += 1;
+          try {
+            const res = await fetch(`/api/durable-tasks/${encodeURIComponent(durableTaskId)}`);
+            if (!res.ok) {
+              if (res.status === 404) {
+                // 任务已不存在（被取消/清理）→ 停止轮询
+                if (durablePollingRef.current?.timer === timer) clearInterval(timer);
+                durablePollingRef.current = null;
+                return;
+              }
+              return; // 5xx 等瞬时错误：下一轮再试
+            }
+            const task = await res.json() as {
+              status: string;
+              progress: string[];
+              finalReply?: string;
+              error?: string;
+            };
+            if (task.status === "running") {
+              // 进行中：展示最新进度行（复用 statusMessage，与前台任务一致）
+              const last = task.progress[task.progress.length - 1];
+              if (last) setStatusMessage(`🔄 后台续跑中：${last}`);
+              if (polls >= MAX_POLLS && durablePollingRef.current?.timer === timer) {
+                clearInterval(timer);
+                durablePollingRef.current = null;
+                setStatusMessage(`🔄 后台任务 ${durableTaskId} 仍在运行，可随时输入 /resume 继续`);
+              }
+              return;
+            }
+            // 终态 → 停止轮询并落地结果
+            if (durablePollingRef.current?.timer === timer) clearInterval(timer);
+            durablePollingRef.current = null;
+            setStatusMessage(null);
+            const resultId = `${botMsgId}-durable-${durableTaskId}`;
+            if (task.status === "completed") {
+              const body = task.finalReply || "✅ 后台任务已完成。";
+              setMessages((prev) =>
+                prev.some((m) => m.id === resultId)
+                  ? prev.map((m) => (m.id === resultId ? { ...m, content: body } : m))
+                  : [...prev, {
+                      id: resultId,
+                      role: "assistant" as const,
+                      content: `✅ 后台任务已完成，结果如下：\n\n${body}`,
+                      timestamp: new Date().toISOString(),
+                      isFinalSummary: true,
+                    }],
+              );
+            } else if (task.status === "failed") {
+              setMessages((prev) =>
+                prev.some((m) => m.id === resultId)
+                  ? prev.map((m) => (m.id === resultId ? { ...m, content: `❌ 后台任务失败：${task.error || "未知错误"}` } : m))
+                  : [...prev, {
+                      id: resultId,
+                      role: "assistant" as const,
+                      content: `❌ 后台任务失败：${task.error || "未知错误"}\n可输入 /resume 重试。`,
+                      timestamp: new Date().toISOString(),
+                      isFinalSummary: true,
+                    }],
+              );
+            } else {
+              // cancelled / paused
+              setMessages((prev) =>
+                prev.some((m) => m.id === resultId)
+                  ? prev
+                  : [...prev, {
+                      id: resultId,
+                      role: "assistant" as const,
+                      content: `⏸️ 后台任务已${task.status === "cancelled" ? "取消" : "暂停"}，可输入 /resume 继续。`,
+                      timestamp: new Date().toISOString(),
+                    }],
+              );
+            }
+          } catch { /* 网络错误：下一轮再试 */ }
+        }, 10_000);
+        durablePollingRef.current = { timer, taskId: durableTaskId };
+      };
+
       const FETCH_TIMEOUT = 1_200_000;
       const controller = new AbortController();
       abortControllerRef.current = controller;
@@ -1390,6 +1491,10 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
 
                   if (currentEvent === "done") {
                     finalData = eventData;
+                    // ★ 后台续跑闭环：done 带 durableTaskId（⏳ 检查点回复）时，
+                    //   后台完成事件无 WS 投递路径，前端轮询直至终态。
+                    const dtId = eventData.durableTaskId as string | undefined;
+                    if (dtId) startDurablePolling(dtId);
                     // ★ done 也带完整轨迹快照：任务结束时必须落地一次，
                     //   否则"完成后展开思考过程"就只剩空面板（2026-10-08）。
                     if (Array.isArray(eventData.thinkingSteps) && eventData.thinkingSteps.length > 0) {
@@ -1748,6 +1853,11 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             };
           }),
         );
+
+        // 非流式路径同样可能带 durableTaskId（⏳ 检查点回复）→ 启动后台轮询
+        if (typeof data.durableTaskId === "string" && data.durableTaskId) {
+          startDurablePolling(data.durableTaskId);
+        }
 
         if (typeof data.tokensUsed === "number" && data.tokensUsed > 0) {
           setContextUsed(data.tokensUsed);

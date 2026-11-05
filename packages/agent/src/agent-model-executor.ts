@@ -1681,7 +1681,7 @@ export class AgentModelExecutor {
     message: string,
     context?: Record<string, unknown>,
     onProgress?: AgentProgressCallback
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }>; durableTaskId?: string }> {
     const startTime = Date.now();
     const sessionId = (context?.sessionId as string) || "default";
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
@@ -1820,7 +1820,7 @@ export class AgentModelExecutor {
     peerId: string,
     tracing: any,
     parentSpan: any,
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> }> {
+  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }>; durableTaskId?: string }> {
 
     // Mark session as active for heartbeat pausing
     this.markSessionActive(sessionId);
@@ -3902,6 +3902,9 @@ export class AgentModelExecutor {
       permissionRequests: [],
       toolsExecuted: true,
       files: partialResult?.files ?? [],
+      // 携带任务 ID 让调用方（网关 SSE done）透传给前端，
+      // 使前端能轮询 /api/durable-tasks/:id 直至拿到 finalReply。
+      durableTaskId: task.id,
     };
   }
 

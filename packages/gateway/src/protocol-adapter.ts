@@ -3185,7 +3185,7 @@ export class ProtocolAdapter {
         }
 
         const agentExecutor = this.registry.resolveService<{
-          chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }> }>;
+          chat(prompt: string, context?: Record<string, unknown>, onProgress?: (event: import("@evoclaw/agent").AgentProgressEvent) => void): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests?: Array<{ id: string; operation: string; description: string; target: string }>; files?: Array<{ path: string; size: number; downloadUrl: string }>; durableTaskId?: string }>;
           /** End-to-end cancellation: aborts in-flight LLM fetches for a session. */
           abortSession?(sessionId: string): boolean;
           /** 软超时 / 浏览器关闭时把在飞任务存检查点并转入后台续跑（而非失败）。 */
@@ -3330,6 +3330,13 @@ export class ProtocolAdapter {
               sessionId: resolvedSessionId,
               permissionRequests: result.permissionRequests || [],
               files: result.files || [],
+              // ★ durable 任务 ID 透传：软超时转入后台续跑时，⏳ 回复伴随
+              //   durableTaskId 下发，前端据此轮询 /api/durable-tasks/:id
+              //   直至 status 完成并把 finalReply 追加为助手消息 —— 否则
+              //   web-ui（无 WebSocket）永远看不到后台完成的结果。
+              ...(("durableTaskId" in result && (result as Record<string, unknown>).durableTaskId)
+                ? { durableTaskId: (result as Record<string, unknown>).durableTaskId }
+                : {}),
               // ★ 最终思考轨迹随终结 done 一起下发（2026-10-11）。
               //   agent 侧也可能发过一条带轨迹的 done，但那条**早于**
               //   完成声明对账等收尾写入；这里的快照取自结果返回的那一刻，
@@ -3449,6 +3456,9 @@ export class ProtocolAdapter {
           sessionId: resolvedSessionId,
           permissionRequests: result.permissionRequests || [],
           files: result.files || [],
+          ...(("durableTaskId" in result && (result as Record<string, unknown>).durableTaskId)
+            ? { durableTaskId: (result as Record<string, unknown>).durableTaskId }
+            : {}),
           ...(("thinkingTrace" in result && (result as Record<string, unknown>).thinkingTrace)
             ? { thinkingSteps: (result as Record<string, unknown>).thinkingTrace }
             : {}),
@@ -3508,6 +3518,76 @@ export class ProtocolAdapter {
       }
       const checkpoint = taskCheckpointManager.get(sessionId);
       res.json({ hasCheckpoint: true, checkpoint });
+    });
+
+    // ── Durable 任务查询端点：web-ui 无 WebSocket 连接，后台续跑的完成
+    //    事件（durable_task_completed）没有 WS 投递路径。前端在 SSE done
+    //    带 durableTaskId 时轮询本端点，直到 status 变为
+    //    completed/failed/cancelled，再把 finalReply 追加为新的助手消息。──
+    //    这是「任务后台完成 → 用户实际看到结果」的确定性送达链路。
+    app.get("/api/durable-tasks", (req: Request, res: Response) => {
+      const sessionId = (req.query.sessionId as string) || "";
+      const runner = this.registry.resolveService<{
+        list(sessionId?: string): Array<{
+          id: string; sessionId: string; status: string; progress: string[];
+          finalReply?: string; error?: string; resumeCount: number;
+          checkpointAt?: number; completedAt?: number; createdAt: number; updatedAt: number;
+        }>;
+      }>("durableTaskRunner");
+      if (!runner) {
+        res.status(503).json({ error: "durableTaskRunner service not available" });
+        return;
+      }
+      const tasks = runner.list(sessionId || undefined);
+      res.json({
+        tasks: tasks.map((t) => ({
+          id: t.id,
+          sessionId: t.sessionId,
+          status: t.status,
+          progress: t.progress.slice(-20),
+          finalReply: t.status === "completed" ? t.finalReply : undefined,
+          error: t.status === "failed" ? t.error : undefined,
+          resumeCount: t.resumeCount,
+          checkpointAt: t.checkpointAt,
+          completedAt: t.completedAt,
+        })),
+      });
+    });
+
+    app.get("/api/durable-tasks/:id", (req: Request, res: Response) => {
+      const runner = this.registry.resolveService<{
+        get(id: string): {
+          id: string; sessionId: string; status: string; progress: string[];
+          finalReply?: string; error?: string; resumeCount: number;
+          checkpointAt?: number; completedAt?: number;
+        } | undefined;
+      }>("durableTaskRunner");
+      if (!runner) {
+        res.status(503).json({ error: "durableTaskRunner service not available" });
+        return;
+      }
+      const rawId = req.params.id;
+      const id = Array.isArray(rawId) ? rawId[0] : rawId;
+      if (!id) {
+        res.status(400).json({ error: "task id is required" });
+        return;
+      }
+      const task = runner.get(id);
+      if (!task) {
+        res.status(404).json({ error: "task not found", id });
+        return;
+      }
+      res.json({
+        id: task.id,
+        sessionId: task.sessionId,
+        status: task.status,
+        progress: task.progress.slice(-20),
+        finalReply: task.status === "completed" ? task.finalReply : undefined,
+        error: task.status === "failed" ? task.error : undefined,
+        resumeCount: task.resumeCount,
+        checkpointAt: task.checkpointAt,
+        completedAt: task.completedAt,
+      });
     });
 
     app.post("/api/chat/resume", async (req: Request, res: Response) => {

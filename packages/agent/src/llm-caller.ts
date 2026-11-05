@@ -4329,6 +4329,16 @@ export async function tryCallLLM(
       //
       // ★ P0-5 幂等化：裁剪结果写回 conversationHistory，保证下轮对已裁剪内容再裁剪
       //   产生相同结果（字节稳定，前缀缓存不漂移）。与 ContextPruningManager 写回逻辑一致。
+      let pruneResult: {
+        messages: Array<{
+          role: string;
+          content: string | unknown[] | null;
+          tool_call_id?: string;
+          tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+          name?: string;
+        }>;
+        stats: import("./tool-output-pruner").PruningStats;
+      } | undefined;
       try {
         const pruner = getToolOutputPruner();
         const toolMessages: Array<{
@@ -4344,12 +4354,12 @@ export async function tryCallLLM(
           tool_calls: m.tool_calls as typeof toolMessages[0]["tool_calls"],
           name: m.name,
         }));
-        const pruneResult = pruner.prune(toolMessages);
+        pruneResult = pruner.prune(toolMessages);
         if (pruneResult.stats.deduplicated > 0 || pruneResult.stats.summarized > 0 || pruneResult.stats.argsTruncated > 0) {
           process.stdout.write(`[AgentModelExecutor] ToolOutputPruner: ${pruneResult.stats.deduplicated} deduped, ${pruneResult.stats.summarized} summarized, ${pruneResult.stats.argsTruncated} args truncated, saved ~${pruneResult.stats.prunedChars} chars\n`);
           // Apply pruned content back to messages
           messages = messages.map((orig, idx) => {
-            const pruned = pruneResult.messages[idx];
+            const pruned = pruneResult!.messages[idx];
             if (!pruned) return orig;
             if (typeof orig.content === "string" && typeof pruned.content === "string" && pruned.content !== orig.content) {
               return { ...orig, content: pruned.content };
@@ -4370,7 +4380,7 @@ export async function tryCallLLM(
               const updated: typeof fullHistory = fullHistory.map((entry, i) => {
                 const j = i - offset;
                 if (j >= 0 && j < sliceLen) {
-                  const pruned = pruneResult.messages[historyStartIdx + j];
+                  const pruned = pruneResult!.messages[historyStartIdx + j];
                   if (
                     pruned &&
                     typeof entry.content === "string" &&

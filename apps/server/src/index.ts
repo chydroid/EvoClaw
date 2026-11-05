@@ -609,6 +609,9 @@ export class EvoClawServer {
         .then((r) => r.reply),
     );
     this.agentModelExecutor.setDurableTaskRunner(this.durableRunner);
+    // 注册为服务：网关 durable-tasks REST 端点通过 registry 解析，
+    // 前端（web-ui 无 WebSocket 连接）才能轮询后台续跑任务直至拿到 finalReply。
+    this.registry.registerService("durableTaskRunner", this.durableRunner);
 
     // Wire GatewayMetadataCache → agentModelExecutor → tokenUsageTracker so
     // real-time cost estimation uses actual provider prices (not the stub
