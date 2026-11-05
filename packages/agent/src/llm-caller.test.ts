@@ -119,6 +119,146 @@ describe("llm-caller > nativeFetch", () => {
       server.close();
     }
   });
+
+  it("★ P0-5：streamBody 模式应在响应头到达后即 resolve，body 增量推送不等待尾部完整缓冲", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      // 分 5 个 chunk 逐步写入，每次间隔 80ms，模拟 LLM SSE
+      res.write("data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n");
+      setTimeout(() => {
+        res.write("data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n");
+      }, 80);
+      setTimeout(() => {
+        res.write("data: {\"choices\":[{\"delta\":{\"content\":\" from SSE\"}}]}\n\n");
+      }, 160);
+      setTimeout(() => {
+        res.write("data: {\"choices\":[{\"delta\":{\"content\":\" chunks\"}}]}\n\n");
+      }, 240);
+      setTimeout(() => {
+        res.write("data: [DONE]\n\n");
+        res.end();
+      }, 320);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const t0 = Date.now();
+
+    try {
+      const res = await nativeFetch(`http://127.0.0.1:${port}/sse`, {
+        timeout: 5000,
+        streamBody: true,
+      });
+      // ★ 关键断言：resolve 只发生在收到响应头时，远早于最后一个 chunk 到达
+      // 默认非流式模式下此时服务端还没写完全部数据
+      const resolveMs = Date.now() - t0;
+      expect(res.ok).toBe(true);
+      expect(resolveMs, `resolve should occur early (got ${resolveMs}ms)`).toBeLessThan(250);
+
+      // body 增量读取应不阻塞等待尾部完整缓冲
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      const received: string[] = [];
+      let firstChunkMs = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!firstChunkMs) firstChunkMs = Date.now() - t0;
+        received.push(decoder.decode(value, { stream: true }));
+      }
+      const allText = received.join("");
+      expect(allText).toContain("Hello");
+      expect(allText).toContain(" from SSE");
+      expect(allText).toContain(" chunks");
+      expect(allText).toContain("[DONE]");
+      // 第一 chunk 应在 320ms 尾部之前到达
+      expect(firstChunkMs, `first chunk should arrive early (got ${firstChunkMs}ms)`).toBeLessThan(250);
+
+      // .text() 在 streamBody 模式下也可正常工作，且返回完整响应
+      // （此时 stream 已 close，bodyCompleted 应已 resolve）
+      const fullText = await res.text();
+      expect(fullText).toContain("Hello");
+      expect(fullText).toContain("[DONE]");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("★ P0-5：streamBody 模式下 .text()/.json() 在响应未结束时应能等到完整 buffer", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"first":"h"');
+      setTimeout(() => {
+        res.write(',"second":"w"}');
+        res.end();
+      }, 80);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    try {
+      const res = await nativeFetch(`http://127.0.0.1:${port}/stream-json`, {
+        timeout: 5000,
+        streamBody: true,
+      });
+      // resolve 仅在收到头部发生，body 还没完 → .json() 必须等到 end
+      const parsed = await res.json() as { first?: string; second?: string };
+      expect(parsed.first).toBe("h");
+      expect(parsed.second).toBe("w");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("★ P0-5：streamBody 模式下 res.on(error) 应注入到 body stream，不挂起 reader", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n");
+      // 80ms 后主动 destroy socket 模拟连接中断
+      setTimeout(() => {
+        const err = new Error("socket hang up");
+        res.destroy(err);
+      }, 80);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const t0 = Date.now();
+
+    try {
+      const res = await nativeFetch(`http://127.0.0.1:${port}/stream-error`, {
+        timeout: 5000,
+        streamBody: true,
+      });
+      expect(res.ok).toBe(true);
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let partialText = "";
+      let readFails = false;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          partialText += decoder.decode(value, { stream: true });
+        }
+      } catch {
+        readFails = true;
+      }
+      // body 必须以失败终止，否则 consumer 会挂起
+      expect(readFails, "reader.read() should reject after socket error").toBe(true);
+      expect(partialText).toContain("partial");
+
+      // .text() 也不应该挂，需以部分内容 resolve
+      const finalText = await res.text();
+      expect(finalText).toContain("partial");
+    } finally {
+      server.close();
+    }
+  });
 });
 
 // ═══════════════════════════════════════════════════════════

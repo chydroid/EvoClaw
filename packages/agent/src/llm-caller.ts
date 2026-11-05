@@ -154,6 +154,19 @@ export interface NativeFetchOptions {
   signal?: AbortSignal;
   /** Request timeout in milliseconds. Defaults to 0 (no timeout). */
   timeout?: number;
+  /**
+   * ★ P0-5 优化（2026-11-05）：响应体增量流式推送。
+   *
+   * 默认行为（false）：等待 `res.on("end")` 拼接全量 buffer 后才 resolve，
+   * 保证 `.text()` / `.json()` 同步可取。
+   *
+   * 开启后：Promise 在收到响应头时立即 resolve，body 为 ReadableStream
+   * 增量推送已到达的 chunk，无需等待尾部完整缓冲。`.text()`/`.json()`
+   * 仍可用，但改为 await 内部累积 Promise 直到 `end`。
+   *
+   * 用于 LLM SSE 流式调用路径，显著改善首 token 延迟（原先需等全响应）。
+   */
+  streamBody?: boolean;
 }
 
 export async function nativeFetch(
@@ -217,9 +230,72 @@ export async function nativeFetch(
         const ok = status >= 200 && status < 300;
         const chunks: Buffer[] = [];
 
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        // ★ P0-5：流式模式下 res 回调即 resolve，body 增量推送，
+        //   首 chunk 到达时 consumer 即可读到；同时累积 buffer 供 .text()/.json()
+        const wantsStream = options.streamBody === true;
+        let bodyCompleteResolver: ((buf: Buffer) => void) | null = null;
+        const bodyCompleted = new Promise<Buffer>((res2) => {
+          bodyCompleteResolver = res2;
+        });
+        let streamController: ReadableStreamDefaultController<Uint8Array> | null = null;
+        let streamEnded = false;
+
+        // 流式模式下的 body：用 ReadableStream 承载增量 chunk
+        const incrementalBody = new ReadableStream<Uint8Array>({
+          start(controller) {
+            streamController = controller;
+          },
+        });
+
+        res.on("data", (chunk: Buffer) => {
+          chunks.push(chunk);
+          if (wantsStream && streamController) {
+            try {
+              streamController.enqueue(new Uint8Array(chunk));
+            } catch {
+              // stream 已 close/error（异常路径或 consumer 提前取消）：吞掉
+            }
+          }
+        });
+
+        // ───── 流式模式：响应头到达即 resolve，body 增量推送 ─────
+        if (wantsStream) {
+          resolve({
+            ok,
+            status,
+            statusText: res.statusMessage || "",
+            body: incrementalBody,
+            text: async () => {
+              const buf = await bodyCompleted;
+              return buf.toString("utf-8");
+            },
+            json: async () => {
+              const buf = await bodyCompleted;
+              const text = buf.toString("utf-8");
+              try {
+                return JSON.parse(text);
+              } catch (err) {
+                throw new Error(
+                  `Response body is not valid JSON: ${err instanceof Error ? err.message : String(err)} (body preview: ${text.slice(0, 200)})`,
+                  { cause: err },
+                );
+              }
+            },
+          });
+        }
+
         res.on("end", () => {
+          streamEnded = true;
           cleanupAbortListeners();
+          if (wantsStream) {
+            // 流式：关闭 body stream，供 .text()/.json() 的 await 完成
+            if (streamController) {
+              try { streamController.close(); } catch { /* already closed */ }
+            }
+            if (bodyCompleteResolver) bodyCompleteResolver(Buffer.concat(chunks));
+            return;
+          }
+          // 默认模式：全量缓冲后构造单次 enqueue 的 body stream
           const buffer = Buffer.concat(chunks);
           const bodyStream = new ReadableStream<Uint8Array>({
             start(controller) {
@@ -228,7 +304,7 @@ export async function nativeFetch(
             },
           });
 
-          const response: NativeFetchResponse = {
+          resolve({
             ok,
             status,
             statusText: res.statusMessage || "",
@@ -245,12 +321,21 @@ export async function nativeFetch(
                 );
               }
             },
-          };
-          resolve(response);
+          });
         });
         res.on("error", (err) => {
           if (timeoutId) clearTimeout(timeoutId);
           cleanupAbortListeners();
+          // 流式模式已 resolve：必须将错误注入 body stream，并让 .text()/.json() 不挂
+          if (wantsStream) {
+            if (streamController) {
+              try { streamController.error(err); } catch { /* already errored/closed */ }
+            }
+            if (!streamEnded && bodyCompleteResolver) {
+              // 传递部分 buffer 让 await 的 caller 拿到已收到的内容，避免无限挂起
+              bodyCompleteResolver(Buffer.concat(chunks));
+            }
+          }
           reject(err);
         });
       }
@@ -3628,15 +3713,17 @@ bodyChars: bodyJson.length,
 
 // ★ P0-4：dump 开启时复用已序列化的 bodyJson，省一次全量序列化；
 //   dump 关闭时保持原行为
+// ★ P0-5：流式模式下 body 增量推送，首 token 延迟不再含全响应缓冲时间
 const response = await nativeFetch(apiURL, {
-method: "POST",
-headers,
-body: bodyJson || JSON.stringify(body), // dump 开启时 bodyJson 已序列化，复用
-signal: controller.signal,
-      // Enforce a connection-level timeout as well so nativeFetch aborts even
-      // when the TCP handshake or TLS negotiation hangs.
-      timeout: timeout + 5000,
-    });
+  method: "POST",
+  headers,
+  body: bodyJson || JSON.stringify(body), // dump 开启时 bodyJson 已序列化，复用
+  signal: controller.signal,
+  // Enforce a connection-level timeout as well so nativeFetch aborts even
+  // when the TCP handshake or TLS negotiation hangs.
+  timeout: timeout + 5000,
+  streamBody: useStreaming,
+});
 
     clearTimeout(timeoutId);
     if (externalAbortListener && externalSignal) {
