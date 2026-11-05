@@ -285,7 +285,7 @@ export function registerShellMediaTools(
     "shell_exec",
     {
       name: "shell_exec",
-      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution.",
+      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution. Large output is automatically truncated (head 40% + tail 60%) with the full text saved to a spill file — the result includes full_output_path and a truncation_note; re-read it with file_read/code_search instead of re-running the command.",
       parameters: {
         command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'", required: true },
         cwd: { type: "string", description: "Optional working directory for the command (default: workspace)", required: false },
@@ -1156,7 +1156,7 @@ export function registerShellMediaTools(
         "injected `tools` API: call multiple registered tools from within one script and combine results " +
         "(folds a multi-step tool pipeline into a single LLM turn). Forbidden operations (shell_exec, " +
         "email send, git push/commit, DLQ retry, webhooks, approvals) are rejected; audit log written to " +
-        "data/logs/programmatic-calls.jsonl.",
+        "data/logs/programmatic-calls.jsonl. Output longer than ~48K chars is head/tail truncated with the full text spilled to a file (full_output_path in the result) — read it via file_read instead of re-running the code.",
       parameters: {
         code: {
           type: "string",

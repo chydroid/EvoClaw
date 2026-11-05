@@ -53,6 +53,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
+import { isTruncatedOrSpilled, sanitizeExecResult } from "./tool-output-spill";
 import { getToolOutputPruner } from "./tool-output-pruner";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
@@ -6207,35 +6208,57 @@ if (deps.contextPruningManager && !prunerNoop) {
                 toolResult = rawResult;
               } else if (rawResult !== null && rawResult !== undefined) {
                 const r = rawResult as Record<string, unknown>;
-                if (typeof r.body === "string" && r.body.length > 100) {
-                  r.body = stripWebNoiseImpl(r.body);
-                }
-                if (typeof r.snippet === "string" && r.snippet.length > 100) {
-                  r.snippet = stripWebNoiseImpl(r.snippet);
-                }
-                if (Array.isArray(r.results)) {
-                  for (const item of r.results as Array<Record<string, unknown>>) {
-                    if (typeof item.snippet === "string" && item.snippet.length > 100) {
-                      item.snippet = stripWebNoiseImpl(item.snippet as string);
-                    }
-                    if (typeof item.content === "string" && item.content.length > 100) {
-                      item.content = stripWebNoiseImpl(item.content as string);
+                // ★ 2026-11-05 事故修复（对标 Hermes terminal_tool_result.py）：
+                //   代码/命令输出（shell_exec / execute_code / file_read / code_search）
+                //   绝不进入 stripWebNoise「网页去噪」管线——该管线会把
+                //   `Array<{ role: string }>` 腐蚀成 `Array,`、整行删除
+                //   `let x = …` 与 `//` 注释，模型读到的源代码是残缺的。
+                //   stripWebNoise 只允许作用于 web 类工具的 body/snippet/results 字段。
+                const isCodeOutput = toolName === "shell_exec" || toolName === "execute_code" || toolName === "file_read" || toolName === "code_search";
+                if (!isCodeOutput) {
+                  if (typeof r.body === "string" && r.body.length > 100) {
+                    r.body = stripWebNoiseImpl(r.body);
+                  }
+                  if (typeof r.snippet === "string" && r.snippet.length > 100) {
+                    r.snippet = stripWebNoiseImpl(r.snippet);
+                  }
+                  if (Array.isArray(r.results)) {
+                    for (const item of r.results as Array<Record<string, unknown>>) {
+                      if (typeof item.snippet === "string" && item.snippet.length > 100) {
+                        item.snippet = stripWebNoiseImpl(item.snippet as string);
+                      }
+                      if (typeof item.content === "string" && item.content.length > 100) {
+                        item.content = stripWebNoiseImpl(item.content as string);
+                      }
                     }
                   }
                 }
-                if (typeof r.output === "string" && r.output.length > 200) {
-                  r.output = stripWebNoiseImpl(r.output);
+                // 代码/命令输出：保真（不清洗）。超长时 spill 全文到
+                // data/workspace/tool-spill/*.log，正文按头 40%/尾 60% 截断并附
+                // full_output_path + truncation_note，模型可用 file_read/code_search
+                // 取回全文，不必重跑命令（Hermes spill-file 模式）。
+                if (isCodeOutput) {
+                  Object.assign(r, sanitizeExecResult(deps.workspacePath, tc.id, r, 48000));
                 }
                 toolResult = JSON.stringify(r);
               }
               // ★ 2026-11-03 修复：file_read/code_search 使用更高上限（32K），
               //   因为 JSON 序列化后比原始内容大 5-10%（引号/换行转义），
               //   20K 文件序列化后 ~22K 超过 16K 被截断 → agent 反复分块读取死循环。
-              const MAX_RESULT_LEN = isBrowser ? 8000 : (toolName === "file_read" || toolName === "code_search" ? 32000 : 16000);
+              // ★ 2026-11-05：exec 类上限提到 60K（48K 输出 + stderr + JSON 开销），
+              //   且截断语义已在上方 spill 落盘 + 头尾截断完成（幂等标记）。
+              const MAX_RESULT_LEN = isBrowser ? 8000 : (toolName === "shell_exec" || toolName === "execute_code" ? 60000 : (toolName === "file_read" || toolName === "code_search" ? 32000 : 16000));
               if (toolResult.length > MAX_RESULT_LEN) {
                 toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
               }
-              toolResult = summarizeToolResultFn(toolName, toolResult);
+              // 幂等守卫（Hermes）：exec 类结果已带「头尾截断 + spill 路径」标记时，
+              // 不再让 summarizeToolResult 二次改写——否则截断标记/spill 字段被吃，
+              // 模型失去重读全文的入口。
+              if (isTruncatedOrSpilled(toolResult)) {
+                /* keep as-is: 标记与 spill 路径保留 */
+              } else {
+                toolResult = summarizeToolResultFn(toolName, toolResult);
+              }
 
               // ── Output schema validation ──
               // If the tool declares an `outputSchema`, validate the raw result

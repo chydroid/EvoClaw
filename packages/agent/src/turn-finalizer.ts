@@ -331,7 +331,7 @@ export function enforceCompletionStatus(
   }
 
   // 构建结构状态块
-  const statusBlock = buildCompletionStatusBlock(toolStats);
+  const statusBlock = buildCompletionStatusBlock(toolStats, replyText);
 
   return {
     appended: true,
@@ -347,8 +347,31 @@ export function enforceCompletionStatus(
  * "structurally prevents over-claiming past the model"。
  * 这里不是防 over-claiming（那是 completion-truthfulness 的职责），
  * 而是防 under-reporting（模型做了工作但不汇报）。
+ *
+ * ★ 2026-11-05 修复（sess_mw2axgpv 08:14 事故）：此前无条件写
+ *   "状态：✅ 已完成"——但事故里模型回复止于"我将要做 SEARCH/REPLACE"
+ *   （意图句，任务实际未做完），块却宣称已完成，误导用户。
+ *   现在检测回复结尾是否为「后续意图」：是 → 降级为 🔄 进行中，
+ *   并明示"模型尚未给出最终结论"。只在没有完成标记时才走到这里
+ *   （enforceCompletionStatus 的短路），所以不影响真实完成汇报。
  */
-function buildCompletionStatusBlock(toolStats: ToolExecutionStats): string {
+/** 后续意图标记（出现在回复尾部 240 字符内即视为"还没做完"） */
+const PENDING_INTENT_PATTERNS = [
+  /接下来(将|会)/,
+  /现在(将|会)/,
+  /我(将|会)/,
+  /尚未(完成|实施|修改|编写|验证)/,
+  /还未(完成|实施|修改)/,
+  /计划(将|:)|待(实施|完成|修改)/,
+  /will (then )?(now|next)|i'?m going to|next,? (i|let)|i will/i,
+];
+
+function replyEndsInPendingIntent(replyText: string): boolean {
+  const tail = replyText.slice(-240);
+  return PENDING_INTENT_PATTERNS.some((p) => p.test(tail));
+}
+
+function buildCompletionStatusBlock(toolStats: ToolExecutionStats, replyText: string): string {
   const parts: string[] = [];
   parts.push("");
   parts.push("---");
@@ -366,7 +389,13 @@ function buildCompletionStatusBlock(toolStats: ToolExecutionStats): string {
     parts.push(`- 执行命令：${toolStats.executedCommands.slice(0, 3).map((c) => `\`${c}\``).join("、")}${toolStats.executedCommands.length > 3 ? " 等" : ""}`);
   }
 
-  parts.push(`- 状态：✅ 已完成（${toolStats.successful} 次工具调用）`);
+  if (replyEndsInPendingIntent(replyText)) {
+    parts.push(`- 状态：🔄 进行中（${toolStats.successful} 次工具调用，回复止于后续计划——最终交付尚未确认）`);
+    parts.push("");
+    parts.push("如需继续，请发送「继续」；模型将接着执行其声明的后续步骤。");
+  } else {
+    parts.push(`- 状态：✅ 已完成（${toolStats.successful} 次工具调用）`);
+  }
   parts.push("");
 
   return parts.join("\n");

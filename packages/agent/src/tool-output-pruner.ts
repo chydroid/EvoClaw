@@ -128,6 +128,13 @@ function dedupToolOutputs(
     }
 
     const content = result[idx].content as string;
+    // 幂等守卫（Hermes）：带「头尾截断 + spill 全文路径」标记的结果是
+    // 模型重读全文的唯一入口（file_read/code_search full_output_path），
+    // 不能被去重占位符替换——否则丢失重读通道。
+    if (content.includes('"full_output_path"')) {
+      seenHashes.add(md5Hash(content));
+      continue;
+    }
     const hash = md5Hash(content);
 
     if (seenHashes.has(hash)) {
@@ -317,6 +324,9 @@ function applySummaryPass(
     if (msg.content.length < config.summaryThreshold) return msg;
     // 跳过已是被裁剪的占位符
     if (msg.content.startsWith("[duplicate tool output removed")) return msg;
+    // 幂等守卫（Hermes）：带头尾截断/spill 全文路径标记的 exec 结果，
+    // 摘要会破坏 full_output_path / [OUTPUT TRUNCATED] 重读通道 → 跳过。
+    if (msg.content.includes('"full_output_path"') || msg.content.includes("[OUTPUT TRUNCATED -")) return msg;
 
     const toolName = msg.name || "";
     const summarized_content = summarizeToolOutput(toolName, msg.content, config.summaryThreshold);
