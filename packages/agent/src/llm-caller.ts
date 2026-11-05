@@ -1420,7 +1420,7 @@ export function lookupCachedToolResult(
     if (itemCount !== null && itemCount >= cachedLimit) continue; // 被截断了，不复用
     const newLimit = Number(args.limit);
     if (Number.isFinite(newLimit) && newLimit > 0 && itemCount !== null && newLimit < itemCount) continue;
-    process.stdout.write(`[AgentModelExecutor] Cache hit (limit-normalized) for ${toolName}\n`);
+    asyncLog(`[AgentModelExecutor] Cache hit (limit-normalized) for ${toolName}\n`);
     return entry.result;
   }
   return null;
@@ -3291,7 +3291,7 @@ export async function parseStreamingResponse(
       });
 
       if (result.usedPartialContent && result.response) {
-        process.stdout.write(
+        asyncLog(
           `[LLMCaller] Stream recovered via "${result.strategy}" strategy: ${result.response.length} chars ` +
           `(partial was ${content.length} chars)\n`,
         );
@@ -3586,7 +3586,7 @@ export async function callLLMOnce(
       applyReasoningToggle(body, provider);
     }
 
-    process.stdout.write(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
+    asyncLog(`[AgentModelExecutor] 📡 Calling ${provider.name} API: ${apiURL} (model: ${provider.model}, tool_choice: ${body.tool_choice}, tools: ${tools.length})\n`);
     callStart = Date.now();
 
     // ── 临时诊断：prompt 组成转储（EVOCLAW_DEBUG_PROMPT_DUMP=1 时启用）──
@@ -3938,7 +3938,7 @@ export async function tryCallLLM(
   const overloadAttemptsByProvider = new Map<string, number>();
 
   const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
-  process.stdout.write(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
+  asyncLog(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
 
   let totalTokensUsed = 0;
   let anyToolExecuted = false;
@@ -3965,7 +3965,7 @@ export async function tryCallLLM(
       }
     }
   }
-  process.stdout.write(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"\n`);
+  asyncLog(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"\n`);
 
   // ★ P0-5：skills 段不再由 llm-caller 自行构建（旧 deps.buildSkillsPromptForRun），
   // 改由 agent-model-executor 构建 skillsMessage 经 options 传入——构建时机与会话
@@ -3982,10 +3982,10 @@ export async function tryCallLLM(
     // TTL check: expire after 30 minutes
     const PENDING_CMD_TTL = 30 * 60 * 1000;
     if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
-      process.stdout.write(`[AgentModelExecutor] Pending command expired (>${PENDING_CMD_TTL / 60000}min), discarding: ${pendingCmd.command}\n`);
+      asyncLog(`[AgentModelExecutor] Pending command expired (>${PENDING_CMD_TTL / 60000}min), discarding: ${pendingCmd.command}\n`);
       deps.pendingApprovalCommands.delete(sessionId);
     } else {
-      process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
+      asyncLog(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
       deps.pendingApprovalCommands.delete(sessionId);
       // Reset HITL reject count so the command can go through
       hitlRejectCount = 0;
@@ -4105,7 +4105,7 @@ export async function tryCallLLM(
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
-      process.stdout.write(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active\n`);
+      asyncLog(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active\n`);
       continue;
     }
 
@@ -4115,7 +4115,7 @@ export async function tryCallLLM(
     // 同 session 内不再重复尝试（TTL 5 分钟后自动重试）。
     const skipEntry = getProviderSkipList().shouldSkip(sessionId, provider.id);
     if (skipEntry) {
-      process.stdout.write(
+      asyncLog(
         `[LLMCaller] Skipping provider "${provider.name}" — in skip list (reason: ${skipEntry.reason}, expires in ${Math.round((skipEntry.expiresAt - Date.now()) / 1000)}s)\n`,
       );
       continue;
@@ -4184,13 +4184,13 @@ export async function tryCallLLM(
       // 而 history 变量持有同一引用，因此修复后 history 自动包含合成消息。
       const closedCount = closeInterruptedToolSequenceFn(sessionPDeps, sessionId);
       if (closedCount > 0) {
-        process.stdout.write(`[AgentModelExecutor] Recovered ${closedCount} interrupted tool_call(s) for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] Recovered ${closedCount} interrupted tool_call(s) for session "${sessionId}"\n`);
       }
 
       // 压缩预算按「稳定主体 + 动态尾」全文估算（动态尾短小，误差可忽略，
       // 且比旧 fullSystemPrompt 少算了动态内容更准确）。
       if (needsCompactionFn(sessionPDeps, sessionId, stableSystemPrompt + dynamicSystemTail, deps.config.maxTokens)) {
-        process.stdout.write(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
         await compactConversationHistoryFn(sessionPDeps, sessionId);
       }
 
@@ -4234,7 +4234,7 @@ export async function tryCallLLM(
               sessionPDeps.llmSummarizer
             );
             if (metrics.wasCompressed) {
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] TrajectoryCompressor: ${metrics.turnsRemoved} turns removed, ` +
                 `${metrics.tokensSaved} tokens saved (ratio ${(metrics.compressionRatio * 100).toFixed(1)}%), ` +
                 `region [${metrics.turnsCompressedStartIdx}, ${metrics.turnsCompressedEndIdx}), ` +
@@ -4249,7 +4249,7 @@ export async function tryCallLLM(
           }
         } catch (err) {
           // 压缩失败不阻断主流程——回退到原始 history
-          process.stdout.write(
+          asyncLog(
             `[AgentModelExecutor] TrajectoryCompressor failed: ${err instanceof Error ? err.message : String(err)}\n`
           );
         }
@@ -4292,7 +4292,7 @@ export async function tryCallLLM(
           }
         }
         messages = result;
-        process.stdout.write(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
+        asyncLog(`[AgentModelExecutor] Using ContextEngine messages: ${messages.length} messages, ${deps.contextEngineResult.tokenEstimate} tokens\n`);
       } else {
         // Fallback: manual message assembly — ★ P0-7：易变内容前置，history 在后。
         // stableSystemPrompt 追加 ephemeralSuffix（时区/平台），与 CE 路径
@@ -4361,7 +4361,7 @@ export async function tryCallLLM(
         }));
         pruneResult = pruner.prune(toolMessages);
         if (pruneResult.stats.deduplicated > 0 || pruneResult.stats.summarized > 0 || pruneResult.stats.argsTruncated > 0) {
-          process.stdout.write(`[AgentModelExecutor] ToolOutputPruner: ${pruneResult.stats.deduplicated} deduped, ${pruneResult.stats.summarized} summarized, ${pruneResult.stats.argsTruncated} args truncated, saved ~${pruneResult.stats.prunedChars} chars\n`);
+          asyncLog(`[AgentModelExecutor] ToolOutputPruner: ${pruneResult.stats.deduplicated} deduped, ${pruneResult.stats.summarized} summarized, ${pruneResult.stats.argsTruncated} args truncated, saved ~${pruneResult.stats.prunedChars} chars\n`);
           // Apply pruned content back to messages
           messages = messages.map((orig, idx) => {
             const pruned = pruneResult!.messages[idx];
@@ -4428,7 +4428,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         }));
         const pruningResult = deps.contextPruningManager.prune(pruningInput);
         if (pruningResult.stats.softTrimmed > 0 || pruningResult.stats.hardCleared > 0) {
-          process.stdout.write(`[AgentModelExecutor] ContextPruning applied: ${pruningResult.stats.softTrimmed} soft trimmed, ${pruningResult.stats.hardCleared} hard cleared, saved ~${pruningResult.stats.charsSaved} chars\n`);
+          asyncLog(`[AgentModelExecutor] ContextPruning applied: ${pruningResult.stats.softTrimmed} soft trimmed, ${pruningResult.stats.hardCleared} hard cleared, saved ~${pruningResult.stats.charsSaved} chars\n`);
           // Apply pruned content back to original messages
           messages = messages.map((orig, idx) => {
             const pruned = pruningResult.prunedMessages[idx];
@@ -4482,7 +4482,7 @@ if (deps.contextPruningManager && !prunerNoop) {
 
       if (effectiveMessage.length >= MAX_USER_MESSAGE_LEN) {
         effectiveMessage = effectiveMessage.slice(0, MAX_USER_MESSAGE_LEN) + `\n\n[系统提示：原始消息过长，已截断至${MAX_USER_MESSAGE_LEN}字符。如需完整处理，请分段发送。]`;
-        process.stdout.write(`[AgentModelExecutor] User message truncated for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] User message truncated for session "${sessionId}"\n`);
       }
 
       // Build user message — use multimodal format when images are attached.
@@ -4619,7 +4619,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         (CREATIVE_TASK_PATTERN.test(rawMessage) ||
         (prevUserMsg && typeof prevUserMsg.content === "string" && CREATIVE_TASK_PATTERN.test(prevUserMsg.content)));
       if (isCreativeTask && tools.length > 0) {
-        process.stdout.write(`[AgentModelExecutor] Creative task detected — tools disabled (${tools.length}→0), forcing direct response in 1 round\n`);
+        asyncLog(`[AgentModelExecutor] Creative task detected — tools disabled (${tools.length}→0), forcing direct response in 1 round\n`);
         tools = [];
         // ★ 2026-10-27：此处保留 `tools = []`（与上面 nudge 路径的「保留 tools +
         //   tool_choice:none」相反）是**有意的**。tools 在请求体末尾，置空只丢掉
@@ -4641,7 +4641,7 @@ if (deps.contextPruningManager && !prunerNoop) {
       //   合法搜索。改为依赖 system prompt 中的 "Search has already been
       //   performed" 提示引导模型跳过搜索。
       if (searchPreDone) {
-        process.stdout.write(`[AgentModelExecutor] Search pre-done: keeping all tools for cache stability (${tools.length} tools)\n`);
+        asyncLog(`[AgentModelExecutor] Search pre-done: keeping all tools for cache stability (${tools.length} tools)\n`);
       }
 
       const isAction = hasActionIntentFn(message);
@@ -4783,7 +4783,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             messages: conversationMessages,
           });
           if (!stabilityResult.isStable && stabilityResult.brokenReason) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] ⚠️ Cache stability: UNSTABLE at message ${stabilityResult.brokenAt} — ${stabilityResult.brokenReason}\n` +
               `  stablePrefix: ${stabilityResult.stablePrefixLength} msgs, hit tokens: ${stabilityResult.estimatedCacheHitTokens}, miss tokens: ${stabilityResult.estimatedCacheMissTokens}\n`
             );
@@ -4805,7 +4805,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               .slice(0, 3)
               .map(([r, c]) => `${r}(${c})`)
               .join(", ") || "无";
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Cache hit rate: ${(hitRate * 100).toFixed(1)}% (${history.length - broken.length}/${history.length} stable, last 50 evals), top broken: ${topReasons}\n`
             );
           }
@@ -4815,7 +4815,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             const traceStats = deps.cacheTracer.stats();
             const totalTokens = traceStats.totalCacheHitTokens + traceStats.totalCacheMissTokens;
             if (totalTokens > 0) {
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Cache trace (token-weighted): ${(traceStats.overallHitRate * 100).toFixed(1)}% ` +
                 `(${traceStats.totalCacheHitTokens}/${totalTokens} tokens hit, ${traceStats.totalRequests} requests), ` +
                 `cost saved ~$${traceStats.totalEstimatedCostSaved.toFixed(4)}, latency saved ~${traceStats.totalEstimatedLatencySavedMs}ms\n`
@@ -4853,7 +4853,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         // callLLMOnce. Here we short-circuit the loop to return the best reply
         // accumulated so far (or a cancellation notice if nothing was produced).
         if (deps.abortSignal?.aborted) {
-          process.stdout.write(`[AgentModelExecutor] Abort signal received at round ${round} — stopping LLM loop for session "${sessionId}"\n`);
+          asyncLog(`[AgentModelExecutor] Abort signal received at round ${round} — stopping LLM loop for session "${sessionId}"\n`);
           if (finalReply) break;
           return {
             reply: "⏹️ 操作已取消。",
@@ -4871,7 +4871,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (budget.isExhausted) {
             // Budget exhausted — try Grace Call (one final call without tools)
             if (budget.graceCallAvailable) {
-              process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)\n`);
+              asyncLog(`[AgentModelExecutor] Iteration budget exhausted — using Grace Call (no tools)\n`);
               onProgress?.({ type: "budget_exhausted", phase: "generating", detail: `迭代预算已耗尽（${budget.getUsed()}/${budget.getMax()}），正在进行最终总结...`, progress: 92 });
               budget.useGraceCall();
               // Make one final LLM call without tools to produce a text answer
@@ -4905,7 +4905,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 //   验证门搁置的回复比重新生成的一次性总结更可靠）
                 if (pendingVerificationReply) {
                   finalReply = pendingVerificationReply;
-                  process.stdout.write(`[AgentModelExecutor] Grace Call failed; using pending verification reply as fallback for session "${sessionId}"\n`);
+                  asyncLog(`[AgentModelExecutor] Grace Call failed; using pending verification reply as fallback for session "${sessionId}"\n`);
                 } else {
                   finalReply = [
                   `⏰ 迭代预算已耗尽，最终总结请求也未能完成。`,
@@ -4921,7 +4921,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               break; // Exit loop after Grace Call
             }
             // No Grace Call available — force exit with meaningful summary
-            process.stdout.write(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary\n`);
+            asyncLog(`[AgentModelExecutor] Iteration budget exhausted, no Grace Call available — forcing summary\n`);
             onProgress?.({ type: "budget_exhausted", phase: "generating", detail: `迭代预算已耗尽（${budget.getUsed()}/${budget.getMax()}），生成执行总结...`, progress: 95 });
             // 优雅降级：生成有意义的总结，而非空白回复
             if (!finalReply) {
@@ -4969,7 +4969,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (!wrapUpNoticeInjected) {
             pendingTransient.push({ role: "user", content: wrapUpNotice });
             wrapUpNoticeInjected = true;
-            process.stdout.write(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / maxToolRounds * 100)}% for session "${sessionId}"\n`);
+            asyncLog(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / maxToolRounds * 100)}% for session "${sessionId}"\n`);
           }
         }
 
@@ -5001,7 +5001,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   maxToolRounds 已兜底防死循环。
         const tc: "auto" | "none" = isCreativeTask && successfulToolCalls >= 2 ? "none" : "auto";
         if (isCreativeTask && successfulToolCalls >= 2) {
-          process.stdout.write(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
+          asyncLog(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
           pendingTransient.push({
             role: "user",
             content: PromptRegistry.getInstance().format("tool_loop.nudge_final_answer", {}),
@@ -5103,7 +5103,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             try {
               const refunded = await budget.refundForRuntimeError(classified.type);
               if (refunded > 0) {
-                process.stdout.write(
+                asyncLog(
                   `[AgentModelExecutor] Runtime-error refund: returned ${refunded} iteration(s) for ${classified.type} on provider "${provider.name}"\n`,
                 );
               }
@@ -5133,7 +5133,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             if (recoveryResult.recovered && recoveryResult.shouldRetry) {
               // 消息修改类恢复：应用修改后的消息，重试同 provider
               conversationMessages = recoveryResult.messages as unknown as typeof conversationMessages;
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Recovery action: ${recoveryResult.action} — retrying with modified messages\n`,
               );
               consecutiveErrors = 0;
@@ -5151,7 +5151,7 @@ if (deps.contextPruningManager && !prunerNoop) {
 
           // ── fix-1: 基于 shouldCompact 统一处理压缩（覆盖 CONTEXT_OVERFLOW 和 PAYLOAD_TOO_LARGE） ──
           if (classified.shouldCompact) {
-            process.stdout.write(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
+            asyncLog(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             await compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
             // ★ P0-7：与主路径同布局——易变内容前置，history 在后。
             conversationMessages = [
@@ -5190,7 +5190,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             try {
               const refunded = await budget.refundForCompaction();
               if (refunded > 0) {
-                process.stdout.write(`[AgentModelExecutor] Compaction refund: returned ${refunded} iteration(s) to budget for session "${sessionId}"\n`);
+                asyncLog(`[AgentModelExecutor] Compaction refund: returned ${refunded} iteration(s) to budget for session "${sessionId}"\n`);
               }
             } catch { /* best-effort — refund must never block recovery */ }
           }
@@ -5201,7 +5201,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           // 也跳过后处理（总结调用/对账/磁盘核验——这些在后台 resume 中完成）。
           // v7 压测复跑实证：break 进后处理让 ⏳ 延迟 >500s 客户端超时（Task 1）。
           if (classified.type === LLMErrorType.ABORT) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Request aborted for session "${sessionId}" — returning immediately (skipping post-loop processing)\n`,
             );
             return {
@@ -5232,7 +5232,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             if (isOverloadLadderEligible(ladderInfo, used)) {
               const waitMs = computeOverloadWait(used + 1, ladderInfo);
               overloadAttemptsByProvider.set(provider.name, used + 1);
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Overload ladder ${used + 1}/${OVERLOAD_RECOVERY_MAX} for provider "${provider.name}" (${classified.type}, ${classified.reason ?? "transient"}): ` +
                 `waiting ${Math.round(waitMs / 1000)}s before in-place retry\n`,
               );
@@ -5388,7 +5388,7 @@ if (deps.contextPruningManager && !prunerNoop) {
 
           if (parsedCalls.length > 0) {
             assistantMsg.tool_calls = parsedCalls;
-            process.stdout.write(`[AgentModelExecutor] Parsed ${parsedCalls.length} XML tool call(s) from content: ${parsedCalls.map(c => c.function.name).join(", ")}\n`);
+            asyncLog(`[AgentModelExecutor] Parsed ${parsedCalls.length} XML tool call(s) from content: ${parsedCalls.map(c => c.function.name).join(", ")}\n`);
           }
         }
 
@@ -5425,7 +5425,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         if (tc === "none" && toolCalls && toolCalls.length > 0) {
           toolCallsNoneRefusals++;
           const refusedNames = toolCalls.map((c) => c.function.name).join("、");
-          process.stdout.write(
+          asyncLog(
             `[AgentModelExecutor] Provider ignored tool_choice=none — refusing ${toolCalls.length} call(s) [${refusedNames}] (refusal #${toolCallsNoneRefusals})\n`,
           );
           conversationMessages.push(assistantMsg);
@@ -5530,7 +5530,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         });
         const searchWasDone = usedWebSearch || searchPreDone;
         if (searchWasDone && !usedCiccSkill) {
-          process.stdout.write(`[AgentModelExecutor] Search was done (preDone=${searchPreDone}, webSearch=${usedWebSearch}) but no CICC skill — will check for skill fallback\n`);
+          asyncLog(`[AgentModelExecutor] Search was done (preDone=${searchPreDone}, webSearch=${usedWebSearch}) but no CICC skill — will check for skill fallback\n`);
         }
 
         if (!toolCalls || toolCalls.length === 0) {
@@ -5566,10 +5566,10 @@ if (deps.contextPruningManager && !prunerNoop) {
               if (intent) {
                 const threshold = intent.category === "skill_install" ? MIN_SKILL_INSTALL_SCORE : MIN_ACTION_TASK_SCORE;
                 if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score >= threshold) {
-                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (≥${threshold}), auto-triggering skill_list\n`);
+                  asyncLog(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (≥${threshold}), auto-triggering skill_list\n`);
                   shouldTriggerSkillSearch = true;
                 } else if ((intent.category === "skill_install" || intent.category === "action_task") && intent.score > 0) {
-                  process.stdout.write(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (<${threshold}), skipping auto skill_list\n`);
+                  asyncLog(`[AgentModelExecutor] Semantic intent="${intent.category}" score=${intent.score.toFixed(4)} (<${threshold}), skipping auto skill_list\n`);
                 }
               }
             } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
@@ -5588,7 +5588,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               // Log the search result but do NOT append to user-facing reply.
               // The skill search is informational only; if a matching skill
               // was found, the SkillDispatcher would have handled it earlier.
-              process.stdout.write(`[AgentModelExecutor] Auto skill_list result: ${searchStr.slice(0, 200)}\n`);
+              asyncLog(`[AgentModelExecutor] Auto skill_list result: ${searchStr.slice(0, 200)}\n`);
             } catch (err) {
               process.stderr.write(`[AgentModelExecutor] Auto skill_list failed:` + " " + err + "\n");
             }
@@ -5691,7 +5691,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   必须放行续跑——否则"文档贴在聊天里、文件不落盘"的回复会直接
             //   收尾（实测：更正脚注已追加但文件始终没写）。
             const isCreativeSubstantive = isCreativeTask && finalReply.length > 300 && diskMissingPaths.length === 0;
-            process.stdout.write(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
+            asyncLog(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
             // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
             // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
             // （停顿检测抓不到）。真实案例：node -e 引号报错 + Docker 不可用，
@@ -5704,7 +5704,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               ? overlapRatio(finalReply, lastYieldReply)
               : 0;
             const isLooping = yieldSimilarity > 0.7 && autoContinueCount > 0;
-            process.stdout.write(`[AgentModelExecutor] Auto-continue loop guard: similarity=${yieldSimilarity.toFixed(2)}, isLooping=${isLooping}, lastYieldLen=${lastYieldReply.length}\n`);
+            asyncLog(`[AgentModelExecutor] Auto-continue loop guard: similarity=${yieldSimilarity.toFixed(2)}, isLooping=${isLooping}, lastYieldLen=${lastYieldReply.length}\n`);
             const stalledAfterFailure = failedTools.length > 0;
             const shouldContinue =
               !isCreativeSubstantive &&
@@ -5762,7 +5762,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                     `Kanban 终止门 #${kanbanStopNudgeCount}（worker 未调用终端工具即收尾）`,
                     `已执行 kanban 工具但未调用 kanban_complete/kanban_block/kanban_request_review`,
                   );
-                  process.stdout.write(
+                  asyncLog(
                     `[AgentModelExecutor] Kanban stop gate #${kanbanStopNudgeCount} ` +
                     `— kanban worker stopped without terminal board tool; nudging to complete\n`,
                   );
@@ -5785,7 +5785,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
                   `变更文件：${nudgePaths.join("、")}`,
                 );
-                process.stdout.write(
+                asyncLog(
                   `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
                   `— file mutations detected without verification evidence; nudging agent to verify\n`,
                 );
@@ -5854,7 +5854,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 failedTools,
                 emptyResultTools,
               });
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Auto-continue #${autoContinueCount}/${MAX_AUTO_CONTINUE} ` +
                 `(trigger=${trigger}) — resuming task instead of yielding to user\n`,
               );
@@ -6065,7 +6065,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName);
 
             if (hitlRejectCount >= 1) {
-              process.stdout.write(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)\n`);
+              asyncLog(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)\n`);
               return {
                 role: "tool",
                 tool_call_id: tc.id,
@@ -6148,7 +6148,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             const cacheKey = argsKey;
             const cached = idempotencyCache.get(cacheKey);
             if (cached && Date.now() - cached.timestamp < IDEMPOTENCY_TTL) {
-              process.stdout.write(`[AgentModelExecutor] Idempotent cache hit for ${toolName}\n`);
+              asyncLog(`[AgentModelExecutor] Idempotent cache hit for ${toolName}\n`);
               return { role: "tool", tool_call_id: tc.id, name: toolName, content: cached.result };
             }
           }
@@ -6159,7 +6159,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           // lookupCachedToolResult 内部再 JSON.stringify(args) 一次。
           const cachedResult = deps.toolResultCache?.get(argsKey)?.result ?? null;
           if (cachedResult !== null) {
-            process.stdout.write(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
+            asyncLog(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult };
           }
 
@@ -6357,14 +6357,14 @@ if (deps.contextPruningManager && !prunerNoop) {
               const semanticallyFailed = failure !== null && failure !== undefined;
               if (semanticallyFailed) {
                 failedTools.push({ name: toolName, error: failure });
-                process.stdout.write(
+                asyncLog(
                   `[AgentModelExecutor] Tool "${toolName}" returned failure: ${failure}\n`,
                 );
               }
               const emptyEvidence = extractEmptyResult(toolName, rawResult);
               if (emptyEvidence) {
                 emptyResultTools.push(emptyEvidence);
-                process.stdout.write(
+                asyncLog(
                   `[AgentModelExecutor] Tool "${toolName}" returned EMPTY result (${emptyEvidence.field})\n`,
                 );
               }
@@ -6375,9 +6375,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               executedToolCalls.push({ id: tc.id, name: toolName, arguments: args });
               trace.addToolResult(toolName, toolResult, { round: round + 1, ok: !semanticallyFailed });
               if (semanticallyFailed) {
-                process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" finished with a failure result (not counted as success)\n`);
+                asyncLog(`[AgentModelExecutor] Tool "${toolName}" finished with a failure result (not counted as success)\n`);
               } else {
-                process.stdout.write(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
+                asyncLog(`[AgentModelExecutor] Tool "${toolName}" executed successfully\n`);
                 successfulToolCalls++;
                 // ── 后成功取代前失败（2026-10-14 评测修复）──
                 // 同名工具本轮先失败后成功时，清掉早前的 failedTools 记录：
@@ -6633,7 +6633,7 @@ if (deps.contextPruningManager && !prunerNoop) {
 
         // ── Execute parallel-safe tools concurrently ──
         if (parallelCalls.length > 1) {
-          process.stdout.write(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}\n`);
+          asyncLog(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}\n`);
           const parallelResults = await Promise.allSettled(parallelCalls.map(tc => executeSingleToolCall(tc)));
           for (let i = 0; i < parallelResults.length; i++) {
             const result = parallelResults[i];
@@ -6721,7 +6721,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             const userMsg = String(message || "");
             const implIntent = /实现|修复|写代码|修改|编辑|implement|fix|edit|write.*code|apply.*patch/i.test(userMsg);
             if (implIntent && consecutiveReadOnlyRounds === 3) {
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Investigation loop detected (${consecutiveReadOnlyRounds} consecutive read-only rounds) — nudging model to start editing\n`,
               );
               pendingTransient.push({
@@ -6740,7 +6740,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           try {
             const refunded = await budget.refundForExecuteCode(roundToolNames);
             if (refunded > 0) {
-              process.stdout.write(
+              asyncLog(
                 `[AgentModelExecutor] Execute-code refund: returned ${refunded} iteration(s) for round ${round + 1} (all ${roundToolNames.length} tools were execute_code-type)\n`,
               );
             }
@@ -6791,17 +6791,17 @@ if (deps.contextPruningManager && !prunerNoop) {
             let shouldAutoExecute = false;
             if (classifier) {
               const intent = await classifier.classifyIntent(message);
-              process.stdout.write(`[AgentModelExecutor] Skill fallback intent: category=${intent?.category} score=${intent?.score}\n`);
+              asyncLog(`[AgentModelExecutor] Skill fallback intent: category=${intent?.category} score=${intent?.score}\n`);
               if (intent && intent.category === "action_task" && intent.score > 0.6) {
                 shouldAutoExecute = true;
               }
             } else {
-              process.stdout.write(`[AgentModelExecutor] Skill fallback: no semantic classifier available\n`);
+              asyncLog(`[AgentModelExecutor] Skill fallback: no semantic classifier available\n`);
             }
             if (shouldAutoExecute) {
               const searchTool = deps.registeredTools.get("skill_list")!;
               const searchResult = await searchTool.handler({ action: "search", task: message });
-              process.stdout.write(`[AgentModelExecutor] Skill fallback search result:` + " " + JSON.stringify(searchResult).slice(0, 500) + "\n");
+              asyncLog(`[AgentModelExecutor] Skill fallback search result:` + " " + JSON.stringify(searchResult).slice(0, 500) + "\n");
               const searchObj = typeof searchResult === "object" ? searchResult as Record<string, unknown> : null;
               if (searchObj?.installed && searchObj.commands && Array.isArray(searchObj.commands)) {
                 const commands = searchObj.commands as string[];
@@ -6812,7 +6812,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 const cmd = commands[0];
                 if (cmd && skillDir) {
                   const resolvedCmd = cmd.replace(/\{baseDir\}/g, () => skillDir);
-                  process.stdout.write(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}\n`);
+                  asyncLog(`[AgentModelExecutor] Auto-executing installed skill command: ${resolvedCmd}\n`);
                   const shellExecTool = deps.registeredTools.get("shell_exec");
                   if (shellExecTool) {
                     try {
@@ -6875,10 +6875,10 @@ if (deps.contextPruningManager && !prunerNoop) {
       // 优先级：pendingVerificationReply（验证门暂存）> lastReplyBackup（续跑备份）
       if (!finalReply && pendingVerificationReply) {
         finalReply = pendingVerificationReply;
-        process.stdout.write(`[AgentModelExecutor] No new reply after verification gate; using pending verification reply for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] No new reply after verification gate; using pending verification reply for session "${sessionId}"\n`);
       } else if (!finalReply && lastReplyBackup) {
         finalReply = lastReplyBackup;
-        process.stdout.write(`[AgentModelExecutor] Auto-continue produced no new reply; restored previous reply for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] Auto-continue produced no new reply; restored previous reply for session "${sessionId}"\n`);
       }
 
       if (finalReply) {
@@ -7132,22 +7132,22 @@ if (deps.contextPruningManager && !prunerNoop) {
           }));
           const finalizerResult = runTurnFinalizer(finalReply, liteMessages, toolStats, 0, turnExitReason);
           if (finalizerResult.silentStopSynthesized) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Turn finalizer: silent stop synthesized status summary for session "${sessionId}"\n`,
             );
           }
           if (finalizerResult.completionStatusAppended) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Turn finalizer: completion status block appended for session "${sessionId}"\n`,
             );
           }
           if (finalizerResult.fileMutationFooterAppended) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Turn finalizer: file mutation footer appended (${toolStats.failedFileMutations?.length ?? 0} failed mutations) for session "${sessionId}"\n`,
             );
           }
           if (finalizerResult.abnormalExitExplained) {
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Turn finalizer: abnormal exit explanation appended (reason=${turnExitReason}) for session "${sessionId}"\n`,
             );
           }
@@ -7156,7 +7156,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             // 对标 Hermes degenerate-final guard 的简化版——
             // 在 turn 末尾无法续跑，故追加状态块而非注入 nudge
             finalReply = finalizerResult.finalReply;
-            process.stdout.write(
+            asyncLog(
               `[AgentModelExecutor] Turn finalizer: degenerate final detected — appended status block for session "${sessionId}"\n`,
             );
           } else {
@@ -7173,7 +7173,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           try {
             const agentId = "default";
             deps.sessionManager.getOrCreateSession(agentId, sessionId);
-            process.stdout.write(`[AgentModelExecutor] Persisting thinking trace: ${trace.size} step(s), round=${trace.round}, provider=${provider.name}, replyChars=${finalReply.length}\n`);
+            asyncLog(`[AgentModelExecutor] Persisting thinking trace: ${trace.size} step(s), round=${trace.round}, provider=${provider.name}, replyChars=${finalReply.length}\n`);
             deps.sessionManager.appendTurn(agentId, sessionId, {
               turnIndex: 0, role: "assistant", content: finalReply, timestamp: new Date().toISOString(),
               // 持久化真实工具调用（历史实现是 llm_tools 占位符，导致会话恢复后
