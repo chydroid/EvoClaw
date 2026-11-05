@@ -298,6 +298,9 @@ export class AgentModelExecutor {
   private tokenBudgetOptimizer: TokenBudgetOptimizer | null = null;
   private lastBudgetReport: BudgetReport | null = null;
 
+  /** P1-2：sessionId → 已执行的 LLM 调用次数（TokenBudget 报告降频计数器） */
+  private _budgetReportCounters = new Map<string, number>();
+
   /**
    * 可持久化、可恢复的超长任务引擎。
    * 超时不再是失败 —— 超时只意味着「存检查点 + 转入后台续跑」。
@@ -327,9 +330,20 @@ export class AgentModelExecutor {
   private static CHECK_FN_TTL_MS = 30_000;
   private checkFnCache = new Map<() => boolean, { timestamp: number; result: boolean }>();
 
-  /** 清理过期和超量的工具缓存 */
+  /** P0-1a：上次 cleanToolCache 执行时间戳（清理降频，避免热路径每次全量遍历 Map） */
+  private lastToolCacheCleanAt = 0;
+  /** P0-1a：清理最小间隔（ms）——TTL 本身是 5 分钟惰性过期，30s 内的重复清理无收益 */
+  private static TOOL_CACHE_CLEAN_INTERVAL_MS = 30_000;
+
+  /** 清理过期和超量的工具缓存。P0-1a：缓存未超限且距上次清理 <30s 时直接短路
+   *  （原先每次 getLLMCallerDeps 都全量遍历 + 可能 O(n log n) 排序重建）。 */
   private cleanToolCache(): void {
     const now = Date.now();
+    if (this.toolResultCache.size <= AgentModelExecutor.TOOL_CACHE_MAX
+      && now - this.lastToolCacheCleanAt < AgentModelExecutor.TOOL_CACHE_CLEAN_INTERVAL_MS) {
+      return;
+    }
+    this.lastToolCacheCleanAt = now;
     for (const [key, entry] of this.toolResultCache) {
       if (now - entry.timestamp > AgentModelExecutor.TOOL_CACHE_TTL) {
         this.toolResultCache.delete(key);
@@ -3659,20 +3673,28 @@ export class AgentModelExecutor {
     // 懒初始化 ToolResultCache / TokenBudgetOptimizer（best-effort，失败不影响主流程）
     this.ensureToolResultCacheV2();
     this.ensureTokenBudgetOptimizer();
-    // 用当前请求内容生成一次预算报告（不修改 messages，仅记录供 WebUI 展示）
+    // 用当前请求内容生成一次预算报告（不修改 messages，仅记录供 WebUI 展示）。
+    // P1-2：报告降频——仅每 5 轮（会话内 LLM 调用计数）生成一次，消除每轮
+    // history.map() 全量拷贝。WebUI 报告是纯展示数据，降频不影响 LLM 行为。
     if (this.tokenBudgetOptimizer) {
-      try {
-        const history = this.conversationHistory.get(sessionId) ?? [];
-        const report = this.tokenBudgetOptimizer.allocate({
-          systemPrompt,
-          memories: [],
-          history: history.map((m) => ({ role: m.role, content: m.content })),
-          toolResults: [],
-          userMessage: message,
-        });
-        this.lastBudgetReport = report.report;
-      } catch {
-        // best-effort：报告失败不影响 LLM 调用
+      const budgetCounterKey = `${sessionId}`;
+      const prevCount = this._budgetReportCounters.get(budgetCounterKey) ?? 0;
+      const newCount = prevCount + 1;
+      this._budgetReportCounters.set(budgetCounterKey, newCount);
+      if (prevCount === 0 || newCount % 5 === 0) {
+        try {
+          const history = this.conversationHistory.get(sessionId) ?? [];
+          const report = this.tokenBudgetOptimizer.allocate({
+            systemPrompt,
+            memories: [],
+            history: history.map((m) => ({ role: m.role, content: m.content })),
+            toolResults: [],
+            userMessage: message,
+          });
+          this.lastBudgetReport = report.report;
+        } catch {
+          // best-effort：报告失败不影响 LLM 调用
+        }
       }
     }
 
