@@ -3590,6 +3590,65 @@ export class ProtocolAdapter {
       });
     });
 
+    // ─── 工作区运行时切换 ────────────────────────────────────────────
+    // GET /api/workspace: 读取当前工作区（含 source = runtime | env | default）。
+    // POST /api/workspace { dir } 或 { reset: true }：切换或回退。
+    //   - 服务端 WorkspaceManager 同步 AgentModelExecutor.setWorkspacePath + BootstrapManager.setWorkspacePath，
+    //     并广播 WORKSPACE_SWITCHED / WORKSPACE_RESET 事件（订阅者可做审计/通知/UI 联动）。
+    //   - 仅对「目录存在 + 是目录」做硬校验，不做路径白名单 —— admin API 本身即特权操作，
+    //     非管理员前端调用应由 @evoclaw/security 的权限闸门另行把关。
+    app.get("/api/workspace", (_req: Request, res: Response) => {
+      const ws = this.registry.resolveService<{
+        getInfo(): {
+          dir: string; source: string; overridden: boolean;
+          presets: { repoRoot: string; dataWorkspace: string };
+        };
+      }>("workspaceManager");
+      if (!ws) {
+        res.status(503).json({ error: "workspaceManager service not available" });
+        return;
+      }
+      const info = ws.getInfo();
+      res.json({
+        dir: info.dir,
+        source: info.source,
+        overridden: info.overridden,
+        presets: info.presets,
+      });
+    });
+
+    app.post("/api/workspace", (req: Request, res: Response) => {
+      const body = req.body ?? {};
+      const reset = body.reset === true;
+      const dirInput = body.dir;
+      if (!reset && typeof dirInput !== "string") {
+        res.status(400).json({ error: 'Either "dir" or "reset": true is required' });
+        return;
+      }
+      const ws = this.registry.resolveService<{
+        switchTo(dir: string): { success: boolean; dir: string; error?: string };
+        reset(): { success: boolean; dir: string; error?: string };
+        getInfo(): {
+          dir: string; source: string; overridden: boolean;
+          presets: { repoRoot: string; dataWorkspace: string };
+        };
+      }>("workspaceManager");
+      if (!ws) {
+        res.status(503).json({ error: "workspaceManager service not available" });
+        return;
+      }
+      const result = reset ? ws.reset() : ws.switchTo(dirInput);
+      const info = ws.getInfo();
+      res.json({
+        success: result.success,
+        dir: info.dir,
+        source: info.source,
+        overridden: info.overridden,
+        presets: info.presets,
+        error: result.error,
+      });
+    });
+
     app.post("/api/chat/resume", async (req: Request, res: Response) => {
       const sessionId = (req.body.sessionId as string) || "";
       const message = (req.body.message as string) || "";

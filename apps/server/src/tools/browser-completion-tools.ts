@@ -28,7 +28,7 @@ import * as fs from "fs";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
-import type { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { getWorkspaceDir, type ServiceRegistry, type EventBus } from "@evoclaw/core";
 import type { PlaywrightBrowser } from "@evoclaw/infrastructure";
 import { BrowserVault, VaultError, normalizeOrigin, totpNow } from "@evoclaw/agent";
 
@@ -192,7 +192,8 @@ export function registerBrowserCompletionTools(deps: BrowserCompletionToolDeps):
       const question = String(params.question || "");
       if (!question) return { success: false, error: "question is required" };
       const annotate = String(params.annotate || "") !== "false";
-      const screenshotsDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace", "browser_screenshots");
+      // ★ P0-5：截图目录挂在 workspace 下；运行时切换 workspace 时屏幕截图也跟随
+      const screenshotsDir = path.join(getWorkspaceDir(), "browser_screenshots");
       const filename = `browser_screenshot_${randomUUID().replace(/-/g, "")}.png`;
       try {
         const { path: savedPath, size } = await pwBrowser.saveScreenshotToFile(screenshotsDir, filename);

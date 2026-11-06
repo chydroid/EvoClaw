@@ -19,7 +19,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import { execFileSync, spawn } from "child_process";
-import { atomicWriteFileSync } from "@evoclaw/core";
+import { atomicWriteFileSync, getWorkspaceDir } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { generateVideoDownloadScript } from "@evoclaw/infrastructure";
@@ -101,11 +101,6 @@ function hasVideoApiConfigured(): boolean {
 /** 检查视频生成工具是否可用 */
 function isVideoGenerationAvailable(): boolean {
   return hasVideoApiConfigured() || isFfmpegAvailable();
-}
-
-/** 获取 workspace 路径 */
-function getWorkspacePath(): string {
-  return process.env.EvoClaw_WORKSPACE || path.resolve(process.cwd(), "data", "workspace");
 }
 
 /** 确保目录存在 */
@@ -257,7 +252,7 @@ async function generateLocalSlideshow(
   prompt: string,
   options: VideoGenOptions
 ): Promise<VideoGenResult> {
-  const workspace = getWorkspacePath();
+  const workspace = getWorkspaceDir();
   const videoDir = path.join(workspace, "videos");
   ensureDir(videoDir);
 
@@ -365,7 +360,7 @@ async function generateLocalSlideshow(
 
 /** 下载视频到 workspace */
 async function downloadVideoToWorkspace(url: string, prefix: string): Promise<VideoGenResult> {
-  const workspace = getWorkspacePath();
+  const workspace = getWorkspaceDir();
   const videoDir = path.join(workspace, "videos");
   ensureDir(videoDir);
 
@@ -665,7 +660,7 @@ export function registerVideoTools(
       return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
     }
 
-    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    const workspaceDir = getWorkspaceDir();
     const outputDir = path.join(workspaceDir, "downloads");
     const pythonPaths = findPythonPaths();
     const existingPath = process.env.PATH || process.env.Path || "";

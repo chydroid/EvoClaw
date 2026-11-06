@@ -5,7 +5,7 @@ import { execFile } from "child_process";
 import { promisify } from "util";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { SkillManager } from "@evoclaw/skills";
-import type { ServiceRegistry } from "@evoclaw/core";
+import { getWorkspaceDir, type ServiceRegistry } from "@evoclaw/core";
 import type { BrowserController } from "@evoclaw/infrastructure";
 import { extractClaimsFromEvidence } from "@evoclaw/intelligence";
 import { fetchJsonFromUrl } from "./browser-tools";
@@ -545,7 +545,7 @@ export function registerWebTools(
       return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
     }
 
-    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    const workspaceDir = getWorkspaceDir();
     const pythonPaths = findPythonPaths();
     const existingPath = process.env.PATH || process.env.Path || "";
     const extendedPath = [...pythonPaths, existingPath].join(path.delimiter);

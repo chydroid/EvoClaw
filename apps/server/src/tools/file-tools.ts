@@ -205,13 +205,23 @@ export function registerFileTools(
   errorRecoveryManager: ErrorRecoveryManager,
   fileSystemManager: FileSystemManager,
   fsBase: string,
-  /** 相对路径的基准目录（通常是 data/workspace，已在白名单内）。缺省时退回 fsBase。 */
-  workspaceBase?: string
+  /**
+   * 相对路径的基准目录（通常是 data/workspace，已在白名单内）。缺省时退回 fsBase。
+   * 支持传「运行时 getter」——在每次调用时求值，使管理员 API 切换工作区后立即生效；
+   * 传字符串常量则在注册时固定（向后兼容，测试常用）。
+   */
+  workspaceBase?: string | (() => string)
 ): void {
   const fsMgr = fileSystemManager;
   const errRecovery = errorRecoveryManager;
   const permMgr = permissionManager;
   const permRelay = permissionRelay;
+
+  /** 每次调用时动态解析 workspace：函数 → 调用；字符串 → 常量使用；undefined → 退回 fsBase（向后兼容）。 */
+  const resolveWorkspaceBase = (): string => {
+    if (typeof workspaceBase === "function") return workspaceBase();
+    return workspaceBase ?? fsBase;
+  };
 
   // ── file_write（create / modify 复合工具）─────────────────────────
   // 合并自 file_create 与 file_modify。两者仅「新建还是覆盖」的语义不同，
@@ -221,7 +231,7 @@ export function registerFileTools(
     const filePath = String(params.path || "");
     const content = String(params.content || "");
     const overwrite = params.overwrite === true;
-    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
     const pf = preflight(resolvedPath, fsBase, true);
     if (!pf.ok) return { success: false, error: pf.error };
     // 沙箱外的写操作在「一般安全」档需要用户确认
@@ -252,7 +262,7 @@ export function registerFileTools(
   async function handleFileWriteModify(params: Record<string, unknown>): Promise<unknown> {
     const filePath = String(params.path || "");
     const content = String(params.content || "");
-    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
     const pf = preflight(resolvedPath, fsBase, true);
     if (!pf.ok) return { success: false, error: pf.error };
     if (pf.needsConfirm) {
@@ -307,7 +317,7 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
       const pf = preflight(resolvedPath, fsBase, true);
       if (!pf.ok) return { success: false, error: pf.error };
       if (pf.needsConfirm) {
@@ -356,7 +366,7 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const filePath = String(params.path || "");
-      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, workspaceBase, filePath);
+      const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
       // 「一般安全」档允许读取沙箱外的一般文件；只有严格档会在这里被拒（pf.ok=false）
@@ -414,7 +424,7 @@ export function registerFileTools(
     },
     async (params: Record<string, unknown>) => {
       const dirPath = String(params.path || ".");
-      const { resolved: resolvedPath, forFs: fsDir } = resolveToolPath(fsBase, workspaceBase, dirPath);
+      const { resolved: resolvedPath, forFs: fsDir } = resolveToolPath(fsBase, resolveWorkspaceBase(),dirPath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
       if (pf.insideSandbox) {

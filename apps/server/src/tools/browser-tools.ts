@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry, EventBus } from "@evoclaw/core";
+import { getWorkspaceDir } from "@evoclaw/core";
 import type { BrowserController, PlaywrightBrowser, FileSystemManager } from "@evoclaw/infrastructure";
 
 /** Validate that a resolved path stays within the allowed base directory.
@@ -416,7 +417,7 @@ export function registerBrowserTools(
       });
       if (filename) {
         const fs = await import("node:fs");
-        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+        const workspaceDir = getWorkspaceDir();
         const resolved = path.resolve(workspaceDir, filename);
         const pathError = validatePathWithinBase(resolved, workspaceDir);
         if (pathError) return { success: false, error: pathError };

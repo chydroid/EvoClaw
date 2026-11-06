@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as dns from "dns";
 import { randomBytes } from "node:crypto";
 import { initTracing, shutdownTracing, spanCollector } from "./tracing";
+import { WorkspaceManager } from "./workspace-manager";
 
 // IPv4 优先：避免 IPv6 DNS 解析延迟（借鉴 hermes-agent apply_ipv4_preference）
 dns.setDefaultResultOrder("ipv4first");
@@ -32,7 +33,7 @@ const SERVER_VERSION = getServerVersion();
 // 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager, getWorkspaceDir } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, DelegateEngine, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager, getClarifyGateway } from "@evoclaw/agent";
@@ -123,6 +124,7 @@ export class EvoClawServer {
   private scheduleManager: ScheduleManager;
   private cronSuggestionManager: CronSuggestionManager;
   private bootstrapManager: BootstrapManager;
+  private workspaceManager: WorkspaceManager;
   private compactionManager: CompactionManager;
   private lifecycleManager: AgentLifecycleManager;
   private queueManager: QueueManager;
@@ -670,6 +672,10 @@ export class EvoClawServer {
     this.bootstrapManager = new BootstrapManager(this.configManager);
     this.agentModelExecutor.setBootstrapManager(this.bootstrapManager);
     this.registry.registerService("bootstrapManager", this.bootstrapManager);
+    // 工作区运行时切换：admin API（POST /api/workspace）通过 registry 解析此服务。
+    // 顺序：先注册 service → 实际的 executor/bootstrap setter 调用在 switchTo/reset 时于 manager 内触发。
+    this.workspaceManager = new WorkspaceManager(this.agentModelExecutor, this.bootstrapManager, this.eventBus);
+    this.registry.registerService("workspaceManager", this.workspaceManager);
     this.bootstrapManager.initialize().then((ctx) => {
       this.logger.info("server", `Bootstrap initialized: bootstrapPending=${ctx.bootstrapPending}, missingFiles=${ctx.missingFiles.join(",") || "none"}`);
     }).catch((err) => {
@@ -1721,22 +1727,22 @@ export class EvoClawServer {
       this.errorRecoveryManager,
       this.fileSystemManager,
       fsBase,
-      // 相对路径基准 = workspace：与 shell_exec 的 cwd 一致，且已在白名单内。
-      // 不传的话相对路径会落到项目根（未白名单）→ file_create 每次都要审批。
-      path.resolve(__dirname, "..", "..", "..", "data", "workspace")
+      // 相对路径基准 = workspace（动态）：管理员 API 切换工作区后立即生效，
+      // 与 shell_exec 的 cwd 保持一致（shell_exec 始终用 getWorkspaceDir()）。
+      // 传函数引用而非字符串常量 —— file-tools 每次调用时求值。
+      getWorkspaceDir
     );
   }
 
   /**
    * Word/Excel/PPT 生成工具统一走 `document` 复合工具
    * （action: create_docx / create_xlsx / create_pptx）。
-   * 相对路径基准 = workspace（与 shell_exec 的 cwd 一致），避免产物污染仓库根目录。
+   * 相对路径基准 = workspace（动态，与 file-tools 一致），避免产物污染仓库根目录。
    * 实例任务真实事故：docx_create 相对路径落在仓库根 inst_eval2/，
    * 模型误判「/home/chy/test 下旧成品已更新」，任务对账为「未完成」。
    */
   private registerDocumentTools(fsBase: string): void {
-    const workspaceBase = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
-    registerDocumentTools(this.agentModelExecutor, fsBase, workspaceBase);
+    registerDocumentTools(this.agentModelExecutor, fsBase, getWorkspaceDir);
   }
 
   /**

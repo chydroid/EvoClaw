@@ -3,6 +3,7 @@ import * as fs from "fs";
 import * as crypto from "crypto";
 import { spawn, spawnSync } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import { getWorkspaceDir } from "@evoclaw/core";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
 import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand } from "@evoclaw/security";
@@ -298,7 +299,7 @@ export function registerShellMediaTools(
       const command = String(params.command || "");
       if (!command) return { success: false, error: "Command is required" };
 
-      const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+      const workspaceDir = getWorkspaceDir();
       // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
       let cwd = params.cwd ? String(params.cwd) : workspaceDir;
       // ── 推断脚本就近工作目录（2026-10-20 eval15 t05 事故） ──
@@ -403,7 +404,7 @@ export function registerShellMediaTools(
       // 「目录不存在 → No such file → 模型加 mkdir 死循环」模式（t06 实例：
       // scheduler_execute 把 tick.txt 写到嵌套路径，shell_exec 直写正常路径
       // 失败 3 轮后才自行 mkdir）。
-      const wsDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+      const wsDir = getWorkspaceDir();
       effectiveCommand = effectiveCommand.replace(
         /(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g,
         (match, offset: number) => {
@@ -789,7 +790,7 @@ export function registerShellMediaTools(
     const audioFormat = String(params.audioFormat || "mp3");
     const quality = String(params.quality || "320");
 
-    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    const workspaceDir = getWorkspaceDir();
     const outputDir = path.join(workspaceDir, "downloads");
     const pythonPaths = findPythonPaths();
     const existingPath = process.env.PATH || process.env.Path || "";
@@ -1209,7 +1210,7 @@ export function registerShellMediaTools(
         if (!code) return { success: false, error: "Parameter 'code' is required" };
 
         const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "120"), 10) || 120, 1), 120);
-        const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+        const workspaceDir = getWorkspaceDir();
         const startedAt = Date.now();
 
         // 组装脚本：注入 tools API（白名单）+ 脚本体

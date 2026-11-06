@@ -169,6 +169,38 @@ export const api = {
 };
 
 // ═══════════════════════════════════════════════
+// Workspace（运行时工作区切换）
+// ═══════════════════════════════════════════════
+
+export interface WorkspacePreset {
+  repoRoot: string;
+  dataWorkspace: string;
+}
+
+export interface WorkspaceInfo {
+  dir: string;
+  source: "runtime" | "env" | "default";
+  overridden: boolean;
+  presets: WorkspacePreset;
+}
+
+/** POST /api/workspace 返回体：switch 与 reset 共用。 */
+export interface WorkspaceSwitchResult {
+  success: boolean;
+  dir: string;
+  source: "runtime" | "env" | "default";
+  overridden: boolean;
+  presets: WorkspacePreset;
+  error?: string;
+}
+
+export const workspaceApi = {
+  getInfo: () => get<WorkspaceInfo>("/api/workspace"),
+  switchTo: (dir: string) => post<WorkspaceSwitchResult>("/api/workspace", { dir }),
+  reset: () => post<WorkspaceSwitchResult>("/api/workspace", { reset: true }),
+};
+
+// ═══════════════════════════════════════════════
 // Session Management（会话管理）
 // ═══════════════════════════════════════════════
 

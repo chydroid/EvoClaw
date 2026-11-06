@@ -65,6 +65,7 @@ const GuardrailsPage = React.lazy(() => import("./GuardrailsPage"));
 const OverallSecurityPage = React.lazy(() => import("./OverallSecurityPage"));
 const WorkboardPage = React.lazy(() => import("./WorkboardPage"));
 const SteerPage = React.lazy(() => import("./SteerPage"));
+const WorkspacePage = React.lazy(() => import("./WorkspacePage"));
 
 const StreamViewPage = React.lazy(() => import("./StreamViewPage").then(m => ({ default: m.StreamViewPage })));
 const TokenUsagePage = React.lazy(() => import("./TokenUsagePage"));
@@ -123,6 +124,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: "skills", i18nKey: "nav.skills", iconId: "skills" },
       { id: "bootstrap", i18nKey: "nav.bootstrap", iconId: "bootstrap" },
       { id: "files", i18nKey: "nav.files", iconId: "files" },
+      { id: "workspace", i18nKey: "nav.workspace", iconId: "files" },
       { id: "canvas", i18nKey: "nav.canvas", iconId: "canvas" },
       { id: "canvas-graph", i18nKey: "nav.canvas_graph", iconId: "canvas" },
       { id: "monitoring", i18nKey: "nav.monitoring", iconId: "monitoring" },
@@ -694,6 +696,7 @@ export default function App() {
       case "bootstrap": return <ErrorBoundary><BootstrapConfig /></ErrorBoundary>;
       case "canvas": return <ErrorBoundary><CanvasPage /></ErrorBoundary>;
       case "files": return <ErrorBoundary><FilesPage /></ErrorBoundary>;
+      case "workspace": return <ErrorBoundary><WorkspacePage /></ErrorBoundary>;
       case "canvas-graph": return <ErrorBoundary><CanvasGraphPage /></ErrorBoundary>;
       case "monitoring": return <ErrorBoundary><LogsPage /></ErrorBoundary>;
       case "plugins": return <ErrorBoundary><PluginsPage /></ErrorBoundary>;

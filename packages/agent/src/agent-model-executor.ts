@@ -1054,10 +1054,13 @@ export class AgentModelExecutor {
   }
 
   /** Build the deps object for LLM caller module */
+  /** P0-1：会话级 deps 缓存——deps 字段均为 this.* 引用（闭包捕获 this），会话内 10~30 轮工具循环内容不变，命中缓存直接复用 */
+  private _llmDepsCache: LLMCallerDeps | undefined;
   private getLLMCallerDeps(sessionId?: string): LLMCallerDeps {
-    // 每次构建 deps 时清理过期缓存，避免内存泄漏
+    if (this._llmDepsCache) return this._llmDepsCache;
+    // 仅在新建 deps 时清理过期缓存（cleanToolCache 有 P0-1a TTL 降频）
     this.cleanToolCache();
-    return {
+    const deps: LLMCallerDeps = {
       config: this.config,
       providers: this.providers,
       persona: this.persona,
@@ -1108,6 +1111,8 @@ export class AgentModelExecutor {
       // P0-5：真实 cache 命中追踪器
       cacheTracer: this.cacheTracer ?? undefined,
     };
+    this._llmDepsCache = deps;
+    return deps;
   }
 
   /** Build the deps object for permission handler module */

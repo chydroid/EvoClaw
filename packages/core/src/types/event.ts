@@ -68,6 +68,9 @@ export interface EventMap {
   "system.shutting_down": { reason: string };
   "system.error": { error: string };
 
+  "workspace.switched": { dir: string; source: "runtime" | "env" | "default"; previous: string };
+  "workspace.reset": { dir: string; previous: string };
+
   "learning.entry_created": { entryId: string; category: string };
   "learning.entry_resolved": { entryId: string; resolution: string };
   "learning.session_started": { sessionId: string };
@@ -129,6 +132,17 @@ export const SystemEvents = {
   SYSTEM_READY: "system.ready",
   SYSTEM_SHUTTING_DOWN: "system.shutting_down",
   SYSTEM_ERROR: "system.error",
+
+  /**
+   * 运行时切换工作区：管理员通过 POST /api/workspace 切换后发出。
+   * 数据：{ dir, source, previous }；source ∈ "runtime" | "env" | "default"。
+   * 用于可观测性、审计日志与未来需要跟随 workspace 变化的组件监听。
+   */
+  WORKSPACE_SWITCHED: "workspace.switched",
+  /**
+   * 回退到默认工作区：POST /api/workspace { reset: true } 或 clearWorkspaceOverride 后发出。
+   */
+  WORKSPACE_RESET: "workspace.reset",
 
   LEARNING_ENTRY_CREATED: "learning.entry_created",
   LEARNING_ENTRY_RESOLVED: "learning.entry_resolved",

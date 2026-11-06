@@ -14,7 +14,7 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
-import { atomicWriteFileSync } from "@evoclaw/core";
+import { atomicWriteFileSync, getWorkspaceDir } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 
 /** 图片生成提供商配置（与 protocol-adapter.ts 中结构一致） */
@@ -45,11 +45,6 @@ interface ImageGenResult {
   provider: string;
   model?: string;
   message: string;
-}
-
-/** 获取 workspace 路径 */
-function getWorkspacePath(): string {
-  return process.env.EvoClaw_WORKSPACE || path.resolve(process.cwd(), "data", "workspace");
 }
 
 /** 确保目录存在 */
@@ -214,7 +209,7 @@ function hasImageGenConfigured(): boolean {
 
 /** 保存图片到 workspace/images/ */
 function saveImageToWorkspace(buffer: Buffer, prefix: string, ext: string): { filename: string; path: string; size: number } {
-  const workspace = getWorkspacePath();
+  const workspace = getWorkspaceDir();
   const imageDir = path.join(workspace, "images");
   ensureDir(imageDir);
 

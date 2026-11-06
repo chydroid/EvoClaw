@@ -185,3 +185,11 @@ export type { EnvLoadResult } from "./env-loader";
 
 // LLM URL 构造器 — 共享 OpenAI/Anthropic 端点 URL 构建逻辑
 export { buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "./llm-url";
+
+// 工作目录单点管理 — 所有 file/shell/scheduler 工具统一调用，支持运行时切换
+export {
+  getWorkspaceDir,
+  setWorkspaceDir,
+  clearWorkspaceOverride,
+  peekWorkspaceOverride,
+} from "./workspace-path";

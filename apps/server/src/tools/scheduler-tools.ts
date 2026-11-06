@@ -1,6 +1,6 @@
 import type { AgentModelExecutor, DLQEntry, DLQRetryHandler } from "@evoclaw/agent";
 import { DLQBatchRetry as DLQClass } from "@evoclaw/agent";
-import type { EventBus, ServiceRegistry } from "@evoclaw/core";
+import { getWorkspaceDir, type EventBus, type ServiceRegistry } from "@evoclaw/core";
 import type { EmailClient } from "@evoclaw/email";
 import type { ParsedEmail } from "@evoclaw/email";
 import type { ScheduleManager } from "@evoclaw/scheduler";
@@ -141,11 +141,11 @@ export function registerSchedulerTools(
     }
     const { execFile } = await import("child_process");
     const shell = process.platform === "win32" ? "cmd.exe" : "/bin/sh";
-    // 安全：cwd 默认为 data/workspace 而非项目根目录，且必须校验 cwd 在 workspace 内，防止路径逃逸
-    // 与 shell_exec（shell-media-tools）对齐：按 __dirname 定位项目根（4 层 = dist/tools → 根），
-    // 而非 process.cwd()——从仓库外启动/不同 cwd 运行时两者会指向不同目录（split brain），
-    // 定时任务与交互 shell 找不到同一份 workspace 文件。
-    const workspaceDir = path.resolve(__dirname, "..", "..", "..", "..", "data", "workspace");
+    // 安全：cwd 默认为 workspace 目录且必须校验 cwd 在 workspace 内，防止路径逃逸
+    // 与 shell_exec（shell-media-tools）对齐：通过 @evoclaw/core/workspace-path 单点
+    // 解析 —— EvoClaw_WORKSPACE env / POST /api/workspace runtime override 优先
+    // 用 getWorkspaceDir()，避免从仓库外启动/不同 cwd 运行时 split brain。
+    const workspaceDir = getWorkspaceDir();
     const cwd = config.cwd ? path.resolve(config.cwd) : workspaceDir;
     // 校验 cwd 必须在 workspace 内
     if (cwd !== workspaceDir && !cwd.startsWith(workspaceDir + path.sep)) {
@@ -160,7 +160,10 @@ export function registerSchedulerTools(
     // 期望位置，与 shell_exec 的 WS-DUP 前缀剥除对齐：cwd 即 workspace 时
     // 先剥掉 "data/workspace/" 前缀。
     let command = config.command;
-    if (cwd === workspaceDir) {
+    // ★ 2026-11-06 收紧：仅当 workspace 底名为 workspace 时才执行 WS-DUP 剥除。
+    //   否则运行时把 workspace 切换到 repo 根后，命令中的 "data/workspace/x"
+    //   是真实存在的 repo 相对路径，剥掉会 ENOENT。
+    if (cwd === workspaceDir && path.basename(workspaceDir).toLowerCase() === "workspace") {
       const stripped = command.replace(/(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g, "");
       if (stripped !== command) {
         process.stdout.write(`[scheduler] Stripped workspace-relative prefix in task "${task.name}": ${command}\n`);

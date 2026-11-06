@@ -75,12 +75,23 @@ interface ImageItem {
   type: "png" | "jpg" | "gif" | "bmp";
 }
 
-export function registerDocumentTools(executor: AgentModelExecutor, fsBase: string, workspaceBase?: string): void {
+export function registerDocumentTools(
+  executor: AgentModelExecutor,
+  fsBase: string,
+  /** 相对路径基准（通常是 data/workspace）。传 getter 时支持运行时切换工作区。 */
+  workspaceBase?: string | (() => string)
+): void {
+  /** 每次调用动态解析 workspace（与 file-tools 同模式）：函数 → 调用；字符串 → 常量；undefined → 退回 fsBase。 */
+  const resolveWorkspaceBase = (): string => {
+    if (typeof workspaceBase === "function") return workspaceBase();
+    return workspaceBase ?? fsBase;
+  };
+
   // ── action=create_docx（原 docx_create）──────────────────────
   const handleCreateDocx = async (params: Record<string, unknown>) => {
     const filePath = String(params.path || "");
     if (!filePath) return { success: false, error: "Missing required parameter: path" };
-    const resolvedPath = resolveToolPath(fsBase, workspaceBase, filePath).resolved;
+    const resolvedPath = resolveToolPath(fsBase, resolveWorkspaceBase(), filePath).resolved;
     // ★ 接入「总体安全等级」。此前 docx_create 无视档位、始终硬拦沙箱外，
     //   而同一时刻 file_* 系列已按 risky 档放行 —— 同一个保存动作，
     //   换个工具就报错，模型只能绕道写 Python 脚本，纯属多余成本。
@@ -277,7 +288,7 @@ export function registerDocumentTools(executor: AgentModelExecutor, fsBase: stri
   const handleCreateXlsx = async (params: Record<string, unknown>) => {
     const filePath = String(params.path || "");
     if (!filePath) return { success: false, error: "Missing required parameter: path" };
-    const resolvedPath = resolveToolPath(fsBase, workspaceBase, filePath).resolved;
+    const resolvedPath = resolveToolPath(fsBase, resolveWorkspaceBase(), filePath).resolved;
     const pathError = validatePathWithinBase(resolvedPath, fsBase);
     if (pathError) return { success: false, error: pathError };
 
@@ -342,7 +353,7 @@ export function registerDocumentTools(executor: AgentModelExecutor, fsBase: stri
   const handleCreatePptx = async (params: Record<string, unknown>) => {
     const filePath = String(params.path || "");
     if (!filePath) return { success: false, error: "Missing required parameter: path" };
-    const resolvedPath = resolveToolPath(fsBase, workspaceBase, filePath).resolved;
+    const resolvedPath = resolveToolPath(fsBase, resolveWorkspaceBase(), filePath).resolved;
     const pathError = validatePathWithinBase(resolvedPath, fsBase);
     if (pathError) return { success: false, error: pathError };
 
