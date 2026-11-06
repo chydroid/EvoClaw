@@ -186,3 +186,32 @@ Phase 3（P2，1-2 周）—— 序列化去重
 apply_patch 失败根因：模型输出无内联路径的 `<<<<<<< SEARCH` 块（该会话 8/19 次），原解析器正则要求路径 → 0 hunk 幽灵错误。已修复：parsePatch 支持游标式无路径块 + OpenAI `*** Begin Patch` 风格，缺路径时报明确格式错误。详见 `packages/agent/src/apply-patch-tool.ts` 头部注释。
 
 **全量回归**：`pnpm build` → `pnpm typecheck` → vitest **7046 passed / 14 skipped**（新增 4 个解析器回归）。
+
+---
+
+## 6. 真实工作任务压测与发现修复（2026-11-07，e2e 11 任务）
+
+> 方法：`git-demo`/办公/开发三类共 11 个贴近真实工作的任务经 WebUI SSE 接口投递，
+> **交付物独立复跑验收**（声明 vs 实况区分：每个产物都重新运行/校验，而不是相信模型自报）。
+> 全部 11 任务最终完成。过程中暴露的真实缺陷如下，均已修复并有回归测试。
+
+### 6.1 已修复缺陷
+
+| # | 缺陷（压测中观察到） | 根因 | 修复 | 回归证据 |
+|---|---|---|---|---|
+| 1 | t11-5：读真实存在的工作区文件报「timed out after 30s」（误导性） | `stripWorkspacePrefix` 对**真实存在的绝对路径**盲目剥 `/data/workspace/` 段 → 解析到不存在路径 → ENOENT；且 ENOENT 被当瞬态错误重试 6 次（退避 ~15.5s）叠加执行开销撞上 llm-caller 30s 工具超时（llm-caller.ts:6350），真实错误被包装成 timeout | ① `resolveToolPath`（file-tools.ts）：绝对路径指向真实文件时保留原样，仅不存在的路径保留剥离行为（保留 2026-11-03 仓库根场景）；② `isNonRetryable`（error-recovery-manager.ts）：ENOENT/no-such-file 视为**确定性失败，1 次即终止** | 单测：file-tools-workspace-resolution.test.ts（绝对路径优先/剥离保留/相对归一）、error-recovery-manager.test.ts（ENOENT 1 次且 <1s 失败）；生产复跑：读 `.../data/workspace/analyze_app_log.py` 单次成功 |
+| 2 | t11-9：file_read `../packages/...` 错路径重复重试 6 次、错误信息无指引 | 同上（ENOENT 重试浪费轮次配额）；报错只有被解析路径，模型不知道 workspace 根在哪 | 报错附带**真实 workspace 根 + 沙箱根 + 本次解析结果**的 hint（file_read/file_write create/modify） | 生产复跑：模型读到 hint 后下一步自动改用正确相对路径成功读到仓库源码 |
+| 3 | t11-7/8：模型凭空猜工作区根（`/workspace`）连错 6 次 | shell_exec 工具描述未写明默认 cwd 实际值 | 注册时把 `getWorkspaceDir()` 实际值写进 shell_exec description（工作区切换后 cwd 参数仍按运行时现算） | review 级（描述文案变更） |
+
+### 6.2 设计内行为确认（非缺陷）
+
+- t11-9 日志出现「Abort signal fired for session」（executor:1743）： chat 入口轮次切换时清理上一轮仍注册的 AbortController，属**设计内轮次抢占日志**；每个会话每轮恰好 1 次，不影响完成。
+- t11-5 中 `file_write` 缺 `action` 参数报「Missing required parameter」：复合工具 schema 行为正确（action 必填），模型首轮漏参后自行纠正。
+
+### 6.3 方法论沉淀
+
+- 11 任务全部交付：产物级复跑验证（test_bugfix assert 通过、mock_api_demo 4/4 断言、CRM 2 测试、events quantiles 等）优先于文本自报。
+- 压测脚本自身缺陷：批跑不检查 curl exit-code → 重跑单任务；awk 观测脚本禁用 `echo`（非 awk 内建）静默失败 → 改用 `print`。
+
+**全量回归**：`pnpm build` → `pnpm typecheck` → vitest **7052 passed / 14 skipped**（新增 6 个回归测试：ENOENT 重试 1 + workspace 解析 5）。
+
