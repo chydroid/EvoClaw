@@ -98,4 +98,15 @@ describe("ErrorRecoveryManager.executeWithRetry", () => {
     // 30s 工具超时 —— 修复后应瞬时失败
     expect(Date.now() - started).toBeLessThan(1000);
   });
+
+  it("权限拒绝（EACCES）不重试：t15-05 压测中 mkdir/workspace 被重试 6 次浪费退避", async () => {
+    let calls = 0;
+    await expect(
+      mgr.executeWithRetry("file_write", "/workspace/x", async () => {
+        calls += 1;
+        throw new Error("EACCES: permission denied, mkdir '/workspace'");
+      })
+    ).rejects.toThrow(/\[non-retryable\]/);
+    expect(calls).toBe(1);
+  });
 });

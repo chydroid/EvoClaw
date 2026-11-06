@@ -174,6 +174,9 @@ export class ErrorRecoveryManager {
    * （llm-caller tool timeout），错误被包装成误导性的 "timed out after 30s"，
    * 真实性为 "file not found" —— 模型无从知道是路径问题。
    * ENOENT（含 "no such file"）为确定性 FS 失败：文件此刻不存在，重试无意义。
+   * 2026-11-07 e2e 15 任务压测（t15-05）：`mkdir '/workspace'` 的 EACCES 被重试
+   * 6 次——权限拒绝同样确定性，等待不会生效（真正的出路是用户调路径/权限），
+   * 故 eacces/eperm/erofs 一并归入不可重试。
    */
   private isNonRetryable(err: unknown): boolean {
     const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
@@ -186,7 +189,10 @@ export class ErrorRecoveryManager {
       message.includes("is a directory") ||
       message.includes("not a directory") ||
       message.includes("enoent") ||
-      message.includes("no such file")
+      message.includes("no such file") ||
+      message.includes("eacces") ||
+      message.includes("eperm") ||
+      message.includes("erofs")
     );
   }
 
