@@ -6,6 +6,8 @@ import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-cl
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type NativeFetchResponse } from "./llm-caller";
+// P0-2：共享异步日志（替代热路径同步 process.stdout/stderr.write，16ms 批量刷新）
+import { asyncLog, asyncErr } from "./async-log";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { getProcessTimeZone, getCachedLocaleDateString } from "./local-time";
 import * as fs from "fs";
@@ -49,7 +51,7 @@ import { ToolResultCache, type CacheStats } from "./tool-result-cache";
 import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
 import * as crypto from "crypto";
 import { DurableTaskRunner, getDurableTaskRunner, type DurableTask } from "./durable-task-runner";
-import { SessionArchiveStore, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
+import { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
 import { resolveContextWindow } from "./model-context-window";
 
 // Re-export types and singletons from extracted modules for backward compatibility
@@ -300,6 +302,13 @@ export class AgentModelExecutor {
 
   /** P1-2：sessionId → 已执行的 LLM 调用次数（TokenBudget 报告降频计数器） */
   private _budgetReportCounters = new Map<string, number>();
+
+  /**
+   * P1-2：SkillDispatcher 并行预热——sessionId → 后台 dispatch promise。
+   * LLM 主路径不 await（省 ~200ms 串行等待）；仅当 LLM 全 provider 熔断
+   * 走 generateChatResponse 兜底分支时 await 它做技能/web_search 兜底。
+   */
+  private pendingSkillDispatch = new Map<string, Promise<unknown>>();
 
   /**
    * 可持久化、可恢复的超长任务引擎。
@@ -620,7 +629,7 @@ export class AgentModelExecutor {
     const startTime = Date.now();
     const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
 
-    process.stdout.write(`[AgentModelExecutor] Resuming execution for session "${sessionId}" from snapshot ${fromSnapshotIndex ?? "latest"}, ${messages.length} messages\n`);
+    asyncLog(`[AgentModelExecutor] Resuming execution for session "${sessionId}" from snapshot ${fromSnapshotIndex ?? "latest"}, ${messages.length} messages\n`);
 
     // Delete the old execution state so a fresh one is created by tryCallLLM
     this.executionCheckpointStore.deleteExecution(sessionId);
@@ -986,9 +995,9 @@ export class AgentModelExecutor {
 
         totalChars += content.length;
         this.bootstrapFiles.push({ path: fileName, content });
-        process.stdout.write(`[AgentModelExecutor] Loaded bootstrap file: ${fileName} (${content.length} chars)\n`);
+        asyncLog(`[AgentModelExecutor] Loaded bootstrap file: ${fileName} (${content.length} chars)\n`);
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to read bootstrap file ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`);
+        asyncErr(`[AgentModelExecutor] Failed to read bootstrap file ${fileName}: ${err instanceof Error ? err.message : String(err)}\n`);
       }
     }
   }
@@ -1200,13 +1209,17 @@ export class AgentModelExecutor {
 
   configure(config: Partial<ModelConfig>): void {
     this.config = { ...this.config, ...config };
+    // P0-1：config 变更使 deps 缓存失效
+    this._llmDepsCache = undefined;
   }
 
   configureProviders(providers: ProviderConfig[]): void {
     this.providers = providers
       .filter((p) => p.enabled)
       .sort((a, b) => a.order - b.order);
-    
+    // P0-1：providers 变更使 deps 缓存失效
+    this._llmDepsCache = undefined;
+
     // 初始化或保留统计数据
     for (const provider of this.providers) {
       if (!this.providerStats.has(provider.id)) {
@@ -1241,11 +1254,11 @@ export class AgentModelExecutor {
     // 重复注册检测：防止插件或 MCP 工具意外覆盖已注册的同名工具，
     // 导致原有 handler 被静默替换。覆盖时输出警告以辅助排查。
     if (this.registeredTools.has(name)) {
-      process.stderr.write(
-        `[AgentModelExecutor] Warning: tool "${name}" is already registered and will be overwritten.\n`,
-      );
+      asyncErr( `[AgentModelExecutor] Warning: tool "${name}" is already registered and will be overwritten.\n`, );
     }
     this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides });
+    // P0-1：工具表变更使 deps 缓存失效（deps 内闭包在下次重建时读取最新状态）
+    this._llmDepsCache = undefined;
   }
 
   /**
@@ -1292,6 +1305,8 @@ export class AgentModelExecutor {
       this.checkFnCache.delete(entry.checkFn);
     }
     this.registeredTools.delete(name);
+    // P0-1：工具表变更使 deps 缓存失效
+    this._llmDepsCache = undefined;
   }
 
   /**
@@ -1378,7 +1393,7 @@ export class AgentModelExecutor {
           bootstrapPrefix += "\n\n---\n\n";
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to load bootstrap context: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] Failed to load bootstrap context: ${err}\n`);
       }
     }
 
@@ -1895,7 +1910,7 @@ export class AgentModelExecutor {
       
       // Handle pipeline warnings
       if (result.warnings.length > 0) {
-        process.stdout.write(`[AgentModelExecutor] Input pipeline warnings: ${result.warnings.join("; ")}\n`);
+        asyncLog(`[AgentModelExecutor] Input pipeline warnings: ${result.warnings.join("; ")}\n`);
       }
       
       // Handle short-circuit (echo detection, guardrails block, etc.)
@@ -2046,20 +2061,36 @@ export class AgentModelExecutor {
           const effectiveWindow = isResume ? Math.min(this.windowRounds, 3) : this.windowRounds;
           let windowedHistory = loadedHistory;
           if (this.sessionArchive && effectiveWindow > 0) {
-            const { keepFrom, newlyArchived } = await this.sessionArchive.archiveOlderTurns(
-              sessionId,
-              loadedHistory,
-              this.memoryHub?.getLongTerm(),
-              effectiveWindow
-            );
+            // ★ P1-3：归档不再阻塞会话加载。原来 `await archiveOlderTurns(...)`
+            // 让会话加载关键路径多一次串行 I/O，把 LLM 调用启动往后推。
+            //
+            // 改为：先用纯函数 `computeKeepFromIndex` 同步快算 keepFrom（无 I/O），
+            // 立刻把 windowedHistory 切片并 set 进 conversationHistory；真正的
+            // 持久化归档（写长期记忆 + 事件日志）放到后台 fire-and-forget，
+            // 失败只记日志不影响本次会话加载。
+            //
+            // 语义等价性：`slice(keepFrom)` 与 `archiveOlderTurns` 内部算出的
+            // keepFrom 完全一致（同一纯函数），windowedHistory 在归档完成前
+            // 就已就绪，LLM 调用不再等待归档 I/O。
+            const keepFrom = computeKeepFromIndex(loadedHistory.map((t) => t.role), effectiveWindow);
             if (keepFrom > 0) {
               windowedHistory = loadedHistory.slice(keepFrom);
-              if (newlyArchived > 0) {
-                process.stdout.write(
-                  `[AgentModelExecutor] Session window (${isResume ? "resume" : "normal"}): archived ${newlyArchived} old turn(s) to long-term memory, ` +
-                  `active window = last ${effectiveWindow} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
-                );
-              }
+              this.sessionArchive
+                .archiveOlderTurns(sessionId, loadedHistory, this.memoryHub?.getLongTerm(), effectiveWindow)
+                .then(({ newlyArchived }) => {
+                  if (newlyArchived > 0) {
+                    asyncLog(
+                      `[AgentModelExecutor] Session window (${isResume ? "resume" : "normal"}): archived ${newlyArchived} old turn(s) to long-term memory, ` +
+                      `active window = last ${effectiveWindow} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
+                    );
+                  }
+                })
+                .catch((err: unknown) => {
+                  asyncErr(
+                    `[AgentModelExecutor] Background session archive failed for "${sessionId}": ` +
+                    `${err instanceof Error ? err.message : String(err)}\n`
+                  );
+                });
             }
           }
 
@@ -2094,7 +2125,7 @@ export class AgentModelExecutor {
           turnIndex: 0, role: "user", content: message, timestamp: new Date().toISOString(),
         });
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Failed to persist user message early: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] Failed to persist user message early: ${err}\n`);
       }
     }
     this.persistSessionTurn(sessionId, "user", message);
@@ -2179,10 +2210,10 @@ export class AgentModelExecutor {
     if (isApprovalIntent && pendingCmd) {
       const PENDING_CMD_TTL = 30 * 60 * 1000;
       if (Date.now() - pendingCmd.rejectedAt > PENDING_CMD_TTL) {
-        process.stdout.write(`[AgentModelExecutor] Pending command expired, discarding: ${pendingCmd.command}\n`);
+        asyncLog(`[AgentModelExecutor] Pending command expired, discarding: ${pendingCmd.command}\n`);
         this.pendingApprovalCommands.delete(sessionId);
       } else {
-        process.stdout.write(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
+        asyncLog(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
         this.pendingApprovalCommands.delete(sessionId);
         // Add temporary trust rule
         if (this.humanApprovalManager) {
@@ -2212,7 +2243,7 @@ export class AgentModelExecutor {
             return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: true, files: [] };
           }
         } catch (err) {
-          process.stderr.write(`[AgentModelExecutor] Pending command execution failed: ${err}\n`);
+          asyncErr(`[AgentModelExecutor] Pending command execution failed: ${err}\n`);
           const reply = `❌ 命令执行出错：${err instanceof Error ? err.message : String(err)}`;
           this.persistEarlyReturn(sessionId, message, reply);
           return { reply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
@@ -2253,7 +2284,7 @@ export class AgentModelExecutor {
     // 使其直接走正常 LLM 流程继续执行。
     const continuationContext = this.detectContinuationContext(sessionId, effectiveMessage, agentId);
     if (continuationContext.isContinuation) {
-      process.stdout.write(
+      asyncLog(
         `[AgentModelExecutor] Continuation intent detected ("${effectiveMessage.slice(0, 20)}"), ` +
         `skipping quick replies to resume work\n`,
       );
@@ -2337,9 +2368,9 @@ export class AgentModelExecutor {
     const isSkillInstallCompound = (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message))
       && skillInstallCompoundIndicators.test(message);
     if (isSkillInstallCompound) {
-      process.stdout.write(`[AgentModelExecutor] Skill install compound task detected — skipping early path, going to LLM\n`);
+      asyncLog(`[AgentModelExecutor] Skill install compound task detected — skipping early path, going to LLM\n`);
     } else if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
-      process.stdout.write(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
+      asyncLog(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
       const skillInstallerDeps: SkillInstallerDeps = { registry: this.registry, workspacePath: this.workspacePath };
       const installResult = await handleSkillInstallFn(skillInstallerDeps, message, skillManager, startTime, sessionId);
       if (installResult) {
@@ -2378,7 +2409,7 @@ export class AgentModelExecutor {
     const isExplicitToolCall = claudeCodeToolNames.some(name => message.includes(name));
     const userProvidedUrl = /https?:\/\/[^\s<>"']+/i.test(message);
     if (userProvidedUrl) {
-      process.stdout.write(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM\n`);
+      asyncLog(`[AgentModelExecutor] User provided URL detected — skipping SkillDispatcher, going directly to LLM\n`);
     }
     // ★ 2026-10-27 修复：复合多步任务不走 SkillDispatcher 快速路径。
     //   实测 10 任务压测中，Task 6（安装+执行技能）走了 SkillDispatcher
@@ -2403,7 +2434,7 @@ export class AgentModelExecutor {
         }>("skillDispatcher");
         
         if (skillDispatcher) {
-          process.stdout.write(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"\n`);
+          asyncLog(`[AgentModelExecutor] SkillDispatcher: analyzing task "${message.slice(0, 60)}"\n`);
           taskStatusTracker.set(sessionId, "thinking", "技能调度中，正在匹配最合适的技能...", 20);
           const dispatchResult = await skillDispatcher.dispatch({
             task: message,
@@ -2419,7 +2450,7 @@ export class AgentModelExecutor {
           const isEmptyOutput = isEmptySkillOutput(dispatchResult.output);
 
           if (dispatchResult.path === "skill" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}\n`);
+            asyncLog(`[AgentModelExecutor] SkillDispatcher handled via "${dispatchResult.skillName}": ${dispatchResult.output}\n`);
             const skillReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, skillReply);
             return {
@@ -2430,7 +2461,7 @@ export class AgentModelExecutor {
               toolsExecuted: true,
             };
           } else if (dispatchResult.path === "web_search" && dispatchResult.success && !isEmptyOutput && !outputHasError) {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher used web_search fallback\n`);
+            asyncLog(`[AgentModelExecutor] SkillDispatcher used web_search fallback\n`);
             const searchReply = formatSkillReply(dispatchResult, outputStr);
             this.persistEarlyReturn(sessionId, message, searchReply);
             return {
@@ -2444,13 +2475,13 @@ export class AgentModelExecutor {
             // 正常的「无技能匹配」路径（success:false 但没有技能参与），
             // 必须先于 outputHasError 判断——否则会被误分类成
             // skill "undefined" 的 unknown error（2026-10-14 评测发现）。
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM\n`);
+            asyncLog(`[AgentModelExecutor] SkillDispatcher: no matching skill found — falling through to LLM\n`);
           } else if (outputHasError) {
             if (classifiedError!.shouldFallbackToLLM) {
-              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName ?? "(unknown)"}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user\n`);
+              asyncLog(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName ?? "(unknown)"}" returned ${classifiedError!.category} error — falling through to LLM without showing error to user\n`);
               // Do not return an error to the user; let the LLM retry or handle the task.
             } else {
-              process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user\n`);
+              asyncLog(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned ${classifiedError!.category} error — returning error to user\n`);
               const errorReply = `⚠️ ${classifiedError!.userMessage}`;
               this.persistEarlyReturn(sessionId, message, errorReply);
               return {
@@ -2462,26 +2493,40 @@ export class AgentModelExecutor {
               };
             }
           } else if (isEmptyOutput && dispatchResult.path === "skill") {
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM\n`);
+            asyncLog(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" returned empty output — falling through to LLM\n`);
           } else {
             // Skill matched but execution failed — fall through to LLM
-            process.stdout.write(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM\n`);
+            asyncLog(`[AgentModelExecutor] SkillDispatcher: skill "${dispatchResult.skillName}" matched but execution failed (path=${dispatchResult.path}, success=${dispatchResult.success}) — falling through to LLM\n`);
           }
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] SkillDispatcher dispatch failed: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] SkillDispatcher dispatch failed: ${err}\n`);
         // Fall through to LLM
       }
       };
-      if (tracing?.isEnabled()) {
-        await tracing.withSpan("agent.skill.dispatch", async (s: Span) => {
-          s.setAttribute("session.id", sessionId);
-          s.setAttribute("message.length", message.length);
-          await skillDispatchFn();
+      // ★ P1-2：SkillDispatcher 并行预热。原来在 LLM 之前串行 await，
+      // 命中才跳过 LLM（收益），miss（~90% 场景）时纯浪费 100-200ms；
+      // 且 LLM 主路径（90% 场景）根本不使用其结果。
+      //
+      // 改为：立即 start，不 await。结果存入局部变量 skillDispatchPromise。
+      // LLM 调用返回 undefined（全 provider 熔断兜底）时，await 它做技能/
+      // web_search 兜底。功能不变：LLM 全挂时仍能走技能；LLM 可用时不
+      // 阻塞首响延迟（省 ~200ms）。
+      const skillDispatchPromise = (tracing?.isEnabled()
+        ? tracing.withSpan("agent.skill.dispatch", async (s: Span) => {
+            s.setAttribute("session.id", sessionId);
+            s.setAttribute("message.length", message.length);
+            await skillDispatchFn();
+          })
+        : skillDispatchFn()).catch((err: unknown) => {
+          // 吞掉未处理 rejection，避免 LLM 主路径返回后 promise 仍悬挂导致
+          // Node 进程退出前报 unhandledRejection。skillDispatchFn 内部已
+          // try/catch 兜底，这里只为保险（Promise 链本身不 throw，但
+          // await skillDispatchFn() 仍可能抛未捕获异常）。
+          asyncErr(`[AgentModelExecutor] Background skill dispatch rejected: ${err instanceof Error ? err.message : String(err)}\n`);
         });
-      } else {
-        await skillDispatchFn();
-      }
+      // 记录该 promise 供 tryCallLLM 返回 undefined 时 await 做兜底（见下方）
+      this.pendingSkillDispatch.set(sessionId, skillDispatchPromise);
     }
 
     const tasks = await this.analyzeUserIntent(effectiveMessage, sessionId);
@@ -2501,11 +2546,11 @@ export class AgentModelExecutor {
     };
 
     if (autoSplitConfig.shouldAutoSplit && autoSplitConfig.complexity !== "simple") {
-      process.stdout.write(`[AgentModelExecutor] Auto-split enabled for complexity "${autoSplitConfig.complexity}", maxSubtasks: ${autoSplitConfig.maxSubtasks}\n`);
+      asyncLog(`[AgentModelExecutor] Auto-split enabled for complexity "${autoSplitConfig.complexity}", maxSubtasks: ${autoSplitConfig.maxSubtasks}\n`);
 
       const existingCheckpoint = taskCheckpointManager.get(sessionId);
       if (existingCheckpoint && existingCheckpoint.completedCount < existingCheckpoint.totalSubtasks) {
-        process.stdout.write(`[AgentModelExecutor] Resuming task from checkpoint: ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} completed\n`);
+        asyncLog(`[AgentModelExecutor] Resuming task from checkpoint: ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} completed\n`);
         taskStatusTracker.set(sessionId, "resuming", `从检查点恢复任务 (${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks})`, 50);
         onProgress?.({ type: "task_resumed", phase: "resuming", detail: `从检查点恢复任务，已完成 ${existingCheckpoint.completedCount}/${existingCheckpoint.totalSubtasks} 个子任务`, progress: 50 });
 
@@ -2519,7 +2564,7 @@ export class AgentModelExecutor {
 
       const subtaskDescriptions = await this.decomposeTaskWithLLM(effectiveMessage, autoSplitConfig.maxSubtasks);
       if (subtaskDescriptions.length > 1) {
-        process.stdout.write(`[AgentModelExecutor] Task decomposed into ${subtaskDescriptions.length} subtasks:` + " " + subtaskDescriptions.map(s => s.description.slice(0, 40)) + "\n");
+        asyncLog(`[AgentModelExecutor] Task decomposed into ${subtaskDescriptions.length} subtasks:` + " " + subtaskDescriptions.map(s => s.description.slice(0, 40)) + "\n");
 
         taskStatusTracker.set(sessionId, "splitting", `任务已拆分为 ${subtaskDescriptions.length} 个子任务`, 15);
         onProgress?.({ type: "status", phase: "splitting", detail: `任务已拆分为 ${subtaskDescriptions.length} 个子任务，开始逐个执行...`, progress: 15 });
@@ -2615,7 +2660,7 @@ export class AgentModelExecutor {
           }
         } catch (err) {
           // memory is optional but errors should be diagnosable
-          process.stderr.write(
+          asyncErr(
             `[AgentModelExecutor] memory search failed: ${err instanceof Error ? err.message : String(err)}\n`
           );
         }
@@ -2698,16 +2743,16 @@ export class AgentModelExecutor {
         userTimezone: getProcessTimeZone(),
       });
         if (contextEngineResult.warnings.length > 0) {
-          process.stdout.write(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
+          asyncLog(`[AgentModelExecutor] ContextEngine warnings: ${contextEngineResult.warnings.join("; ")}\n`);
         }
         if (contextEngineResult.truncated) {
-          process.stdout.write(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"\n`);
+          asyncLog(`[AgentModelExecutor] ContextEngine truncated history for session "${sessionId}"\n`);
         }
-        process.stdout.write(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...\n`);
+        asyncLog(`[AgentModelExecutor] ContextEngine assembled context: ${contextEngineResult.tokenEstimate} tokens, frozen hash=${contextEngineResult.frozenHash?.slice(0, 12)}...\n`);
         // Store for use by tryCallLLM (per-session to avoid cross-session leak)
         this._contextEngineResults.set(sessionId, contextEngineResult);
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] ContextEngine assembly failed, falling back to manual assembly:` + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+        asyncErr(`[AgentModelExecutor] ContextEngine assembly failed, falling back to manual assembly:` + " " + (err instanceof Error ? err.message : String(err)) + "\n");
         contextEngineResult = null;
       }
     }
@@ -2728,7 +2773,7 @@ export class AgentModelExecutor {
       cacheMessages = [{ role: "system", content: systemPrompt }, ...historyEntries];
       cacheEntry = this.promptCache.findMatchingPrefix(cacheMessages);
       if (cacheEntry) {
-        process.stdout.write(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens\n`);
+        asyncLog(`[AgentModelExecutor] Prompt cache hit: saved ~${cacheEntry.tokenCount} tokens\n`);
       }
     }
 
@@ -2756,7 +2801,7 @@ export class AgentModelExecutor {
         if (chainContext !== this._chainContextBySession.get(sessionId)) {
           this._chainContextBySession.set(sessionId, chainContext);
         }
-        process.stdout.write(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] ToolChain matched: ${matchedChain.name} for session "${sessionId}"\n`);
         onProgress?.({ type: "status", phase: "planning", detail: `匹配到工具链: ${matchedChain.name}`, progress: 20 });
       }
     }
@@ -2787,7 +2832,7 @@ export class AgentModelExecutor {
           plan.status = "validated";
           this.activePlans.set(sessionId, plan);
           planContext = this.planningEngine.formatPlanForContext(plan);
-          process.stdout.write(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}\n`);
+          asyncLog(`[AgentModelExecutor] Plan generated for session "${sessionId}": ${plan.steps.length} steps, complexity=${validation.complexity}\n`);
           taskStatusTracker.set(sessionId, "planning", `已生成执行计划：${plan.steps.length} 个步骤`, 25);
           onProgress?.({ type: "status", phase: "planning", detail: `已生成执行计划：${plan.steps.length} 个步骤`, progress: 25 });
 
@@ -2842,15 +2887,15 @@ export class AgentModelExecutor {
                   }
                 }
               } catch (err) {
-                process.stderr.write(`[AgentModelExecutor] ACP delegation failed: ${err}\n`);
+                asyncErr(`[AgentModelExecutor] ACP delegation failed: ${err}\n`);
               }
             }
           }
         } else {
-          process.stderr.write(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}\n`);
+          asyncErr(`[AgentModelExecutor] Plan validation failed: ${validation.issues.join("; ")}\n`);
         }
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] Planning failed: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] Planning failed: ${err}\n`);
       }
     }
 
@@ -2919,11 +2964,11 @@ export class AgentModelExecutor {
     const finalEnhancedMessage = buildEnhancedMessageFn(message, newsContext, searchReason, shouldSearch);
 
     if (newsContext) {
-      process.stdout.write(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"\n`);
+      asyncLog(`[AgentModelExecutor] News context added: ${newsContext.length} chars for session "${sessionId}"\n`);
     }
 
     const enabledProviders = this.providers.filter((p) => p.enabled).sort((a, b) => a.order - b.order);
-    process.stdout.write(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}\n`);
+    asyncLog(`[AgentModelExecutor] Session "${sessionId}": ${enabledProviders.length} enabled providers, message length: ${finalEnhancedMessage.length} chars, history turns: ${(this.conversationHistory.get(sessionId) || []).length}\n`);
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // Inspired by Hermes's stable/ephemeral prompt separation and OpenClaw's
@@ -2940,7 +2985,7 @@ export class AgentModelExecutor {
         primaryProvider.provider || "openai",
       );
       if (routingDecision.shouldDowngrade) {
-        process.stdout.write(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})\n`);
+        asyncLog(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})\n`);
         // Create a modified provider list with the routed model
         routedProviders = enabledProviders.map((p, i) => {
           if (i === 0) {
@@ -2955,7 +3000,7 @@ export class AgentModelExecutor {
           return p;
         });
       } else {
-        process.stdout.write(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})\n`);
+        asyncLog(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})\n`);
       }
     }
 
@@ -3052,7 +3097,7 @@ export class AgentModelExecutor {
           agentResponse: guardrailedReply,
           sessionId,
           context: { agentId, channel },
-        }, "agent-model-executor").catch(err => process.stderr.write(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
+        }, "agent-model-executor").catch(err => asyncErr(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
         return guardedResult;
       }
     }
@@ -3061,7 +3106,35 @@ export class AgentModelExecutor {
     taskStatusTracker.set(sessionId, "error", "模型服务暂不可用，切换到本地规则响应", 60);
     const msg = message.toLowerCase();
     if (this.hasActionIntent(message)) {
-      process.stdout.write(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"\n`);
+      asyncLog(`[AgentModelExecutor] LLM unavailable, trying skill-based execution for: "${message.slice(0, 80)}"\n`);
+    }
+    // P1-2：LLM 全 provider 熔断兜底——await 之前并行预热的 SkillDispatcher
+    // 结果（命中则直接返回技能执行结果，未命中则由 generateChatResponse 兜底）。
+    // 主路径（LLM 可用）不经过这里，技能结果被丢弃前 Map 清项防内存泄漏。
+    {
+      const pending = this.pendingSkillDispatch.get(sessionId);
+      this.pendingSkillDispatch.delete(sessionId);
+      if (pending) {
+        try {
+          const skillResult = await pending as
+            | { reply?: string; tokensUsed?: number; duration?: number; permissionRequests?: unknown[]; toolsExecuted?: boolean }
+            | undefined;
+          if (skillResult?.reply) {
+            const out = skillResult.reply;
+            asyncLog(`[AgentModelExecutor] P1-2: skill preheat hit on LLM-fallback, returning skill output\n`);
+            this.rememberInteraction(message.slice(0, 200), out.slice(0, 200), sessionId);
+            this.recordTokenUsage(sessionId, "local", "skill-preheat", skillResult.tokensUsed ?? 0, skillResult.tokensUsed ?? 0, Date.now() - startTime, channel);
+            return {
+              reply: out,
+              tokensUsed: skillResult.tokensUsed ?? 0,
+              duration: skillResult.duration ?? Date.now() - startTime,
+              permissionRequests: (skillResult.permissionRequests ?? []) as Array<{ id: string; operation: string; description: string; target: string }>,
+            };
+          }
+        } catch {
+          // 预热 promise 异常已在其 .catch 中记录；这里兜底继续走 generateChatResponse
+        }
+      }
     }
     let reply = AgentModelExecutor.collapseNewlines(await this.generateChatResponse(message, msg, installedSkills, skillManager, pendingPermissions));
     const tokensUsed = this.estimateTokenCount(systemPrompt + message + reply);
@@ -3114,7 +3187,7 @@ export class AgentModelExecutor {
       agentResponse: reply,
       sessionId,
       context: { agentId, channel },
-    }, "agent-model-executor").catch(err => process.stderr.write(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
+    }, "agent-model-executor").catch(err => asyncErr(`[AgentModelExecutor] agent_end event publish failed: ${err}\n`));
 
     return finalResult;
     } finally {
@@ -3147,13 +3220,13 @@ export class AgentModelExecutor {
         toolCalls: 0,
         success: true,
       },
-    }).catch(err => process.stderr.write(`[AgentModelExecutor] agent_end hook failed: ${err}\n`));
+    }).catch(err => asyncErr(`[AgentModelExecutor] agent_end hook failed: ${err}\n`));
   }
 
   /** Asynchronously save an interaction to long-term memory */
   private rememberInteraction(userMsg: string, agentReply: string, sessionId: string): void {
     if (!this.memoryHub) {
-      process.stderr.write(`[AgentModelExecutor] rememberInteraction: memoryHub is null\n`);
+      asyncErr(`[AgentModelExecutor] rememberInteraction: memoryHub is null\n`);
       return;
     }
     try {
@@ -3194,7 +3267,7 @@ export class AgentModelExecutor {
       };
       const useRemember = !!this.memoryHub.remember;
       const useLayered = !!this.memoryHub.captureTurnToLayeredMemory;
-      process.stdout.write(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember} useLayered=${useLayered}\n`);
+      asyncLog(`[AgentModelExecutor] rememberInteraction: session=${sessionId} useRemember=${useRemember} useLayered=${useLayered}\n`);
       // Prefer memory hub's remember() so the entry is mirrored into the
       // vector store (Transformers embeddings). Fallback to longTerm.store
       // when remember() is not provided by the injected hub.
@@ -3207,9 +3280,9 @@ export class AgentModelExecutor {
             accessedAt: new Date(),
           } as import("@evoclaw/core").MemoryEntry);
       persist.then((stored) => {
-        process.stdout.write(`[AgentModelExecutor] Memory saved: id=${stored.id} session=${sessionId}\n`);
+        asyncLog(`[AgentModelExecutor] Memory saved: id=${stored.id} session=${sessionId}\n`);
       }, (err) => {
-        process.stderr.write(`[AgentModelExecutor] Memory save failed: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] Memory save failed: ${err}\n`);
       });
 
       // 同时写入分层记忆（L0→L1→L2→L3），由 LayeredMemory 内部周期触发 L2/L3 聚合。
@@ -3220,11 +3293,11 @@ export class AgentModelExecutor {
           assistantText: cleanAgentReply,
           sessionKey: sessionId,
         }).catch(err => {
-          process.stderr.write(`[AgentModelExecutor] LayeredMemory captureTurn failed: ${err}\n`);
+          asyncErr(`[AgentModelExecutor] LayeredMemory captureTurn failed: ${err}\n`);
         });
       }
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] rememberInteraction threw: ${err}\n`);
+      asyncErr(`[AgentModelExecutor] rememberInteraction threw: ${err}\n`);
     }
   }
 
@@ -3789,7 +3862,7 @@ export class AgentModelExecutor {
     if (!controller) return false;
     controller.abort(new Error(`Session ${sessionId} aborted by user`));
     this.sessionAbortControllers.delete(sessionId);
-    process.stdout.write(`[AgentModelExecutor] Abort signal fired for session "${sessionId}"\n`);
+    asyncLog(`[AgentModelExecutor] Abort signal fired for session "${sessionId}"\n`);
     return true;
   }
 
@@ -3828,7 +3901,7 @@ export class AgentModelExecutor {
    */
   setSessionWindowRounds(rounds: number): void {
     this.windowRounds = Number.isFinite(rounds) ? Math.floor(rounds) : DEFAULT_WINDOW_ROUNDS;
-    process.stdout.write(
+    asyncLog(
       `[AgentModelExecutor] Session window set to ${this.windowRounds} round(s)\n`
     );
   }
@@ -4418,16 +4491,16 @@ export class AgentModelExecutor {
       if (delegationResult.success && delegationResult.result) {
         // 委托实际执行成功——把结果作为上下文返回给主 agent
         delegationHints.push(`[Swarm] ${bestAgent.name} (${bestAgent.role}) 已完成委托任务。结果:\n${delegationResult.result}`);
-        process.stdout.write(`[AgentModelExecutor] Swarm delegation completed: ${bestAgent.name} finished in ${delegationResult.timeSpentMs}ms for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] Swarm delegation completed: ${bestAgent.name} finished in ${delegationResult.timeSpentMs}ms for session "${sessionId}"\n`);
       } else if (delegationResult.success) {
         // delegate() 返回 success 但无 handler 执行（桩模式）
         delegationHints.push(`[Swarm] 任务已委派给 ${bestAgent.name} (${bestAgent.role})，专长: ${bestAgent.capabilities.join(", ")}`);
-        process.stdout.write(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned (stub mode) for session "${sessionId}"\n`);
+        asyncLog(`[AgentModelExecutor] Swarm delegation: ${bestAgent.name} assigned (stub mode) for session "${sessionId}"\n`);
       } else {
         delegationHints.push(`[Swarm] 委派失败: ${delegationResult.error ?? "unknown error"}`);
       }
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] Swarm delegation failed: ${err}\n`);
+      asyncErr(`[AgentModelExecutor] Swarm delegation failed: ${err}\n`);
     }
 
     return delegationHints.length > 0 ? delegationHints.join("\n") : null;
@@ -4463,7 +4536,7 @@ export class AgentModelExecutor {
           sessionId,
         });
       } catch (err) {
-        process.stderr.write(`[AgentModelExecutor] recordToolNodeToCanvas failed: ${err}\n`);
+        asyncErr(`[AgentModelExecutor] recordToolNodeToCanvas failed: ${err}\n`);
       }
     }
 
@@ -4613,13 +4686,13 @@ export class AgentModelExecutor {
       // Try quick reflection first (no LLM cost)
       const quickResult = this.reflectionEngine.quickReflect(traces);
       if (quickResult.shouldReplan || quickResult.shouldRetry) {
-        process.stdout.write(`[AgentModelExecutor] Quick reflection triggered: ${quickResult.analysis}\n`);
+        asyncLog(`[AgentModelExecutor] Quick reflection triggered: ${quickResult.analysis}\n`);
         return quickResult;
       }
 
       // Use LLM-based reflection for deeper analysis
       const result = await this.reflectionEngine.reflect(traces, planContext);
-      process.stdout.write(`[AgentModelExecutor] Reflection result: continue=${result.shouldContinue}, replan=${result.shouldReplan}, retry=${result.shouldRetry}, confidence=${result.confidence}\n`);
+      asyncLog(`[AgentModelExecutor] Reflection result: continue=${result.shouldContinue}, replan=${result.shouldReplan}, retry=${result.shouldRetry}, confidence=${result.confidence}\n`);
 
       // Handle replan
       if (result.shouldReplan && plan && this.planningEngine) {
@@ -4628,13 +4701,13 @@ export class AgentModelExecutor {
           const toolNames = Array.from(this.registeredTools.keys());
           const newPlan = await this.planningEngine.replan(plan, plan.goal, toolNames);
           this.activePlans.set(sessionId, newPlan);
-          process.stdout.write(`[AgentModelExecutor] Replanned: ${newPlan.steps.length} steps (replan #${newPlan.replanCount})\n`);
+          asyncLog(`[AgentModelExecutor] Replanned: ${newPlan.steps.length} steps (replan #${newPlan.replanCount})\n`);
         }
       }
 
       return result;
     } catch (err) {
-      process.stderr.write(`[AgentModelExecutor] Reflection failed: ${err}\n`);
+      asyncErr(`[AgentModelExecutor] Reflection failed: ${err}\n`);
       return null;
     }
   }

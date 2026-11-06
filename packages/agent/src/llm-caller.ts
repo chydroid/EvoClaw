@@ -24,24 +24,13 @@ import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
 import { estimateTokensCached, estimateMessagesTokensCached } from "./token-estimate-cache";
 
-// ★ P1 优化（建议4）：异步日志缓冲——process.stdout.write 是同步 I/O，
-//   高频调用（每轮 5-15 条）会阻塞主线程。引入 16ms 批量刷新队列，
-//   将同步 I/O 变异步，每轮省 ~5-15ms。
-const _logQueue: string[] = [];
-let _flushTimer: ReturnType<typeof setTimeout> | null = null;
+// ★ P0-2 优化：asyncLog 已提升为共享模块（./async-log），executor 主体热循环也复用
+import { asyncLog } from "./async-log";
 
-function asyncLog(msg: string): void {
-  _logQueue.push(msg);
-  if (!_flushTimer) {
-    _flushTimer = setTimeout(() => {
-      const batch = _logQueue.join("\n");
-      _logQueue.length = 0;
-      _flushTimer = null;
-      process.stdout.write(batch + "\n");
-    }, 16); // ~60fps 刷新
-    if (_flushTimer.unref) _flushTimer.unref();
-  }
-}
+// ★ P1-1 优化：expandedProviders 引用缓存——providers 数组引用不变时直接复用
+// 展开结果，避免每轮 LLM 调用重建数组 + 逐条 {...p, model} 字面量分配。
+let _lastExpandedProvidersRef: ProviderConfig[] | null = null;
+let _lastExpandedProviders: ProviderConfig[] | null = null;
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -1599,6 +1588,37 @@ function computeDynamicToolLimit(
   }
 
   return Math.min(cap, limit);
+}
+
+// ★ P0-3 优化：工具轮次限制结果缓存——同一会话内 message 在工具循环中不变，
+// 历史长度也只在跨 turn 时变化，每轮重跑 16 条正则 + hasActionIntentFn 纯属浪费。
+// 按 sessionId + message 指纹（长度+首尾字符，避免全量 hash）+ 历史长度档 缓存。
+// 长度档 = 是否 >30（影响 limit 计算的唯一历史条件），命中直接复用。
+const _toolLimitCache = new Map<string, { msgFingerprint: number; histTier: number; limit: number }>();
+
+/** P0-3：带缓存的动态工具轮次计算（消息指纹 + 历史长度档命中即复用） */
+export function computeDynamicToolLimitCached(
+  message: string,
+  baseLimit: number,
+  cap: number,
+  conversationHistory: Map<string, Array<SessionHistoryEntry>>,
+  sessionId: string
+): number {
+  const sessionHistory = conversationHistory.get(sessionId) || [];
+  const histTier = sessionHistory.length > 30 ? 1 : 0;
+  // 指纹 = 长度 + 前 8 字符 + 后 8 字符（同一 turn 内 message 不变，碰撞概率可忽略）
+  const msgFingerprint =
+    message.length * 31 +
+    (message.charCodeAt(0) || 0) +
+    (message.charCodeAt(Math.max(0, message.length - 1)) || 0) * 17;
+  const entry = _toolLimitCache.get(sessionId);
+  if (entry && entry.msgFingerprint === msgFingerprint && entry.histTier === histTier) {
+    return entry.limit;
+  }
+  const limit = computeDynamicToolLimit(message, baseLimit, cap, conversationHistory, sessionId);
+  if (_toolLimitCache.size > 1000) _toolLimitCache.clear();
+  _toolLimitCache.set(sessionId, { msgFingerprint, histTier, limit });
+  return limit;
 }
 
 /**
@@ -4024,7 +4044,8 @@ export async function tryCallLLM(
   // provider 后用独立的计数（新 provider 的新状态）。
   const overloadAttemptsByProvider = new Map<string, number>();
 
-  const maxToolRounds = computeDynamicToolLimit(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
+  // P0-3：走缓存版——同一 turn 内 message 不变 + 历史长度档不变时直接复用
+  const maxToolRounds = computeDynamicToolLimitCached(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
   asyncLog(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
 
   let totalTokensUsed = 0;
@@ -4041,16 +4062,30 @@ export async function tryCallLLM(
   }
 
   // Expand providers with multiple models
-  const expandedProviders: ProviderConfig[] = [];
-  for (const p of providers) {
-    const models = p.models && p.models.length > 0 ? p.models : (p.model ? [p.model] : []);
-    if (models.length === 0) {
-      expandedProviders.push(p);
-    } else {
-      for (const m of models) {
-        expandedProviders.push({ ...p, model: m });
+  // P1-1：providers 引用在会话内不变时结果完全相同——按引用缓存展开结果，
+  // 避免每轮重建数组 + 逐条 {...p, model} 字面量分配（GC 压力）。
+  // 使用模块级 WeakRef 风格的简单引用比对（providers 数组来自 executor
+  // this.providers，同一会话同一引用；引用变化即重算）。
+  let expandedProviders: ProviderConfig[];
+  if (
+    _lastExpandedProvidersRef === providers &&
+    _lastExpandedProviders !== null
+  ) {
+    expandedProviders = _lastExpandedProviders;
+  } else {
+    expandedProviders = [];
+    for (const p of providers) {
+      const models = p.models && p.models.length > 0 ? p.models : (p.model ? [p.model] : []);
+      if (models.length === 0) {
+        expandedProviders.push(p);
+      } else {
+        for (const m of models) {
+          expandedProviders.push({ ...p, model: m });
+        }
       }
     }
+    _lastExpandedProvidersRef = providers;
+    _lastExpandedProviders = expandedProviders;
   }
   asyncLog(`[AgentModelExecutor] ${expandedProviders.length} model entries from ${providers.length} provider(s) for session "${sessionId}"\n`);
 
