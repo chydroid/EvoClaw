@@ -121,7 +121,18 @@ export function resolveToolPath(
   //   data/workspace/ 的路径是 no-op，安全；含该段的路径一律剥离。
   //   之前依赖 workspaceBase 是否存在来决定是否剥离，但 workspaceBase
   //   可能未设置（undefined），导致含 data/workspace/ 的路径未被剥离 → ENOENT。
-  const effective = stripWorkspacePrefix(filePath);
+  // ★ 2026-11-07 修正（e2e 11 任务压测）：绝对路径若**指向真实存在的文件**
+  //   （典型：模型手上已有的 workspace 文件绝对路径），不应盲目剥离其中段——
+  //   实测 t11-5：模型传 /home/chy/EvoClaw/data/workspace/analyze_app_log.py
+  //   （该文件真实存在），旧逻辑剥成 /home/chy/EvoClaw/analyze_app_log.py（不存在）
+  //   → ENOENT ×6 退避重试 → 撞外层 30s 工具超时，错误呈现为误导性的
+  //   "timed out after 30s"。只对**不存在**的绝对路径保留剥离行为
+  //   （模型把仓库路径误加 data/workspace 前缀的场景，2026-11-03 修复目标）。
+  const rawAbsolute = path.isAbsolute(filePath) && !filePath.endsWith(path.sep);
+  const effective =
+    rawAbsolute && fs.existsSync(filePath)
+      ? filePath
+      : stripWorkspacePrefix(filePath);
   const resolved = path.isAbsolute(effective)
     ? path.resolve(fsBase, effective)
     : path.resolve(workspaceBase || fsBase, effective);
@@ -256,7 +267,23 @@ export function registerFileTools(
       // `...\data\workspace\data\workspace`，连踩两个坑。
       return { ...(r as object), path: resolvedPath, workspaceRelative: display };
     };
-    return await errRecovery.executeWithRetry("file_create", fsPath, doCreate);
+    return await errRecovery
+      .executeWithRetry("file_create", fsPath, doCreate)
+      .catch((err: unknown) => {
+        // ★ 2026-11-07：ENOENT 常因父目录不存在或相对路径基准猜错；报错附上两个
+        // 根目录，避免模型连续试错（e2e t11-7/8：模型凭空猜 /workspace 根）。
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("ENOENT") || message.includes("no such file")) {
+          return {
+            success: false,
+            error: message,
+            hint:
+              `路径解析失败。相对路径以 workspace 根为基准：${resolveWorkspaceBase()}；` +
+              `沙箱根（仓库根）：${fsBase}；本次解析为：${resolvedPath}。`,
+          };
+        }
+        throw err;
+      });
   }
 
   async function handleFileWriteModify(params: Record<string, unknown>): Promise<unknown> {
@@ -283,7 +310,21 @@ export function registerFileTools(
         : await fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
       return { ...(r as object), path: resolvedPath, workspaceRelative: display };
     };
-    return await errRecovery.executeWithRetry("file_modify", fsPath, doModify);
+    return await errRecovery
+      .executeWithRetry("file_modify", fsPath, doModify)
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("ENOENT") || message.includes("no such file")) {
+          return {
+            success: false,
+            error: message,
+            hint:
+              `路径解析失败。相对路径以 workspace 根为基准：${resolveWorkspaceBase()}；` +
+              `沙箱根（仓库根）：${fsBase}；本次解析为：${resolvedPath}。`,
+          };
+        }
+        throw err;
+      });
   }
 
   executor.registerTool(
@@ -409,6 +450,22 @@ export function registerFileTools(
           content = allLines.slice(start, end).join("\n");
         }
         return { path: filePath, content };
+      }).catch((err: unknown) => {
+        // ★ 2026-11-07 e2e 压测发现：ENOENT 错误里只有被解析路径，模型不知道
+        //   workspace 根在哪、相对路径以谁为基准，连续用 `../` 之类的猜测碰壁。
+        //   在报错里附上两个根目录的绝对路径，让模型能自行推导正确路径。
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("ENOENT") || message.includes("no such file")) {
+          return {
+            success: false,
+            error: message,
+            hint:
+              `文件不存在。相对路径以 workspace 根为基准解析：${resolveWorkspaceBase()}；` +
+              `沙箱根（仓库根）：${fsBase}；本次调用被解析为：${resolvedPath}。` +
+              `如需访问仓库源码，请用工作区切换工具把工作区切到仓库根，或改用真实存在的相对路径。`,
+          };
+        }
+        throw err;
       });
     }
   );

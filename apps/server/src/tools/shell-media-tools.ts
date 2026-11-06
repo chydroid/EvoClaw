@@ -282,11 +282,17 @@ export function registerShellMediaTools(
 
   // ── shell_exec: 在安全前提下在沙箱外执行 shell 命令（支持 Python/Node.js） ──
   // 支持：1200s 超时、30s 进度反馈、超时续接
+  // ★ 2026-11-07 e2e 压测：描述里直接写明真实默认 cwd —— 模型曾在 t11-7/8
+  //   连续猜错工作区根（/workspace 之类）导致 EACCES×6。注册时求值一次即可
+  //   （工作区切换后 tool def 不变化也无妨：cwd 参数随时可用，且每次执行
+  //   都用 getWorkspaceDir() 现算默认值，描述提供"从哪出发"的提示）。
+  const describeDefaultCwd =
+    `（默认工作目录 = ${getWorkspaceDir()}，即 file 工具使用的同一个持久工作区）。`;
   executor.registerTool(
     "shell_exec",
     {
       name: "shell_exec",
-      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution. Large output is automatically truncated (head 40% + tail 60%) with the full text saved to a spill file — the result includes full_output_path and a truncation_note; re-read it with file_read/code_search instead of re-running the command.",
+      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. " + describeDefaultCwd + "Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution. Large output is automatically truncated (head 40% + tail 60%) with the full text saved to a spill file — the result includes full_output_path and a truncation_note; re-read it with file_read/code_search instead of re-running the command.",
       parameters: {
         command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'", required: true },
         cwd: { type: "string", description: "Optional working directory for the command (default: workspace)", required: false },

@@ -169,6 +169,11 @@ export class ErrorRecoveryManager {
    * 不可重试错误：确定性失败，重试永远不会成功。
    * 2026-10-14 评测发现：file_write 遇 "File already exists" 被无差别重试 6 次
    * （含 15.5s 退避），浪费整轮工具配额还让模型误判为瞬态故障。
+   * 2026-11-07 e2e 11 任务压测：ENOENT 同样被重试 6 次（file_read 读不存在的
+   * 路径），退避总时延 ~15.5s 叠加执行开销后撞上外层 30s 工具超时
+   * （llm-caller tool timeout），错误被包装成误导性的 "timed out after 30s"，
+   * 真实性为 "file not found" —— 模型无从知道是路径问题。
+   * ENOENT（含 "no such file"）为确定性 FS 失败：文件此刻不存在，重试无意义。
    */
   private isNonRetryable(err: unknown): boolean {
     const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
@@ -179,7 +184,9 @@ export class ErrorRecoveryManager {
       message.includes("eisdir") ||
       message.includes("enotdir") ||
       message.includes("is a directory") ||
-      message.includes("not a directory")
+      message.includes("not a directory") ||
+      message.includes("enoent") ||
+      message.includes("no such file")
     );
   }
 

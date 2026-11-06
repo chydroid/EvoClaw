@@ -83,4 +83,19 @@ describe("ErrorRecoveryManager.executeWithRetry", () => {
     ).rejects.toThrow(/\[non-retryable\]/);
     expect(calls).toBe(1);
   });
+
+  it("文件不存在（ENOENT）同样不重试：确定性失败，避免退避撞工具超时（e2e 11 任务压测）", async () => {
+    let calls = 0;
+    const started = Date.now();
+    await expect(
+      mgr.executeWithRetry("file_read", "/tmp/no-such-file.txt", async () => {
+        calls += 1;
+        throw new Error("ENOENT: no such file or directory, open '/tmp/no-such-file.txt'");
+      })
+    ).rejects.toThrow(/\[non-retryable\]/);
+    expect(calls).toBe(1);
+    // 退避重试（500+1000+2000+4000+8000ms）曾把 6 次 ENOENT 拖到撞外层
+    // 30s 工具超时 —— 修复后应瞬时失败
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
 });
