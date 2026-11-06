@@ -366,6 +366,68 @@ describe("applyPatch", () => {
     expect(hunks[0].replace).toContain("new line");
   });
 
+  // ── 2026-11-06 回归：失败会话（sess_mw4remtr_9f9b11d7）实测——8/19 次
+  //    apply_patch 调用以 `<<<<<<< SEARCH`（无内联路径）开头，此前正则
+  //    要求路径 → 整份 patch 解析为 0 hunk → 幽灵错误 "No valid hunks"。
+
+  it("parsePatch 应解析无路径 SEARCH 块（沿用 *** Update File 游标）", () => {
+    const patch = [
+      "*** Begin Patch",
+      "*** Update File: src/foo.ts",
+      "@@",
+      " const keep = 0;",
+      "-const keep = 0;",
+      "+const keep = 1;",
+      "<<<<<<< SEARCH",
+      "old x",
+      "=======",
+      "new x",
+      ">>>>>>> REPLACE",
+      "*** End Patch",
+    ].join("\n");
+    const hunks = parsePatch(patch);
+    expect(hunks.length).toBeGreaterThanOrEqual(2);
+    expect(hunks.every((h) => h.relativePath === "src/foo.ts")).toBe(true);
+    const sr = hunks.find((h) => h.search === "old x" && h.replace === "new x");
+    expect(sr?.relativePath).toBe("src/foo.ts");
+  });
+
+  it("parsePatch 应干净解析模型的路径前缀变体 path:/home/...", () => {
+    const patch = [
+      "<<<<<<< SEARCH path:/home/chy/EvoClaw/packages/agent/src/llm-caller.ts",
+      "old",
+      "=======",
+      "new",
+      ">>>>>>> REPLACE",
+    ].join("\n");
+    const [h] = parsePatch(patch);
+    expect(h?.relativePath).toBe("/home/chy/EvoClaw/packages/agent/src/llm-caller.ts");
+  });
+
+  it("parsePatch+applyPatch：全无路径时给明确错误而非 no-hunks 幽灵错误", async () => {
+    fs.writeFileSync(path.join(tmpDir, "ghost.ts"), "alpha");
+    const hunks = parsePatch("<<<<<<< SEARCH\nalpha\n=======\nbeta\n>>>>>>> REPLACE");
+    expect(hunks).toHaveLength(1); // Parser 不丢块
+    const result = await applyPatch(tmpDir, hunks);
+    expect(result.success).toBe(false);
+    expect(result.errors[0]?.reason).toContain("目标文件路径");
+    expect(fs.readFileSync(path.join(tmpDir, "ghost.ts"), "utf-8")).toBe("alpha"); // 不写盘
+  });
+
+  it("applyPatch：*** Add File 应整文件写入且拒绝覆盖已存在文件", async () => {
+    const addHunks = parsePatch(
+      ["*** Begin Patch", "*** Add File: brand.ts", "export const x = 1;", "*** End Patch"].join("\n"),
+    );
+    expect(addHunks[0]?.wholeFile).toBe(true);
+    const created = await applyPatch(tmpDir, addHunks);
+    expect(created.success).toBe(true);
+    expect(fs.readFileSync(path.join(tmpDir, "brand.ts"), "utf-8")).toBe("export const x = 1;");
+    // 二次 Add 同路径应拒绝
+    const again = await applyPatch(tmpDir, addHunks);
+    expect(again.success).toBe(false);
+    expect(again.errors[0]?.reason).toContain("already exists");
+  });
+
   it("applyPatch 应应用单个 hunk", async () => {
     fs.writeFileSync(path.join(tmpDir, "single.ts"), "old content\nline 2");
     const result = await applyPatch(tmpDir, [

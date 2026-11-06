@@ -31,6 +31,19 @@ import { asyncLog } from "./async-log";
 // 展开结果，避免每轮 LLM 调用重建数组 + 逐条 {...p, model} 字面量分配。
 let _lastExpandedProvidersRef: ProviderConfig[] | null = null;
 let _lastExpandedProviders: ProviderConfig[] | null = null;
+
+/**
+ * 解析工具执行 span 归属的 trace ID —— 专用于 deps.sessionId 动态的场合。
+ * P0-1 会话级 deps 缓存下，currentTraceId 可能是函数（executor 传入）、
+ * 也可能是静态字符串（兼容旧调用者）；调用点必须每次直接解析而非缓存值本身。
+ */
+function resolveTraceId(
+  deps: { currentTraceId?: string | ((sessionId: string) => string | undefined) },
+  sessionId: string,
+): string | undefined {
+  const v = deps.currentTraceId;
+  return typeof v === "function" ? v(sessionId) : v;
+}
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -1051,7 +1064,13 @@ export interface LLMCallerDeps {
   checkToolGuardrail?: (toolName: string, args: Record<string, unknown>) => import("./guardrails").GuardrailResult;
   // Observability integration (optional — enables trace/span recording)
   observability?: import("./agent-observability").AgentObservability;
-  currentTraceId?: string;
+  /**
+   * 工具执行 span 归属的当前 trace ID。
+   * ★ P0-1 会话级 deps 缓存副作用修复（2026-11-06）：字符串形态会在
+   *   deps 缓存构建那一刻被钉死（首个调用者的会话），后续会话的工具 span
+   *   全记到别人的 trace 名下。executor 改为传函数——调用点每次动态解析。
+   */
+  currentTraceId?: string | ((sessionId: string) => string | undefined);
   // Stale Context integration (optional — records tool result timestamps for staleness tracking)
   recordStaleContext?: (sessionId: string, toolName: string) => void;
   // Steer integration (optional — injects real-time instructions into conversation)
@@ -6104,10 +6123,13 @@ if (deps.contextPruningManager && !prunerNoop) {
 
           // ── Observability: start tool span ──
           let toolSpanId: string | undefined;
-          if (deps.observability && deps.currentTraceId) {
-            const span = deps.observability.startSpan(deps.currentTraceId, "tool", `tool:${toolName}`);
+          // ★ P0-1 副作用修复：traceId 动态解析（deps 缓存被多会话复用的场合，
+          //   此前钉死在构建缓存的首个会话上，工具 span 归属错误）
+          const toolTraceId = deps.observability ? resolveTraceId(deps, sessionId) : undefined;
+          if (deps.observability && toolTraceId) {
+            const span = deps.observability.startSpan(toolTraceId, "tool", `tool:${toolName}`);
             toolSpanId = span.spanId;
-            deps.observability.addSpanAttribute(deps.currentTraceId, span.spanId, "tool.name", toolName);
+            deps.observability.addSpanAttribute(toolTraceId, span.spanId, "tool.name", toolName);
           }
 
           // ── Guardrails: tool call validation ──
@@ -6662,9 +6684,12 @@ if (deps.contextPruningManager && !prunerNoop) {
           }
 
           // Observability: end tool span
-          if (deps.observability && deps.currentTraceId && toolSpanId) {
-            deps.observability.addSpanAttribute(deps.currentTraceId, toolSpanId, "tool.success", !toolErrored);
-            deps.observability.endSpan(deps.currentTraceId, toolSpanId, toolErrored ? "error" : "ok");
+          if (deps.observability && toolSpanId) {
+            const toolTraceId = resolveTraceId(deps, sessionId);
+            if (toolTraceId) {
+              deps.observability.addSpanAttribute(toolTraceId, toolSpanId, "tool.success", !toolErrored);
+              deps.observability.endSpan(toolTraceId, toolSpanId, toolErrored ? "error" : "ok");
+            }
           }
 
           // Update planning step status

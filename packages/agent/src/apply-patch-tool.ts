@@ -21,6 +21,8 @@ export interface PatchHunk {
   relativePath: string;
   search: string;
   replace: string;
+  /** Add File 语义：search 恒为空，replace 即文件全量内容，直接覆盖写盘 */
+  wholeFile?: boolean;
 }
 
 export interface PatchResult {
@@ -56,35 +58,89 @@ function normalizeUnicode(text: string): string {
 // ── parsePatch ───────────────────────────────────────────────
 
 /**
- * 解析 SEARCH/REPLACE 块或简化版 unified diff。
+ * 解析 SEARCH/REPLACE 块、OpenAI `*** Begin Patch` 风格 patch，或简化版
+ * unified diff。
  *
- * SEARCH/REPLACE 格式：
- *   <<<<<<< SEARCH path/to/file
- *   ...search...
- *   =======
- *   ...replace...
- *   >>>>>>> REPLACE
+ * 支持三种格式：
  *
- * Unified diff（简化）：
- *   --- a/path
- *   +++ b/path
- *   @@ -x,y +x,y @@
- *    context
- *   -old
- *   +new
+ * 1. SEARCH/REPLACE 块（路径可省略）：
+ *    <<<<<<< SEARCH path/to/file
+ *    ...search...
+ *    =======
+ *    ...replace...
+ *    >>>>>>> REPLACE
+ *    路径省略时（`<<<<<<< SEARCH` 后直接跟内容）沿用最近的
+ *    `*** Update File: x` / `--- a/x` 头声明的目标文件。
+ *
+ * 2. OpenAI / Claude Code style：
+ *    *** Begin Patch
+ *    *** Update File: path/to/file
+ *    @@ context @@
+ *    context / -old / +new
+ *    *** Add File: path/to/new
+ *    full file content...
+ *    *** End Patch
+ *
+ * 3. Unified diff（简化）：
+ *    --- a/path
+ *    +++ b/path
+ *    @@ -x,y +x,y @@
+ *     context
+ *    -old
+ *    +new
+ *
+ * 2026-11-06 修复：此前 SEARCH 头正则要求行内路径（`\s+(\S+)`），模型输出
+ * 无路径块时整份 patch 解析为 0 hunk，工具报 "No valid hunks parsed from
+ * patch text" 幽灵错误——会话存档中 8/19 次 apply_patch 调用死于该格式。
+ * 现在无路径块沿游标取目标文件；全程无可判定路径时由 applyPatch 返回明确
+ * 的格式错误（而不伪装成 "no hunks"）。
  */
 export function parsePatch(patchText: string): PatchHunk[] {
   const hunks: PatchHunk[] = [];
   const lines = patchText.split("\n");
   let i = 0;
+  // 当前目标文件游标：`*** Update File` / `--- a/x` 头或带路径的 SEARCH 头
+  // 声明后，后续无路径 SEARCH 块沿用它。
+  let curFile: string | undefined;
 
   while (i < lines.length) {
     const line = lines[i];
 
-    // SEARCH/REPLACE 块
-    const srMatch = line.match(/^<<<<<<<\s+SEARCH\s+(\S+)/);
+    // ── OpenAI style：*** Begin / Update File / Add File / End Patch ──
+    if (line === "*** Begin Patch" || line === "*** End Patch") {
+      i++;
+      continue;
+    }
+    const afMatch = line.match(/^\*\*\* (?:Update|Add) File:\s*(.+)$/);
+    if (afMatch) {
+      const relativePath = cleanPatchPath(afMatch[1]);
+      curFile = relativePath;
+      i++;
+      if (line.includes("Add")) {
+        // Add File：后续行直到下一个 *** 标记即全量内容
+        const body: string[] = [];
+        while (i < lines.length && !lines[i].startsWith("*** ")) {
+          body.push(lines[i]);
+          i++;
+        }
+        hunks.push({ relativePath, search: "", replace: body.join("\n"), wholeFile: true });
+        continue;
+      }
+      while (i < lines.length && lines[i].startsWith("@@")) {
+        const result = parseUnifiedHunk(lines, i);
+        hunks.push({ relativePath, search: result.search, replace: result.replace });
+        i = result.nextI;
+      }
+      continue;
+    }
+
+    // SEARCH/REPLACE 块（路径可省略，缺省沿用 curFile 游标）
+    // 注意：非贪婪 `(.+?)\s*$` 兼容 CRLF（split("\n") 后行尾残留 \r）与尾部空格
+    const srMatch = line.match(/^<<<<<<<\s+SEARCH(?:\s+(.+?))?\s*$/);
     if (srMatch) {
-      const relativePath = srMatch[1];
+      const headerPath = srMatch[1] ? cleanPatchPath(srMatch[1]) : undefined;
+      const relativePath = headerPath ?? curFile ?? "";
+      if (headerPath) curFile = headerPath;
       const searchLines: string[] = [];
       const replaceLines: string[] = [];
       i++;
@@ -111,6 +167,7 @@ export function parsePatch(patchText: string): PatchHunk[] {
       const oldPath = parseDiffPath(line.slice(4));
       const newPath = parseDiffPath(lines[i + 1].slice(4));
       const relativePath = newPath || oldPath;
+      curFile = relativePath;
       i += 2;
       while (i < lines.length && lines[i].startsWith("@@")) {
         const result = parseUnifiedHunk(lines, i);
@@ -126,10 +183,19 @@ export function parsePatch(patchText: string): PatchHunk[] {
   return hunks;
 }
 
-function parseDiffPath(s: string): string {
+/**
+ * 清理 patch 头里的路径写法：去掉 `path:` 前缀（模型常写成
+ * `SEARCH path:/home/...`）与 unified diff 的 `a/` `b/` 前缀。
+ */
+function cleanPatchPath(s: string): string {
   let p = s.trim();
+  if (p.startsWith("path:")) p = p.slice("path:".length);
   if (p.startsWith("a/") || p.startsWith("b/")) p = p.slice(2);
   return p;
+}
+
+function parseDiffPath(s: string): string {
+  return cleanPatchPath(s);
 }
 
 function parseUnifiedHunk(
@@ -142,6 +208,7 @@ function parseUnifiedHunk(
   while (i < lines.length) {
     const line = lines[i];
     if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) break;
+    if (line.startsWith("\\")) { i++; continue; } // `\ No newline at end of file`
     if (line.startsWith("+")) {
       replaceLines.push(line.slice(1));
     } else if (line.startsWith("-")) {
@@ -175,6 +242,17 @@ export async function applyPatch(
 
   // Phase 1: 计算所有新内容
   for (const hunk of hunks) {
+    // ★ 2026-11-06：SEARCH 块路径缺失时明确报错（避免空字符串被当成工作区自身的
+    //   边角语义，把 patch 写成不可理解的错误）。格式与错误一并给出，模型下轮即可修正。
+    if (!hunk.relativePath) {
+      errors.push({
+        path: "(unspecified)",
+        reason: "SEARCH 块未指定目标文件路径：需要 <<<<<<< SEARCH path/to/file，或位于 *** Update File: path/to/file / --- a/path 之后",
+      });
+      failedHunks++;
+      continue;
+    }
+
     const absPath = path.resolve(workspaceRoot, hunk.relativePath);
 
     if (!isPathSafe(workspaceRoot, absPath)) {
@@ -183,6 +261,21 @@ export async function applyPatch(
         reason: `Path escape detected: ${hunk.relativePath} resolves outside workspace`,
       });
       failedHunks++;
+      continue;
+    }
+
+    // Add File（OpenAI 风格整文件写入）：文件已存在则拒绝，与惯例一致
+    if (hunk.wholeFile && !hunk.search) {
+      if (fs.existsSync(absPath)) {
+        errors.push({
+          path: hunk.relativePath,
+          reason: `File already exists: ${hunk.relativePath}（Add File 拒绝覆盖已有文件，改用 Update File / SEARCH/REPLACE）`,
+        });
+        failedHunks++;
+        continue;
+      }
+      plannedWrites.set(absPath, hunk.replace);
+      appliedHunks++;
       continue;
     }
 

@@ -419,7 +419,16 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       const patchText = String(params.patch || "");
       if (!patchText) return { success: false, error: "patch is required" };
       const hunks = parsePatch(patchText);
-      if (hunks.length === 0) return { success: false, error: "No valid hunks parsed from patch text" };
+      if (hunks.length === 0) {
+        return {
+          success: false,
+          error:
+            "No valid hunks parsed from patch text. 支持三种格式：" +
+            "(1) <<<<<<< SEARCH path/to/file ... ======= ... >>>>>>> REPLACE（SEARCH 后路径可省略，但需先出现 *** Update File: path 或 --- a/path 头）；" +
+            "(2) OpenAI 风格 *** Begin Patch / *** Update File: path / @@ hunks / *** End Patch；" +
+            "(3) 简化 unified diff：--- a/path +++ b/path + @@ hunks。",
+        };
+      }
       // workspaceRoot 固定为服务器 fsBase，不接受用户传入（防止路径遍历）
       const workspaceRoot = fsBase;
       const result = await applyPatchFn(workspaceRoot, hunks);
@@ -537,7 +546,16 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
           enum: ["patch", "plan_rename", "apply_rename"],
           required: true,
         },
-        patch: { type: "string", description: "Patch text in SEARCH/REPLACE format. Format:\n<<<<<<< SEARCH path/to/file\n...search content...\n=======\n...replace content...\n>>>>>>> REPLACE（patch 用）", required: false },
+        patch: {
+          type: "string",
+          description:
+            "Patch text. 三种受支持格式："
+            + "① <<<<<<< SEARCH path/to/file ... ======= ... >>>>>>> REPLACE（一个文件可多块；"
+            + "SEARCH 后路径可省略，此时沿用上方 *** Update File: path 头声明的目标文件）；"
+            + "② OpenAI 风格：*** Begin Patch / *** Update File: path/to/file / @@ 上下文 / *** End Patch / *** Add File: path；"
+            + "③ 简化 unified diff：--- a/path +++ b/path + @@ -x,y +x,y @@ + context/-old/+new（patch 用）",
+          required: false,
+        },
         oldName: { type: "string", description: "Current symbol name（plan_rename / apply_rename 用）", required: false },
         newName: { type: "string", description: "New symbol name（plan_rename / apply_rename 用）", required: false },
         path: { type: "string", description: "Optional file path where the symbol is defined（plan_rename / apply_rename 用）", required: false },

@@ -159,3 +159,27 @@ Phase 3（P2，1-2 周）—— 序列化去重
 5. P0-7 消息前序布局无变化（`[sys_frozen, sys_ephemeral, skills?, tail?, ...history, user]` 顺序、内容不变）。
 
 > ⚠ 路线图仅规划，**尚未改代码**。下一步需授权后才按 P0 → P1 → P2 顺序落盘实现并重跑 `pnpm build && pnpm typecheck && pnpm test`。
+
+---
+
+## 5. 验收记录（2026-11-06 核实）
+
+> 本节由独立复核会话补写：建议 3.1–3.5 + 路线图 P1-3 共 6 项，逐条对照源码判定。
+> 结论：**建议全部准确**，代码修复已全部落地（见下表）。文档中部分行号引用已漂移，以表内现行行号为准。
+
+| 建议 | 判定 | 落地位置（现行代码） | 与建议的差异 |
+|---|---|---|---|
+| P0-1 getLLMCallerDeps 缓存 | ✅ 准确，已实现 | `agent-model-executor.ts:1065-1140`（`_llmDepsCache`） | 用单实例字段而非建议中的 `Map<sessionId>`——deps 内部本就按 sessionId 分键（history/pendingOps 等），单实例复用更简单且等价；失效点为 configure/configureProviders/工具注册（行 1213-1309），等价于建议的 depsVersion++ |
+| P0-2 热路径同步写 → asyncLog | ✅ 准确，已实现 | `async-log.ts` 共享模块；executor 内 65 处 asyncLog/asyncErr | 与建议一致；启动期一次性日志（行 378-434）按建议保留同步 |
+| P0-3 dynamicToolLimit 缓存 | ✅ 准确，已实现 | `llm-caller.ts:1600`（`computeDynamicToolLimitCached`），调用点 `:4048` | 指纹用「长度+首尾字符」替代建议的 hashCode，碰撞概率可忽略，语义等价 |
+| P1-1 expandedProviders 复用 | ✅ 准确，已实现 | `llm-caller.ts:30-33` 模块态 + `:4069-4076` | 与建议一致（引用比对） |
+| P1-2 SkillDispatcher 并行预热 | ✅ 准确，已实现 | `agent-model-executor.ts:2520-2530` fire + `:3113-3135` 兜底 await | 与建议一致 |
+| P1-3 archive 与加载并行 | ✅ 准确，已实现 | `agent-model-executor.ts:2067-2103` fire-and-forget | 语义等价已证：`archiveOlderTurns` 内部 `session-archive.ts:138` 用同一 `computeKeepFromIndex` 纯函数计算 keepFrom，切片侧与归档侧算法一致 |
+
+**P0-1 副作用修复（本次复核发现并修复）**：deps 单实例缓存使 `currentTraceId` 在缓存构建时被钉死于首个会话。
+改为传函数 `currentTraceId: (sid) => this._currentTraceIds.get(sid)`，llm-caller 调用点动态解析（`resolveTraceId`，llm-caller.ts:36-45），多会话并发时 span 归属正确。回归测试新增于 code-intelligence.test.ts。
+
+**本次同步修复的关联缺陷**：会话 `sess_mw4remtr_9f9b11d7` 回合中 4 次工具执行失败（2 次 file_list 沙箱拒绝对路径——设计内行为；2 次 apply_patch）触发「完成声明对账」更正脚注。
+apply_patch 失败根因：模型输出无内联路径的 `<<<<<<< SEARCH` 块（该会话 8/19 次），原解析器正则要求路径 → 0 hunk 幽灵错误。已修复：parsePatch 支持游标式无路径块 + OpenAI `*** Begin Patch` 风格，缺路径时报明确格式错误。详见 `packages/agent/src/apply-patch-tool.ts` 头部注释。
+
+**全量回归**：`pnpm build` → `pnpm typecheck` → vitest **7046 passed / 14 skipped**（新增 4 个解析器回归）。

@@ -1107,7 +1107,10 @@ export class AgentModelExecutor {
       checkOutputGuardrail: this.guardrailsManager ? (output: string) => this.guardrailsManager!.checkOutput(output) : undefined,
       checkToolGuardrail: this.guardrailsManager ? (toolName: string, args: Record<string, unknown>) => this.guardrailsManager!.checkToolCall(toolName, args) : undefined,
       observability: this.observability ?? undefined,
-      currentTraceId: sessionId ? this._currentTraceIds.get(sessionId) : undefined,
+      // ★ P0-1 副作用修复（2026-11-06）：deps 被会话级缓存复用时，外部不能
+      //   把构建时刻的 traceId 写死进缓存——传函数，调用点按入参 sessionId
+      //   每次动态解析（llm-caller 侧已适配，见其 resolveTraceId）。
+      currentTraceId: (sid: string) => this._currentTraceIds.get(sid),
       recordStaleContext: this.staleContextManager ? (sessionId: string, toolName: string) => this.staleContextManager!.recordToolResult(sessionId, toolName) : undefined,
       getSteerMessage: this.steerManager ? (sessionId: string) => this.steerManager!.formatSteerMessage(sessionId) : undefined,
       semanticIntentClassifier: this.semanticQuickReply,
@@ -2535,6 +2538,7 @@ export class AgentModelExecutor {
       const multiResult = await this.handleMultipleTasks(tasks, sessionId, pendingPermissions, startTime, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, channel);
       multiResult.reply = AgentModelExecutor.collapseNewlines(multiResult.reply);
       this.persistEarlyReturn(sessionId, message, multiResult.reply);
+      this.pendingSkillDispatch.delete(sessionId);
       return multiResult;
     }
 
@@ -3014,6 +3018,11 @@ export class AgentModelExecutor {
       taskStatusTracker.set(sessionId, "thinking", `正在调用 ${primaryProvider.name} (${primaryProvider.model})...`, 30);
       const result = await this.tryCallLLM(finalEnhancedMessage, systemPrompt, installedSkills, routedProviders, startTime, sessionId, pendingPermissions, context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined, onProgress, !!newsContext, channel, dynamicSystemTail || undefined, skillsMessage || undefined, message);
       if (result) {
+        // ★ P1-2 清理：主路径 LLM 调用成功后立即删除预加热条目——否则
+        //   (a) Map 项随成功轮累积不释放； (b) 熔断边界场景（下一轮开始时
+        //   跳过硬失败路径直接走兜底）会 await 到**上一轮**的过期 promise，
+        //   把「对旧消息的判读」当成新消息的回复。
+        this.pendingSkillDispatch.delete(sessionId);
         taskStatusTracker.set(sessionId, "done", "响应完成", 100);
         onProgress?.({ type: "final", phase: "done", detail: "响应完成", progress: 100, reply: result.reply, tokensUsed: result.tokensUsed, duration: result.duration });
         // Token 用量记账统一由 llm-caller 在**每次 LLM 调用**后逐条写入
