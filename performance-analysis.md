@@ -215,3 +215,36 @@ apply_patch 失败根因：模型输出无内联路径的 `<<<<<<< SEARCH` 块�
 
 **全量回归**：`pnpm build` → `pnpm typecheck` → vitest **7052 passed / 14 skipped**（新增 6 个回归测试：ENOENT 重试 1 + workspace 解析 5）。
 
+## 7. 真实工作任务压测第二轮：15 任务全量回放（2026-11-07，e2e 15 任务）
+
+> 方法与 §6 一致：15 个贴近真实办公/数据/工程的任务（t15-01..t15-15）经 WebUI SSE
+> 逐条投递（`/api/chat` sessionId=t15-NN，curl `-m 280`，每任务 SSE 独立落盘 `/tmp/e2e15/*.sse`），
+> 观测 awk 只内建函数；交付物逐条**独立复跑**，不采信模型自报。
+> 总耗时约 8 分钟（476s 累加），**15/15 curl_exit=0、有 done 帧**。
+
+### 7.1 本轮发现并修复的缺陷
+
+| # | 缺陷 | 根因 | 修复 | 回归证据 |
+|---|---|---|---|---|
+| 1 | t15-05：模型尝试在 `/workspace` 建目录，EACCES 被当瞬态错误**重试 6 次** | `isNonRetryable` 只覆盖 ENOENT/EEXIST 等；权限拒绝（EACCES/EPERM/EROFS）确定性失败——等待不会让权限生效，出路是换路径/授权——却白白消耗 15.5s 退避 + 工具配额 | `error-recovery-manager.ts isNonRetryable`：新增 `eacces`/`eperm`/`erofs` 判定，与 ENOENT 同族立即终止 | 单测：error-recovery-manager.test.ts 新增 EACCES 用例（1 次尝试即 `[non-retryable]`）；生产复放：重启服务后 file_write `/workspace/probe-eacces.txt` → `failed after 1 attempt(s) [non-retryable]: EACCES: permission denied, mkdir '/workspace'`（修复前观察到 6 次重试） |
+
+### 7.2 上轮修复的回归确认（非新缺陷）
+
+- t15-05 同时确认 §6.1 缺陷 1/2 修复有效：不存在的绝对路径 `.../nope-99999.txt` 返回**带双根指引的 ENOENT hint**，
+  模型下一步自主纠正；真实存在的绝对路径 `.../t15-05/probe.txt` 单次读取成功。
+- t15-04：模型两次尝试 `rm -rf t15-04-myrepo` 被**破坏性命令守卫拦截**（`tool_calling` ERROR 帧），
+  随后改用非破坏方式完成仓库初始化——安全守卫按设计工作，模型韧性良好。
+
+### 7.3 偏差与脚本级问题（记录，非产品缺陷）
+
+- **t15-13**：队列窗口要求 ≤8，产物复跑记录 `max_queue_length=9`——线程竞争下观测越窗 1 项，模型脚本边界处理欠严谨（1/1000 越窗率无丢失，`lost==0` 断言通过）。
+- **t15-03**：日志含 3 类指纹，聚合器映射检出 2/3（CACHE_EXHAUSTED、TIMEOUT），NPE 落入 OTHER 桶（OTHER 占 131/384≈34%）——归一化规则未覆盖 NPE 指纹。
+- **t15-05 会话污染**：`nope-99999.txt` 的错误回报前，模型先用 file_write 写了占位文件——压测任务措辞未禁止，非工具缺陷。
+- **t15-08**：`detect_fix.py`/`aggregate_log.py` 等产物脚本存在 cwd 耦合（复跑需按生成时目录执行）；模型在会话内 cwd 正确所以首跑成功——产物脚本鲁棒性记录在案。
+- **verify15.sh（评测脚本自身）**：`chk` 的 `eval "cd ... && ..."` 会把 shell cwd 永久留在子目录，污染后续相对路径检查（t03a 假 FAIL）。修复方式：`cd` 入 `( )` 子 shell 执行。
+
+### 7.4 全量回归
+
+`pnpm build` → `pnpm typecheck` → vitest **7053 passed / 14 skipped**（本轮净增 1 个 EACCES 回归用例）。
+重启服务后按 §7.1 生产复放验证 EACCES 修复生效。15 任务产物复跑：聚合/测试/demo 全部重新执行通过或按 7.3 记录偏差。
+
