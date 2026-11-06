@@ -1471,6 +1471,17 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
         const decoder = new TextDecoder();
         let buffer = "";
         let finalData: Record<string, unknown> | null = null;
+        // ★ SSE 事件名状态必须**跨 chunk 保持**（2026-11-06 修复）：
+        //   原实现在 `while (true)` 循环内声明 `let currentEvent = ""`，
+        //   每个 TCP 分片到达时重置。Gateway 的 `event: done\ndata: {...}\n\n`
+        //   单帧可达数十 KB（大回复 + thinkingSteps 轨迹），一旦发送端分片的
+        //   切割点落在 `event:` 行与 `data:` 行之间，data 行就带着
+        //   `currentEvent === ""` 落到下一 chunk 的解析循环里——
+        //   被 `&& currentEvent` 条件**静默丢弃**。现象：终结 done（携带
+        //   contextTokens/contextLimit）被丢 → 上下文用量分子永远停在旧值，
+        //   进度条不动 →「分线和分子不能正确及时显示」的直接根因之一。
+        //   提升到循环外后，帧中先到的 event 名保留到随附的 data 行。
+        let currentEvent = "";
 
         try {
           while (true) {
@@ -1481,7 +1492,6 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
             const lines = buffer.split("\n");
             buffer = lines.pop() || "";
 
-            let currentEvent = "";
             for (const line of lines) {
               if (line.startsWith("event: ")) {
                 currentEvent = line.slice(7).trim();
@@ -1499,6 +1509,21 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
                     //   否则"完成后展开思考过程"就只剩空面板（2026-10-08）。
                     if (Array.isArray(eventData.thinkingSteps) && eventData.thinkingSteps.length > 0) {
                       applyThinkingSteps(eventData.thinkingSteps as ThinkingStep[]);
+                    }
+                  } else if (currentEvent === "usage") {
+                    // ★ 上下文用量实时刷新（2026-11-06）：agent 每次 LLM
+                    //   调用结束即下发 usage 事件（promptTokens = 本次实际
+                    //   发送的上下文词元数），分子/进度条随调用轮次即时更新。
+                    //   原实现只在流终结 done 里算一次 —— 长任务跑十几分钟，
+                    //   数值全程停留在上一轮的旧值（不实时）；且巨型 done 帧
+                    //   跨 chunk 被丢弃时（见上方 currentEvent 修复）还会被
+                    //   错判为"数字从此消失"（不正确）。
+                    //   流尾 done 仍是权威源：末值与实时值不一致时以 done 收口。
+                    const promptTokens = eventData.promptTokens as number | undefined;
+                    if (typeof promptTokens === "number" && promptTokens > 0) {
+                      setContextUsed(promptTokens);
+                      // 该通道上报的是 provider usage 真实值，非本地估算
+                      setContextEstimated(false);
                     }
                   } else if (currentEvent === "reasoning") {
                     // ── 模型推理原文（流式）──

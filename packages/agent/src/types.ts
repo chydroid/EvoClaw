@@ -92,7 +92,21 @@ export interface TaskStatus {
 export interface AgentProgressEvent {
   type: "status" | "tool_call" | "tool_result" | "llm_call" | "final" | "error" | "subtask_start" | "subtask_done" | "subtask_error" | "checkpoint_saved" | "task_resumed" | "approval_pending" | "token" | "budget_warning" | "rounds_warning" | "budget_exhausted" | "auto_continue" | "done"
     /** 模型推理原文流（2026-10-08）：reasoning_content / <think> 的增量下发 */
-    | "reasoning";
+    | "reasoning"
+    /**
+     * 上下文用量实时上报（2026-11-06）。
+     *
+     * 用户反馈：「输入框下方正中间的上下文用量显示不正确也不及时」。
+     * 根因：分子只在**流终结**（done 事件）时更新一次 —— 长任务跑 20 分钟，
+     * 进度条全程停留在上一轮的旧值；且巨型 done 帧一旦在 TCP 分块边界处被
+     * 打断，前端 SSE 解析整帧丢弃（事件名随 chunk 重置），数值从此不再更新。
+     *
+     * 现在**每次 LLM 调用结束后**立即上报本次实际发送的 prompt 词元数
+     * （provider 回报的 usage）；网关 `else sendSSE(event.type, event)` 通用
+     * 转发 → SSE `usage` 事件 → WebChatPage 即时刷新分子/进度条。
+     * `promptTokens === 0` 表示本次调用 provider 未回报 usage，前端忽略。
+     */
+    | "usage";
   phase?: TaskStatus["phase"];
   detail: string;
   progress?: number;
@@ -112,6 +126,11 @@ export interface AgentProgressEvent {
    */
   delta?: string;
   tokensUsed?: number;
+  /**
+   * 本次 LLM 调用的 prompt 词元数（= 当前会话上下文用量分子）——
+   * provider usage 回报。仅 `type: "usage"` 事件携带。
+   */
+  promptTokens?: number;
   duration?: number;
   subtaskIndex?: number;
   subtaskTotal?: number;

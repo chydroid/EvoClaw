@@ -5403,6 +5403,17 @@ if (deps.contextPruningManager && !prunerNoop) {
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
 
+        // ★ 上下文用量实时下发（2026-11-06）：本次调用的 prompt 词元数就是
+        //   "当前会话上下文用量"的准确估值。每次 LLM 调用结束后立即上报，
+        //   前端据此在流式过程中即时刷新分子/进度条（此前只在终结 done 里
+        //   算一次，长任务全程是旧值）。网关对未知 event 类型走
+        //   `else sendSSE(event.type, event)` 通用转发，无需改动。
+        //   本轮 summary/grace 等后续调用会带更大的 promptTokens，分子单调
+        //   递增；有数据即发，不多发 0 值帧白白污染事件流。
+        if (result.promptTokens > 0) {
+          onProgress?.({ type: "usage", detail: "上下文用量已更新", progress: 100, promptTokens: result.promptTokens });
+        }
+
         // ★ 2026-10-30 提升至 1.8M：与 action-intent 轮次上限 25 配套。
         // v7 压测实测：Task 7 每轮 ~40K tokens（795K/20轮），Task 8 每轮 ~61K
         // （1.23M/20轮）。25 轮 × 61K ≈ 1.53M，1.8M 留余量给总结调用。

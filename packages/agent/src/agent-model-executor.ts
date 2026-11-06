@@ -3129,6 +3129,9 @@ export class AgentModelExecutor {
               tokensUsed: skillResult.tokensUsed ?? 0,
               duration: skillResult.duration ?? Date.now() - startTime,
               permissionRequests: (skillResult.permissionRequests ?? []) as Array<{ id: string; operation: string; description: string; target: string }>,
+              // chat() 出口契约的必填字段（2026-11-06 构建修复：此前漏传导致
+              // @evoclaw/agent 编译失败，整个仓库 build/pm2 重启被阻塞）。
+              toolsExecuted: skillResult.toolsExecuted ?? false,
             };
           }
         } catch {
