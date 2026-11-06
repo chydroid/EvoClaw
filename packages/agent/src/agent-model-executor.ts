@@ -3788,19 +3788,33 @@ export class AgentModelExecutor {
       }
     }
 
-    const deps = this.getLLMCallerDeps(sessionId);
-    // Inject iteration budget and context engine result for this session
-    // 子会话（subagent）使用隔离的子预算（DEFAULT_CHILD_BUDGET），
-    // 不与父会话共享父配置值。
-    deps.iterationBudget = this.getIterationBudget(sessionId, this.isSubagentSessionId(sessionId));
-    deps.contextEngineResult = this._contextEngineResults.get(sessionId) ?? undefined;
+    const depsCache = this.getLLMCallerDeps(sessionId);
+    // ★ P0-1 共享缓存修正（2026-11-06）：_llmDepsCache 为单实例、多会话共用；
+    //   此前把 iterationBudget / contextEngineResult / abortSignal 直接写回缓存对象会串味：
+    //   ① 并发会话 B 入口改写后，A 会话在飞的 callLLMOnce（CE 切片 4293+/预算 4888+/
+    //      取消信号 3561 读取）读到 B 的值；
+    //   ② abortSignal 一旦写入共享 cache，llm-caller 的浅拷贝守卫 `!deps.abortSignal`
+    //      （4034）恒失效，后续调用全部直接读共享对象，串味被永久化；
+    //   ③ 汇总路径 llmSummarizer（~1051）拿同一缓存对象调 callLLMOnceFn，会继承
+    //      上次聊天残留的 contextEngineResult → 用别的会话的 CE 切片构建 messages。
+    //   修复：遵循 llm-caller 自身既有模式（见其 4033 注释「创建 deps 浅拷贝再设置
+    //   abortSignal，避免修改调用方共享的 deps 对象」）——每轮浅拷贝注入当前会话
+    //   字段：闭包仍复用缓存（零重建开销），值不再跨会话共享。
+    const sessionDeps: LLMCallerDeps = {
+      ...depsCache,
+      // Inject iteration budget and context engine result for this session
+      // 子会话（subagent）使用隔离的子预算（DEFAULT_CHILD_BUDGET），
+      // 不与父会话共享父配置值。
+      iterationBudget: this.getIterationBudget(sessionId, this.isSubagentSessionId(sessionId)),
+      contextEngineResult: this._contextEngineResults.get(sessionId) ?? undefined,
+    };
     // Wire per-session abort signal (set by abortSession) so callLLMOnce and
     // the tryCallLLM main loop can react to cancellation.
     const sessionController = this.sessionAbortControllers.get(sessionId);
     if (sessionController) {
-      deps.abortSignal = sessionController.signal;
+      sessionDeps.abortSignal = sessionController.signal;
     }
-    return tryCallLLMFn(deps, {
+    return tryCallLLMFn(sessionDeps, {
       message, systemPrompt, skillsMessage, dynamicSystemTail, installedSkills, providers, startTime,
       sessionId, pendingPermissions, attachments, onProgress,
       searchPreDone, channel,

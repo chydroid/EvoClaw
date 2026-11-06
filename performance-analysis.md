@@ -179,6 +179,9 @@ Phase 3（P2，1-2 周）—— 序列化去重
 **P0-1 副作用修复（本次复核发现并修复）**：deps 单实例缓存使 `currentTraceId` 在缓存构建时被钉死于首个会话。
 改为传函数 `currentTraceId: (sid) => this._currentTraceIds.get(sid)`，llm-caller 调用点动态解析（`resolveTraceId`，llm-caller.ts:36-45），多会话并发时 span 归属正确。回归测试新增于 code-intelligence.test.ts。
 
+**P0-1 共享缓存串味修复（2026-11-06 二轮复核）**：`_llmDepsCache` 为单实例多会话共用，而 `iterationBudget` / `contextEngineResult` / `abortSignal` 三个**会话专属**字段此前被 executor 调用点（原 3791-3801）直接写回缓存对象，产生三类串味：① 并发会话 B 入口改写后，A 会话在飞的 `callLLMOnce` 读到 B 的 CE 切片 / 迭代预算 / 取消信号；② `abortSignal` 一旦写入共享 cache，llm-caller 的浅拷贝守卫 `!deps.abortSignal`（:4034）恒失效，串味永久化；③ `llmSummarizer`（~:1051）拿同一缓存调 `callLLMOnceFn` 会继承上次聊天残留的 `contextEngineResult`。
+修复：改为每轮 shallow-copy（`{...depsCache, iterationBudget, contextEngineResult}`）再注入当前会话字段，遵循 llm-caller 自身既有的「创建 deps 浅拷贝再设置 abortSignal」模式——闭包仍复用缓存（零重建开销），值不再跨会话共享。会话字段语义与 P0-1 落地前完全一致。
+
 **本次同步修复的关联缺陷**：会话 `sess_mw4remtr_9f9b11d7` 回合中 4 次工具执行失败（2 次 file_list 沙箱拒绝对路径——设计内行为；2 次 apply_patch）触发「完成声明对账」更正脚注。
 apply_patch 失败根因：模型输出无内联路径的 `<<<<<<< SEARCH` 块（该会话 8/19 次），原解析器正则要求路径 → 0 hunk 幽灵错误。已修复：parsePatch 支持游标式无路径块 + OpenAI `*** Begin Patch` 风格，缺路径时报明确格式错误。详见 `packages/agent/src/apply-patch-tool.ts` 头部注释。
 
