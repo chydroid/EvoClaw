@@ -123,9 +123,17 @@
 4. 测试：`process-wait-policy.test.ts` 9 + `process-tree-killer.test.ts` 8（真实 bash+2×sleep 树终止/注入桩幸存者/probe 异常 fail-closed/安全门控）+ `process-registry.test.ts` +9（计数累计/静默 wait 晋升/输出 reset/退出 forget/poll 晋升/幸存者 fail-closed 真实树）。7142 tests passed（baseline 7116 + 26）。
 5. 备注：`ProcessRegistry` 生产调用方仍为 0（与 Step 2-4 "原语已存在"模式一致）——工具层接线（process_* 工具族）列为后续项，本轮完成 internal alignment + 原语导出。
 
-**Step 7 — skill ledger 编辑级回滚（P2）**
-1. skill mutation 前快照单条（原子写）。
-2. `skill_restore_latest_edit` 语义 + rollback fail-closed。
+**Step 7 — skill ledger 编辑级回滚（P2）** ✅ 已完成（2026-11-08，本提交）
+对应差距：G7。实现（对齐 Hermes `skill_ledger.py` 契约）：
+1. 新模块 `packages/skills/src/skill-ledger.ts`（约 670 行）：
+   - 追加式 JSONL 账本（`ledger.jsonl`）+ 内容寻址 blob（`ledger-blobs/<sha256>`，storeBlob/readBlob 去重、拒非法哈希）。
+   - per-mutation delta：before/after 只存两侧 sha 不同的路径；`snapshotPaths` 目录遍历 + TRANSIENT_DIRS（node_modules/venv/.env/.git 等）任意深度排除。
+   - `appendEntry`：`CrossProcessLock` 锁内「O_APPEND 单次 write + maintainSize」序列（对齐 Hermes 并发警告：维护 rewrite 与并发追加交叉会静默丢行）；id=randomBytes(6) hex；actor 枚举 {curator,agent,user}；遥测永不抛。
+   - `rollbackEntry` fail-closed 级联：条目缺失 → 路径逃逸拒（`validateEntryPaths` 限 skillsDir/archiveDir 单根）→ before blob 全量预检 → pre-rollback 安全条目（当前态 before==after + `rollback_target`，追加失败即中止）→ 原子恢复 before → 删 after-only → rollback 证据条目。
+   - 维护：compactLedger（delta 重写、pre-rollback 整包保留、畸形行原样存活、不可解码账本零动手+诊断回报）、trimOldest（字节预算、最新行恒存）、gcBlobs（账本引用集并集、3600s mtime 宽限保护新 blob）、maintainSizeLocked（>上限 → compact → >0.8 低水位 → trim+GC）。
+2. `SkillCurator` 接线（125 行）：ctor 注册账本；create/archive/restore/edit（persistSkillUpdate）四处 before/after capture+record；archive/restore 走 completePackage（整树还原语义）；新增公共接口 `listLedgerEntries / getLedgerEntry / rollbackLedgerEntry / restoreLatestSkillEdit`（skill_restore_latest_edit 语义）。
+3. 测试：`skill-ledger.test.ts` 17 个（blob 往返/越界哈希拒/瞬态排除/delta+rollback 精确恢复/before-blob 缺失 fail-closed/账本禁用中止零改动/路径逃逸拒/rollback_target 证据链/畸形行鲁棒/compact legacy 裁剪+幂等/trim+GC/不可解码原样/维护触发路径/recordMutation/captureBefore 开关）+ `skill-ledger-integration.test.ts` 2 个（白盒 persistSkillUpdate→edit 条目→rollback 撤版本；archive→rollback 还原目录+清归档副本）。
+4. 备注：commit 前修复两处（2026-11-08）。(a) **perf 回归修复**——`persistSkillUpdate` 在 `installPath` 为空（`reconstructSkillFromEntry` 重放路径产出 `""`）时 `dirname` 退化为 `"."` → `ledgerCapture` 全仓遍历（实测 28.9s/次）+ 已污染 `data/skill-curator/ledger.jsonl`（159 行全 `skill:"."` 全仓 sha 清单）与 `ledger-blobs` 9.7GB（含 `.env` 内容 blob 副本）；修复：`installPath` 空/文件不存在 → 跳过写入+账本（`schedulePersist` 语义不变），且 `ledgerCapture` 拒根相对路径 `""/"."/".."`。(b) **compact 脏行遥测肠梗阻**——旧账本遗留字符串形态 `before/after` 行时 `compactLedgerLocked` 对 `row.before` 直接 `delta()` → `before.map is not a function` 被 `appendEntry` catch 吞掉；修复：`delta` 内部数组归一化（遥测对脏数据不抛）+ 2 个回归测试。(c) 验证：ledger 19 + integration 3 = 22 tests standalone 1.33s（此前单文件 ~150s）；contributed 污染已分段清理（保留 evolutions.json）；全量 `pnpm test` **329 文件完整跑绿 7164 passed | 14 skipped，114.75s**（机器空载，无 onTaskUpdate 断流——此前"双会话争抢"归因止损，真因是回归耗时超 30s 测试时限触发 birpc 超时，修复后消失）。
 
 ## 四、验证计划
 

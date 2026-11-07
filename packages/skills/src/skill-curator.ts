@@ -23,6 +23,7 @@ import {
   type CuratorRunReport,
   type CuratorSkillOutcome,
 } from "./curator-report";
+import { SkillLedger, type ManifestItem } from "./skill-ledger";
 
 /**
  * 原子写入文件：委托给 @evoclaw/core 的 atomicWriteFileSync。
@@ -138,6 +139,10 @@ export interface CuratorOptions {
   autoExtractionEnabled?: boolean;
   /** 每小时最大自动提取次数（默认 3）。 */
   autoExtractionMaxPerHour?: number;
+  /** 审计账本上限（skills.ledger_max_bytes，默认 5MB）。 */
+  ledgerMaxBytes?: number;
+  /** 审计账本开关（skills.ledger，默认开）。 */
+  ledgerEnabled?: boolean;
 }
 
 export interface ImprovementInput {
@@ -215,6 +220,12 @@ export class SkillCurator {
   private subscriptions: EventSubscription[] = [];
   /** 运行报告输出目录（Hermes 对标 P3：logs/curator/run.json + REPORT.md）。 */
   private reportDir: string;
+  /**
+   * 技能编辑级审计账本（对齐 Hermes skill_ledger.py）：
+   * 每次变异前抓 before 快照、成功后追加 edit/archive/create/restore 条目；
+   * 遥测非闸门——账本失败绝不阻塞变异（调用方端 try/catch + 内部吞异常）。
+   */
+  private ledger: SkillLedger;
 
   constructor(
     private registry: ServiceRegistry,
@@ -245,6 +256,15 @@ export class SkillCurator {
     this.reportDir = reportDir
       ? path.resolve(reportDir)
       : path.resolve(process.cwd(), "logs", "curator");
+    // 审计账本与 skillsDir/archiveDir/storeDir 同生命周期：
+    // ledger.jsonl 在 storeDir，blobs 与锁随 storeDir；路径校验根 = skillsDir/archiveDir。
+    this.ledger = new SkillLedger({
+      skillsDir: this.skillsDir,
+      archiveDir: this.archiveDir,
+      storeDir: this.storeDir,
+      ledgerMaxBytes: options?.ledgerMaxBytes,
+      ledgerEnabled: options?.ledgerEnabled,
+    });
     this.loadFromDisk();
     this.loadUsage();
     this.subscribeSkillEvents();
@@ -610,8 +630,17 @@ export class SkillCurator {
       return null;
     }
 
+    // ── 审计账本：新建前抓目录（不存在 → []，after 快照含新 SKILL.md）──
+    const before = this.ledgerCapture(skillDir); // 新建前目录不存在 → []
+
     fs.mkdirSync(skillDir, { recursive: true });
     atomicWriteFileLocal(skillMdPath, this.buildExtractedSkillMd(slug, task, solution, context));
+
+    // ── 审计账本：创建完成记录（rollback 删除该 SKILL.md）──
+    await this.ledgerRecord("create", slug, before, skillDir, "agent", {
+      autoExtracted: true,
+      category: "auto-extracted",
+    });
 
     const skillManager = this.registry.resolveService<{
       installSkill(skillPath: string, force?: boolean): Promise<Skill>;
@@ -953,6 +982,9 @@ export class SkillCurator {
     const archiveSubDir = path.join(this.archiveDir, `${skillName}-${timestamp}`);
     fs.mkdirSync(archiveSubDir, { recursive: true });
 
+    // ── 审计账本：归档前抓整棵技能树（completePackage，回滚须恢复完整包）──
+    const before = this.ledgerCapture(skillDir, true);
+
     // 移动所有文件到归档目录（safeMoveSync 处理跨设备 EXDEV）
     const entries = fs.readdirSync(skillDir);
     for (const entryName of entries) {
@@ -973,6 +1005,12 @@ export class SkillCurator {
       originalPath: skillDir,
     };
     atomicWriteFileLocal(path.join(archiveSubDir, "_archive.json"), JSON.stringify(archiveMeta, null, 2));
+
+    // ── 审计账本：归档完成记录（after 快照 = 归档目录当前内容）──
+    await this.ledgerRecord("archive", skillName, before, archiveSubDir, "curator", {
+      skillDir,
+      archivePath: archiveSubDir,
+    });
 
     // 更新使用统计状态
     const stat = this.usageStats.get(skillName);
@@ -1044,6 +1082,9 @@ export class SkillCurator {
     candidates.sort((a, b) => b.archivedAt.localeCompare(a.archivedAt));
     const { archivePath } = candidates[0];
 
+    // ── 审计账本：恢复前抓归档树；恢复动作本身可回滚 ──
+    const before = this.ledgerCapture(archivePath, true);
+
     // 恢复到 skillsDir/skillName
     const restoreDir = path.resolve(this.skillsDir, skillName);
     fs.mkdirSync(restoreDir, { recursive: true });
@@ -1056,6 +1097,12 @@ export class SkillCurator {
     }
     // 删除已清空的归档目录
     try { fs.rmdirSync(archivePath); } catch { /* ignore */ }
+
+    // ── 审计账本：恢复完成记录（after 快照 = 恢复目录）──
+    await this.ledgerRecord("restore", skillName, before, restoreDir, "curator", {
+      archivePath,
+      restoredPath: restoreDir,
+    });
 
     // 更新使用统计状态
     const now = new Date().toISOString();
@@ -1100,6 +1147,36 @@ export class SkillCurator {
       { skillName, restoredPath: restoreDir },
       "skill-curator"
     );
+  }
+
+  // ── 审计账本回滚接口（skill_restore_latest_edit 语义，对齐 Hermes）──
+
+  /** 列出最近账本条目（最新在前）；可选技能过滤与条数上限。 */
+  listLedgerEntries(
+    skill?: string,
+    limit?: number
+  ): Array<{ id: string; ts: string; actor: string; action: string; skill: string; evidence: Record<string, unknown>; before: ManifestItem[]; after: ManifestItem[] }> {
+    return this.ledger.listEntries(skill, limit);
+  }
+
+  /** 按 id 取账本条目。 */
+  getLedgerEntry(entryId: string) {
+    return this.ledger.getEntry(entryId);
+  }
+
+  /**
+   * 回滚指定条目（fail-closed：before-blob 缺失/安全条目失败 → 中止，磁盘零改动）。
+   * 对齐 Hermes rollback_entry。
+   */
+  rollbackLedgerEntry(entryId: string): Promise<{ ok: boolean; message: string }> {
+    return this.ledger.rollbackEntry(entryId);
+  }
+
+  /**
+   * 回滚某技能最近一次变异（skill_restore_latest_edit）；skill 省略则回滚全账本最新一条。
+   */
+  restoreLatestSkillEdit(skill?: string): Promise<{ ok: boolean; message: string }> {
+    return this.ledger.restoreLatestEdit(skill);
   }
 
   /** 列出所有归档的技能。 */
@@ -1682,21 +1759,27 @@ export class SkillCurator {
     entry: SkillEvolutionEntry
   ): Promise<void> {
     try {
-      const skillDir = path.dirname(skill.installPath);
-      if (!fs.existsSync(skillDir)) return;
-
+      // installPath 缺失（改进重放中 reconstructSkillFromEntry 可能产出 installPath: ""）
+      // 或不存在 → 写入与账本记录一并跳过：dirname("")="." 若走 ledgerCapture 会按
+      // CWD 全量遍历仓库（实测 28.9s/次 + 仓库文件全量落 blob + ledger 污染）。
+      // 演化版本的持久化语义不变（调用方另有过期机制）。
       const skillMdPath = skill.installPath;
-      if (fs.existsSync(skillMdPath)) {
-        const content = fs.readFileSync(skillMdPath, "utf-8");
-        // 仅替换 frontmatter 中的 version 字段，避免误替换 body 内容。
-        // 使用函数形式的 replace，避免 skill.version 中的 $ 字符被解释为
-        // 替换模式的特殊序列（如 $1、$& 等）导致内容损坏。
-        const updatedContent = content.replace(
-          /^(---[\s\S]*?version:\s*).+/m,
-          (match, p1) => `${p1}${skill.version}`
-        );
-        atomicWriteFileLocal(skillMdPath, updatedContent);
-      }
+      if (!skillMdPath) return;
+      const skillDir = path.dirname(skillMdPath);
+      if (!fs.existsSync(skillDir) || !fs.existsSync(skillMdPath)) return;
+
+      // ── 审计账本：变异前 before 快照（遥测，失败不影响变异）──
+      const before = this.ledgerCapture(skillDir);
+
+      const content = fs.readFileSync(skillMdPath, "utf-8");
+      // 仅替换 frontmatter 中的 version 字段，避免误替换 body 内容。
+      // 使用函数形式的 replace，避免 skill.version 中的 $ 字符被解释为
+      // 替换模式的特殊序列（如 $1、$& 等）导致内容损坏。
+      const updatedContent = content.replace(
+        /^(---[\s\S]*?version:\s*).+/m,
+        (match, p1) => `${p1}${skill.version}`
+      );
+      atomicWriteFileLocal(skillMdPath, updatedContent);
 
       const metaPath = path.join(skillDir, "_meta.json");
       if (fs.existsSync(metaPath)) {
@@ -1705,12 +1788,59 @@ export class SkillCurator {
         atomicWriteFileLocal(metaPath, JSON.stringify(meta, null, 2));
       }
 
+      // ── 审计账本：变异后记录（action=edit；after 快照由账本内部抓取）──
+      await this.ledgerRecord("edit", this.skillNameOf(skillDir), before, skillDir, "curator", {
+        version: skill.version,
+      });
+
       this.schedulePersist();
     } catch (err) {
       process.stderr.write(
         "[SkillCurator] Failed to persist skill update:" + " " + (err instanceof Error ? err.message : String(err)) + "\n"
       );
     }
+  }
+
+  // ── 审计账本遥测辅助：capture_before / record_mutation，全部吞异常（Hermes with suppress）──
+
+  /** 变异前 before 快照；失败/禁用 → null。根式相对路径（"." / "..") → []：防 CWD 仓库遍历回归。 */
+  private ledgerCapture(skillDir: string, completePackage = false): ManifestItem[] | null {
+    try {
+      const norm = path.normalize(skillDir || "");
+      if (!norm || norm === "." || norm === "..") return [];
+      return this.ledger.captureBefore(skillDir, completePackage);
+    } catch {
+      return null; // 遥测失败绝不影响变异流程
+    }
+  }
+
+  /** 变异后追加账本条目（after 从 afterRoot 抓取）。吞异常；action 语义对齐 Hermes skill_manage。 */
+  private async ledgerRecord(
+    action: string,
+    skillName: string,
+    before: ManifestItem[] | null,
+    afterRoot: string,
+    actor: "curator" | "agent" | "user" = "curator",
+    evidence?: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      await this.ledger.recordMutation(
+        action,
+        skillName,
+        null, // beforeRoot：before 已预捕获，账本内部不重复抓
+        before ?? [],
+        afterRoot,
+        actor,
+        evidence
+      );
+    } catch {
+      // 遥测非闸门：账本失败不得回流为变异失败
+    }
+  }
+
+  /** 从技能目录名推导技能名（账本 skill 字段用）。 */
+  private skillNameOf(skillDir: string): string {
+    return path.basename(skillDir);
   }
 
   /** 调度延迟持久化演化记录到磁盘。 */
