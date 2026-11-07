@@ -50,6 +50,8 @@ export { LocalSandboxBackend } from "./sandbox-backend";
 export type { ISandboxBackend, SandboxExecuteOptions, SandboxScriptOptions } from "./sandbox-backend";
 export { SingularitySandbox, ModalSandboxBackend, DaytonaSandboxBackend, VercelSandboxBackend } from "./cloud-sandboxes";
 export type { CloudSandboxConfig } from "./cloud-sandboxes";
+export { CodeKernelRegistry, kernelRegistry } from "./code-kernel";
+export type { KernelCellResult, KernelExecuteOptions, KernelRegistryConfig } from "./code-kernel";
 export { DaemonManager } from "./daemon-manager";
 export type { DaemonConfig, DaemonStatus } from "./daemon-manager";
 export { UpdateManager } from "./update-manager";

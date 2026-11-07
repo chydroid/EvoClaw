@@ -99,11 +99,11 @@
 5. `/plan` → `injectedMessage` 注入：计划模式提示词替换 slash 消息、主 turn 继行（`chat()` 分发处替换 message/effectiveMessage），回复=模型 plans 本身；system/历史不动（prompt-cache 安全）。
 6. 测试：`slash-commands.test.ts`（+10：分发/答案透传/截断/降级/空参/注入/fork 摘要）+ `agent-model-executor-products.test.ts`（+6：真实接线，llm-caller mock——/btw、/plan、/review 路径对 tryCallLLM 零调用=不消耗主 turn）。7076 tests passed（+16）。
 
-**Step 3 — execute_code 会话持久 kernel opt-in（中风险，需基准测试）**
-1. 先做基准：当前 execute_code 冷启动开销（spawn + import）实测。
-2. `code-kernel` LRU 池（owner+cwd 键，N=2-4）；`persistent:true` 启用；变量跨调用保留（对齐 Hermes code_kernel）。
-3. 进程生命周期：超时回收、进程残留清理、并发上限、启动失败降级回 spawn。
-4. 测试：跨调用变量、并发上限、kill 清理、降级。
+**Step 3 — execute_code 会话持久 kernel opt-in（中风险，需基准测试）** ✅ 已完成（2026-11-07）
+基准（实测）：per-call spawn ≈ 18ms + 解释器冷启动 60-90ms；numpy 重 import 单进程内二次约 63ms/次 → 常驻 kernel 的收益明确。实现：
+1. `packages/infrastructure/src/code-kernel.ts` — `CodeKernelRegistry` + `SessionKernel`（对齐 Hermes code_kernel.py）：行协议（stdin `{"id","code"}`；stdout `__EVOCLAW_KERNEL_RESULT:` 帧 + 每 kernel 随机 sentinel，伪造帧按原始输出归属）、cell 串行化（tail promise 链）、超时 kill 进程树+丢弃注册表+重启（状态丢失刻意）、`reset:true` 换新进程（env 冻结语义）、LRU 池 N=4（附着保护）、空闲回收（默认 30min）、staging 目录 >7d 清扫、SystemExit=内核终点、宿主死亡看门狗（Linux runner 轮询 `/proc/<parent-pid>`；Node ≥20 已移除 `os.pipe` → 弃用原 fd 注入方案，Windows 靠退出钩子）。
+2. `apps/server`：`execute_code` 增 `persistent`/`reset` 参数 → 仅 python + process 软沙箱后端（docker/remote 明确报错非静默降级）；服务注册 `"codeKernel"`；shutdown 钩子 kill 全部内核。结果附 `persistent/kernel(mode,reused,execution_count,state_reset)`。
+3. 测试：`code-kernel.test.ts` 10 个（跨调用状态+计数/异常存活/超时丢弃/reset/LRU+附着保护/idle 回收/SystemExit/并发串行化/raw stdout 归属/staging 清扫）+ `persistent-kernel-tools.test.ts` 7 个（handler 级：持久复用/reset/timeout kill/非 python 报错/docker 报错/codeKernel 缺席报错/工具定义）。7093 tests passed。
 
 **Step 4 — thinking 细节（4a 4b）**
 1. reasoning promotion：llm-caller 收尾处检测"final reply 为空但 reasoning 含完整答案"→ 晋升提示/引导（白名单模型配置）。

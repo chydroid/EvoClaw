@@ -47,7 +47,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCir
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, CodeKernelRegistry, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronSuggestionManager, CronScheduler, RunLogStore, listBlueprints, getBlueprint, fillBlueprint, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
@@ -98,6 +98,7 @@ export class EvoClawServer {
   private agentPool: AgentPoolManager;
   private actorSystem: ActorSystem;
   private sandboxManager: SandboxManager;
+  private codeKernelRegistry: CodeKernelRegistry;
   private conversationFlow: any;
   private agentModelExecutor: AgentModelExecutor;
   private durableRunner: DurableTaskRunner;
@@ -548,6 +549,12 @@ export class EvoClawServer {
     // /api/sandbox/* REST 端点可用。Docker 不可用时降级返回 not-available，不影响启动。
     this.sandboxManager = new SandboxManager();
     this.registry.registerService("sandboxManager", this.sandboxManager);
+    // ── 会话持久代码 kernel（execute_code persistent:true；Hermes code_kernel 对齐） ──
+    // LRU 池（每 owner+interpreter+cwd 一键一常驻解释器）；宿主崩溃由子进程看门狗 +
+    // 低频 reaper 回收，无需显式 shutdown 也不会泄漏；显式关停同样销毁全部内核。
+    this.codeKernelRegistry = new CodeKernelRegistry();
+    this.codeKernelRegistry.sweepStaleDirs();
+    this.registry.registerService("codeKernel", this.codeKernelRegistry);
     this.sandboxManager.listBackends().then((backends) => {
       const available = backends.filter((b) => b.available).map((b) => b.type).join(",") || "none";
       this.logger.info("server", `SandboxManager registered; available backends: ${available}`);
@@ -1621,6 +1628,8 @@ export class EvoClawServer {
     // 销毁共享的 keep-alive HTTP/HTTPS agent，防止 socket 文件描述符泄漏
     try { destroyHttpAgents(); } catch { /* ignore */ }
     try { await this.processManager.killAll(); } catch (e) { this.logger.error("server", `killAll failed: ${e}`); }
+    // 会话持久 kernel（execute_code persistent=true）：干净的主动 kill，避免孤儿解释器
+    try { this.codeKernelRegistry.shutdownAll(); } catch (e) { this.logger.error("server", `codeKernel shutdown failed: ${e}`); }
     // 清理插件：在 registry.stopAll() 之前调用插件的 unregisterPlugin/shutdown，避免资源泄漏
     try {
       const plugins = this.pluginManager.getPlugins();

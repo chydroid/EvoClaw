@@ -6,6 +6,7 @@ import type { AgentModelExecutor } from "@evoclaw/agent";
 import { getWorkspaceDir } from "@evoclaw/core";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
+import type { KernelCellResult, KernelExecuteOptions } from "@evoclaw/infrastructure";
 import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
 
@@ -963,6 +964,12 @@ export function registerShellMediaTools(
     listBackends(): Promise<Array<{ type: string; available: boolean }>>;
   }>("sandboxManager");
 
+  // 会话持久代码 kernel（code-kernel.ts，Hermes code_kernel 对齐）：
+  // execute_code persistent:true 走常驻解释器，变量跨调用存活。
+  const codeKernel = registry?.resolveService<{
+    executeCell(options: KernelExecuteOptions): Promise<KernelCellResult>;
+  }>("codeKernel");
+
   // 沙箱会话缓存：executor 进程内复用同一个沙箱会话（P3-5：后端可配置，docker 缺失时降级 process）
   let sandboxSessionId: string | null = null;
   let sandboxSessionBackend: "docker" | "ssh" | "process" | "singularity" | "modal" | "daytona" | "vercel_sandbox" | null = null;
@@ -1156,14 +1163,17 @@ export function registerShellMediaTools(
     {
       name: "execute_code",
       description:
-        "Execute code. Two modes: (1) sandboxed execution (default) — isolated Docker container " +
+        "Execute code. Execution modes: (1) sandboxed execution (default) — isolated Docker container " +
         "(read-only rootfs, no network, memory+CPU limits, nobody user), safer than shell_exec for " +
         "untrusted/user-provided code, supports Python and Node.js; returns a clear error if Docker is " +
         "unavailable. (2) programmatic=true — runs a Node.js ESM script in a local soft sandbox with an " +
         "injected `tools` API: call multiple registered tools from within one script and combine results " +
         "(folds a multi-step tool pipeline into a single LLM turn). Forbidden operations (shell_exec, " +
         "email send, git push/commit, DLQ retry, webhooks, approvals) are rejected; audit log written to " +
-        "data/logs/programmatic-calls.jsonl. Output longer than ~48K chars is head/tail truncated with the full text spilled to a file (full_output_path in the result) — read it via file_read instead of re-running the code.",
+        "data/logs/programmatic-calls.jsonl. Output longer than ~48K chars is head/tail truncated with the full text spilled to a file (full_output_path in the result) — read it via file_read instead of re-running the code. " +
+        "(3) persistent=true — Python-only: session-persistent interpreter kernel (pooled per owner+cwd, one resident process; Hermes " +
+        "code_kernel concept): variables and imports survive across calls, so hot-fix loops and re-imports of heavy modules cost only once " +
+        "(state lost on timeout/restart). Requires the 'process' soft-sandbox backend; docker/remote backends reject persistent=true.",
       parameters: {
         code: {
           type: "string",
@@ -1181,6 +1191,22 @@ export function registerShellMediaTools(
         timeout: {
           type: "string",
           description: "Optional timeout in seconds (default: 30, max: 120).",
+          required: false,
+        },
+        persistent: {
+          type: "boolean",
+          description:
+            "When true, run Python code in a session-persistent interpreter (pooled per owner+cwd, Hermes code_kernel concept): " +
+            "variables and imports survive across execute_code calls. Only works with language='python' on the 'process' soft-sandbox " +
+            "backend; docker/remote backends exec per call and reject persistent=true with an error. A timed-out call kills the kernel " +
+            "and resets its state (the next call starts a fresh kernel); restart on server restart. Optional 'reset' resets the session kernel.",
+          required: false,
+        },
+        reset: {
+          type: "boolean",
+          description:
+            "When persistent=true, force a fresh kernel process for this call: previous variables/imports are discarded " +
+            "(env is frozen at kernel spawn; a reset must be a new process). Ignored unless persistent=true.",
           required: false,
         },
         programmatic: {
@@ -1479,6 +1505,103 @@ export function registerShellMediaTools(
             backends,
           };
         }
+        // ── 会话持久 kernel 路径（persistent:true，Hermes code_kernel 对齐） ──
+        // 仅 python + process 软沙箱：常驻解释器，变量/import 跨调用存活；
+        // docker/remote 后端一次一 exec，无法承载常驻解释器 → 明确报错非静默降级。
+        if (params.persistent === true) {
+          if (language !== "python") {
+            return { success: false, error: "persistent=true requires language='python' (session kernel is Python-only)." };
+          }
+          if (chosen !== "process") {
+            return {
+              success: false,
+              error: `persistent=true is only supported on the 'process' soft-sandbox backend (selected '${chosen}': this backend execs a fresh process per call).`,
+              hint: "Omit persistent, or run with backend=process when the local soft sandbox is acceptable.",
+            };
+          }
+          if (!codeKernel) {
+            return {
+              success: false,
+              error: "CodeKernel registry service is not registered. Cannot run persistent kernel cells.",
+              hint: "Use execute_code without persistent=true, or ensure the server registers the codeKernel service.",
+            };
+          }
+          // kernel 与沙箱会话并行：persistent 调用不走沙箱会话缓存。
+          const startedAt = Date.now();
+          const cell = await codeKernel.executeCell({
+            owner: "default",
+            interpreter: language,
+            cwd: process.cwd(),
+            code,
+            timeoutMs: timeoutSec * 1000,
+            reset: params.reset === true,
+          });
+          const MAX_OUTPUT_K = 100_000;
+          const truncateK = (s: string): string => (s.length > MAX_OUTPUT_K ? s.slice(0, MAX_OUTPUT_K) + "\n... [output truncated]" : s);
+          if (cell.status === "success") {
+            return {
+              success: true,
+              exitCode: cell.exitCode,
+              stdout: truncateK(cell.stdout),
+              stderr: truncateK(cell.stderr),
+              durationMs: Date.now() - startedAt,
+              timedOut: false,
+              language,
+              sandbox: "process",
+              note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离",
+              persistent: true,
+              kernel: { mode: "session", reused: cell.reused, execution_count: cell.executionCount, state_reset: cell.stateReset },
+            };
+          }
+          if (cell.status === "timeout") {
+            return {
+              success: false,
+              exitCode: cell.exitCode,
+              stdout: truncateK(cell.stdout),
+              stderr: truncateK(cell.stderr),
+              durationMs: Date.now() - startedAt,
+              timedOut: true,
+              language,
+              sandbox: "process",
+              note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离",
+              persistent: true,
+              error: cell.error ?? "cell timed out; session kernel removed (state lost).",
+            };
+          }
+          if (cell.status === "exit") {
+            // cell 调用了 sys.exit() → kernel 终点（Hermes 语义：ended 内核销毁，下次调用重启）
+            return {
+              success: false,
+              exitCode: cell.exitCode,
+              stdout: truncateK(cell.stdout),
+              stderr: truncateK(cell.stderr),
+              durationMs: Date.now() - startedAt,
+              timedOut: false,
+              language,
+              sandbox: "process",
+              note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离",
+              persistent: true,
+              kernel_ended: true,
+              error: cell.error ?? "SystemExit: the session kernel ended; next call starts a fresh kernel.",
+            };
+          }
+          return {
+            success: false,
+            exitCode: cell.exitCode,
+            stdout: truncateK(cell.stdout),
+            stderr: truncateK(cell.stderr),
+            durationMs: Date.now() - startedAt,
+            timedOut: false,
+            language,
+            sandbox: "process",
+            note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离",
+            persistent: true,
+            error: cell.traceback
+              ? `${cell.error ?? "cell raised an exception"}\n${cell.traceback}`
+              : (cell.error ?? "cell raised an exception"),
+          };
+        }
+
         // 会话复用时必须沿用同一后端：换后端即失效旧会话
         const now = Date.now();
         if (sandboxSessionId && now - sandboxSessionCreatedAt > SANDBOX_SESSION_TTL_MS) {
