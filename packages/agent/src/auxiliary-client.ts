@@ -22,6 +22,7 @@ export type AuxTask =
   | "vision"
   | "title_generation"
   | "background_review"
+  | "side_question"
   | "generic";
 
 export type ProviderKind =

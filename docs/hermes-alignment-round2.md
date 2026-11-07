@@ -85,18 +85,19 @@
 
 > 每步完成即跑 `pnpm build -> pnpm typecheck -> pnpm test`（AGENTS.md 验证顺序）。
 
-**Step 1 — 凭证池模型级冷却（价值高/风险低）**
-1. `credential-pool.ts`：条目增 `modelCooldownUntil: Record<model, number>`；`markModelCooldown(provider, model)`；`isModelCoolingDown(provider, model)` 查询。
-2. llm-caller 429/529 过载路径：按 `(provider, model)` 键记冷却（复用 overload-recovery 阶梯）；同凭证其他模型不受影响；Retry-After 容忍。
-3. 测试：同凭证双模型场景 A 429 → A 冷却 B 可用；冷却到期恢复。
+**Step 1 — 凭证池模型级冷却（价值高/风险低）** ✅ 已完成（2026-11-07，commit 803c738）
+1. `credential-pool.ts`：条目增 `modelCooldowns: Record<string, number>`；`acquire(model, now)` 过滤 + `modelCooldownUntil()` 查询。
+2. `anthropic.ts`：complete/streamComplete 429 调用 `reportModelRateLimitForKey(lastKey, model)`（孪生 key 传播取 max；402/429 凭证级冷却正交不牵连）；`resolveApiKey(model)` / `getNextKey(provider, model)` 传模型上下文。
+3. 测试：7 个（同凭证双模型互不影响 / 未指定模型的保守语义 / 到期恢复 / Key-first / 孪生共享 / 401 正交）。7060 tests passed。
 
-**Step 2 — slash 命令产品化入口（/review /learn /btw /plan）（低风险）**
-1. `chat-commands.ts`：注册 4 命令 + handler 路由。
-2. `/review` → background-review fork 评审（现有原语接线）。
-3. `/learn` → skill_manage 引导/skill-creator 流程（已有原语接线）。
-4. `/btw` → aux-client `generic` 一次性回答（不进历史，不占主会话预算）。
-5. `/plan` → 规划模板（plan_prompt 语义：拆解模板 + todo seed）。
-6. 测试：命令分发、不消耗主 turn、与背包预算隔离。
+**Step 2 — slash 命令产品化入口（/review /learn /btw /plan）（低风险）** ✅ 已完成（2026-11-07，本提交）
+原始计划以 chat-commands.ts 为入口；实测**生产分发面是 slash-commands.ts**（`AgentModelExecutor.handleSlashCommand` 私有方法注入 deps → chat() 提前返回）。chat-commands.ts 为 OpenClaw 兼容层，经 handleSlashCommand 间接生效。实现：
+1. deps 新增 `sideQuestionFn`（/btw）与 `reviewForkFn`（/review）；`AuxTask` 扩 `"side_question"`。
+2. `/review` → 接线 `runBackgroundReview` fork：继承父 runtime（warm cache 全量重放），chatFn 单次 `callLLMOnce`（tools=[] 文本契约；**首期限制：不落盘 memory/skill 写入**，whitelist 仅契约透传，升级路径见 executor `runReviewFork` 注释）。
+3. `/learn` → 已存在（skillLearner），本次确认接线不改动。
+4. `/btw` → `callAuxLLM（task="side_question"）` 回退链：快照转录（newest-biased 24k 预算 / 2k 单条 / system 剥离）+ 侧问 → 回答不入历史、不触发工具；回复标注侧任务 tokens。
+5. `/plan` → `injectedMessage` 注入：计划模式提示词替换 slash 消息、主 turn 继行（`chat()` 分发处替换 message/effectiveMessage），回复=模型 plans 本身；system/历史不动（prompt-cache 安全）。
+6. 测试：`slash-commands.test.ts`（+10：分发/答案透传/截断/降级/空参/注入/fork 摘要）+ `agent-model-executor-products.test.ts`（+6：真实接线，llm-caller mock——/btw、/plan、/review 路径对 tryCallLLM 零调用=不消耗主 turn）。7076 tests passed（+16）。
 
 **Step 3 — execute_code 会话持久 kernel opt-in（中风险，需基准测试）**
 1. 先做基准：当前 execute_code 冷启动开销（spawn + import）实测。

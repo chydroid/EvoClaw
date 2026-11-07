@@ -5,7 +5,9 @@ import { PromptRegistry } from "./prompt-registry";
 import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
-import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type NativeFetchResponse } from "./llm-caller";
+import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type LLMMessage, type NativeFetchResponse } from "./llm-caller";
+import { callAuxLLM, type AuxChatFn } from "./auxiliary-client";
+import { runBackgroundReview, resolveReviewRuntime, type ReviewChatFn, type ReviewMessage, type ReviewAction } from "./background-review";
 // P0-2：共享异步日志（替代热路径同步 process.stdout/stderr.write，16ms 批量刷新）
 import { asyncLog, asyncErr } from "./async-log";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
@@ -2147,8 +2149,17 @@ export class AgentModelExecutor {
     // ── Slash command dispatch: intercept /command before LLM ──
     const slashResult = await this.handleSlashCommand(message.trim(), sessionId, startTime);
     if (slashResult) {
-      this.persistEarlyReturn(sessionId, message, slashResult.reply);
-      return slashResult;
+      // ── /plan 注入：计划模式提示词替换 slash 消息，继续主 turn 常规流程，不早退 ──
+      // 原消息 "/plan xxx" 已在 chat() 入口持久化（persistSessionTurn，见上文），
+      // 此处替换请求输入后主循环照常推进（意图分析/工具/LLM 请求均用替换后的消息）：
+      // 回复 = 模型产出的计划本身（对齐 Hermes plan_prompt 的注入语义）。
+      if (slashResult.injectedMessage !== undefined) {
+        message = slashResult.injectedMessage;
+        effectiveMessage = message;
+      } else {
+        this.persistEarlyReturn(sessionId, message, slashResult.reply);
+        return slashResult;
+      }
     }
 
     // ── 自然语言状态查询：拦截"任务怎么样了"等查询，不触发 LLM ──
@@ -3382,7 +3393,7 @@ export class AgentModelExecutor {
     message: string,
     sessionId: string,
     startTime: number,
-  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
+  ): Promise<{ reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }>; injectedMessage?: string } | null> {
     const deps: SlashCommandDeps = {
       persona: this.persona,
       providers: this.providers,
@@ -3405,6 +3416,33 @@ export class AgentModelExecutor {
       cronSuggestionManager: this.registry.resolveService("cronSuggestionManager") as import("./slash-commands").CronSuggestionManagerLike | undefined,
       blueprintCatalog: this.registry.resolveService("blueprintCatalog") as import("./slash-commands").BlueprintCatalogLike | undefined,
       durableTaskRunner: this.durableRunner,
+      // ── Hermes products 对齐（hermes-alignment-round2 Step 2）：
+      // /btw 侧问通道（callAuxLLM 回退链，task="side_question"）；/review 后台评审
+      // fork 通道（runBackgroundReview + callLLMOnce 单次调用，见 runReviewFork）。
+      sideQuestionFn: async (req) => {
+        const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
+        if (!main) throw new Error("侧问通道不可用：无已启用模型");
+        const aux = await callAuxLLM(
+          {
+            task: "side_question",
+            messages: [{
+              role: "user",
+              content: req.transcript
+                ? `[主会话摘录]\n${req.transcript}\n\n[侧问] ${req.question}`
+                : `[侧问] ${req.question}`,
+            }],
+          },
+          {
+            provider: main.provider,
+            model: main.model,
+            apiKey: main.apiKey ?? undefined,
+            baseUrl: main.baseURL ?? undefined,
+          },
+          this.buildAuxChatFn(),
+        );
+        return { answer: aux.content, tokensUsed: aux.usage?.totalTokens ?? 0 };
+      },
+      reviewForkFn: (snapshot) => this.runReviewFork(sessionId, snapshot),
     };
     const result = await handleSlashCommandFn(deps, message, sessionId, startTime);
     if (!result) return null;
@@ -3419,7 +3457,134 @@ export class AgentModelExecutor {
       permissionRequests: result.permissionRequests,
       toolsExecuted: result.toolsExecuted,
       files: result.files,
+      // /plan 注入消息透出给 chat() 主循环（计划模式提示词替换用户消息）。
+      injectedMessage: result.injectedMessage,
     };
+  }
+
+  /**
+   * 构建 AuxChatFn（side-task 单次调用实现）。
+   * 把 callAuxLLM 回退链解析出的 runtime 映射为 ProviderConfig 并调用 callLLMOnce。
+   * 传输映射：anthropic → anthropic；openrouter/zai/kimi/minimax/custom_endpoint/unknown
+   * → openai（OpenAI 兼容 POST + runtime baseURL）。runtime.model 为空（env 回退供应商）
+   * 时借用主模型；两者皆缺则抛错（callAuxLLM 对非 402 错误直接 rethrow，fail-fast）。
+   */
+  private buildAuxChatFn(): AuxChatFn {
+    const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
+    return async (runtime, req) => {
+      const model = runtime.model ?? main?.model ?? "";
+      if (!model) throw new Error("side-task 通道无可用模型（runtime.model 与主模型均缺失）");
+      const providerConfig: ProviderConfig = {
+        id: `aux-${runtime.provider}`,
+        name: `aux:${runtime.provider}`,
+        provider: runtime.provider === "anthropic" ? "anthropic" : "openai",
+        model,
+        apiKey: runtime.apiKey ?? undefined,
+        baseURL: runtime.baseUrl ?? undefined,
+        maxTokens: main?.maxTokens ?? 8192,
+        temperature: 0,
+        timeout: main?.timeout ?? 60_000,
+        enabled: true,
+        order: 0,
+      };
+      const content = req.messages
+        .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "")))
+        .join("\n\n");
+      const result = await callLLMOnceFn(
+        providerConfig,
+        [{ role: "user", content }],
+        [],
+        "none",
+        undefined,
+        this.getLLMCallerDeps(),
+      );
+      return {
+        content: result?.message?.content ?? "",
+        model,
+        provider: runtime.provider,
+        usage: {
+          promptTokens: result?.promptTokens ?? 0,
+          completionTokens: 0,
+          totalTokens: result?.tokensUsed ?? 0,
+        },
+        runtime,
+      };
+    };
+  }
+
+  /**
+   * /review 后台评审 fork（对齐 Hermes review_engine 触发语义 + EvoClaw runBackgroundReview）：
+   * 继承父级 runtime（routed=false → 全量重放 warm cache）→ chatFn 单次 callLLMOnce
+   * （tools=[] 文本契约）→ summarizeBackgroundReviewActions 提取 memory/skill 动作。
+   *
+   * 已知限制（首期接线）：runBackgroundReview 传递 toolWhitelist 但 chatFn 单次调用
+   * 不执行工具循环——评审者通过自然语言输出"应保存记忆/更新技能"的文本，不落盘写入。
+   * 后续升级为完整 tool loop 见 docs/hermes-alignment-round2.md。
+   */
+  private async runReviewFork(
+    sessionId: string,
+    snapshot: Array<{ role: string; content: string }>,
+  ): Promise<{ summary: string; actions: ReviewAction[]; tokensUsed: number }> {
+    const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
+    if (!main) throw new Error("评审 fork 不可用：无已启用模型");
+    const runtime = resolveReviewRuntime({
+      parentProvider: main.provider,
+      parentModel: main.model,
+      parentApiKey: main.apiKey ?? null,
+      parentBaseUrl: main.baseURL ?? null,
+      config: null, // ModelConfig 暂无 auxiliary 路由段，继承父级即 routed=false
+    });
+    const providerConfig: ProviderConfig = {
+      id: `review-${runtime.provider}`,
+      name: `review:${runtime.provider}`,
+      provider: runtime.provider === "anthropic" ? "anthropic" : "openai",
+      model: runtime.model ?? main.model,
+      apiKey: runtime.apiKey ?? undefined,
+      baseURL: runtime.baseUrl ?? undefined,
+      maxTokens: main.maxTokens,
+      temperature: 0,
+      timeout: main.timeout,
+      enabled: true,
+      order: 0,
+    };
+    let tokens = 0;
+    let reviewText = "";
+    const chatFn: ReviewChatFn = async (opts) => {
+      const messages: LLMMessage[] = [
+        ...(opts.systemPrompt ? [{ role: "system", content: opts.systemPrompt }] : []),
+        ...opts.messages
+          .filter((m) => m.role !== "system")
+          .map((m) => ({
+            role: m.role,
+            content: typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+          })),
+      ];
+      const result = await callLLMOnceFn(
+        providerConfig,
+        messages,
+        [],
+        "none",
+        undefined,
+        this.getLLMCallerDeps(),
+      );
+      tokens = result?.tokensUsed ?? 0;
+      reviewText = result?.message?.content ?? "";
+      return reviewText ? [{ role: "assistant", content: reviewText }] : [];
+    };
+    const actions = await runBackgroundReview({
+      parentProvider: main.provider,
+      parentModel: main.model,
+      parentApiKey: main.apiKey ?? null,
+      parentBaseUrl: main.baseURL ?? null,
+      messagesSnapshot: snapshot as ReviewMessage[],
+      chatFn,
+      config: { enabled: true }, // 手动 /review 触发：不受一律默认关闭的自动评审配置限制
+      auxConfig: null,
+    });
+    const summary = actions.length > 0
+      ? actions.map((a) => `- [${a.action}] ${a.tool} → ${a.target}`).join("\n")
+      : (reviewText.slice(0, 1200) || "评审者无返回内容。");
+    return { summary, actions, tokensUsed: tokens };
   }
 
   // ── Format command output into readable text ──

@@ -1,5 +1,12 @@
-// Slash command handling for AgentModelExecutor
-// Extracted from agent-model-executor.ts for modularity
+/** Slash command handling for AgentModelExecutor
+ * Extracted from agent-model-executor.ts for modularity
+ *
+ * slash 命令实现清单（对齐 Hermes products 命令层）：
+ *  - 基础命令：/status /model /health /skills /new /reset /compact /clear /thinking
+ *    /verbose /usage /memory /cron /plugin /focus /agents /checkpoints /tasks /resume
+ *    /checkpoint /pending /approve /reject /trust /untrust /eval /a2a /goal /suggestions /blueprint
+ *  - 本轮产品化：/review（背景评审 fork）/learn（技能培育，已有）/btw（侧问不进历史）/plan（规划模式）
+ */
 
 import type { ServiceRegistry, MemoryEntry, MemorySearchResult } from "@evoclaw/core";
 import type { PersonaConfig } from "@evoclaw/core";
@@ -10,6 +17,7 @@ import type { SessionManager } from "./session-manager";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager, PendingApproval, ApprovalConfig, TrustRule, RiskLevel } from "./human-approval";
 import type { EvalRunner, EvalRunSummary } from "./evals";
+import type { ReviewAction } from "./background-review";
 
 /** Conversation history entry type */
 export interface ConversationHistoryEntry {
@@ -71,6 +79,17 @@ export interface SlashCommandDeps {
   learningJournal?: { getEntries(filter?: { limit?: number }): Array<{ id: string; title: string; category: string; timestamp: Date; resolved: boolean; severity: string }> };
   cronSuggestionManager?: CronSuggestionManagerLike;
   blueprintCatalog?: BlueprintCatalogLike;
+  /**
+   * /btw 侧问通道：executor 侧经 callAuxLLM（task="side_question"）回退链接线。
+   * transcript 为会话快照渲染文本（newest-biased）；回答不进入主会话历史、
+   * 不触发工具，tokensUsed 返回侧任务消耗（不计入主 turn 预算）。
+   */
+  sideQuestionFn?: (req: { question: string; transcript: string }) => Promise<{ answer: string; tokensUsed: number }>;
+  /**
+   * /review 后台评审 fork 通道：executor 侧接线 runBackgroundReview + callLLMOnce。
+   * 返回评审文本摘要与 memory/skill 动作摘要。
+   */
+  reviewForkFn?: (messagesSnapshot: Array<{ role: string; content: string }>) => Promise<{ summary: string; actions: Array<{ tool: string; action: string; target: string }>; tokensUsed: number }>;
   /** DurableTaskRunner 单例，用于 /tasks 列出后台续跑任务 */
   durableTaskRunner?: {
     list(sessionId?: string): Array<{
@@ -132,6 +151,12 @@ export interface SlashCommandResult {
   action?: "new_session" | "reset_session" | "compact";
   /** Updated thinking level if changed */
   thinkingLevel?: "off" | "low" | "medium" | "high";
+  /**
+   * /plan 注入消息：计划模式提示词。设置后调用方**不**按普通命令回复，
+   * 而是以该消息继续当前主 turn（LLM 产出计划并回复）——
+   * system prompt 与历史均不改动（prompt-cache 安全，对齐 Hermes plan_prompt.py）。
+   */
+  injectedMessage?: string;
 }
 
 /**
@@ -140,6 +165,44 @@ export interface SlashCommandResult {
 function renderProgressBar(progress: number): string {
   const filled = Math.round((Math.max(0, Math.min(100, progress)) / 100) * 10);
   return "█".repeat(filled) + "░".repeat(10 - filled);
+}
+
+/**
+ * /btw 侧问转录渲染（对齐 Hermes render_history_for_side_question）：
+ * newest-biased 预算填充——从最新消息反向累积，单条上限 2K，总预算 24K，
+ * system 不传递给侧任务，工具调用只留名称，工具结果压缩到 300 字符。
+ */
+function renderSideQuestionTranscript(
+  history: Array<ConversationHistoryEntry>,
+  budget = 24_000,
+  perMsgCap = 2_000,
+): string {
+  const lines: string[] = [];
+  let used = 0;
+  for (const msg of history.slice().reverse()) {
+    const text = typeof msg.content === "string" ? msg.content : msg.content ? JSON.stringify(msg.content) : "";
+    let line: string;
+    if (msg.role === "system") {
+      continue;
+    } else if (msg.role === "assistant") {
+      let head = "ASSISTANT";
+      if (msg.tool_calls?.length) {
+        const names = msg.tool_calls.map((tc) => tc.function?.name ?? "?").filter(Boolean).join(", ");
+        head += ` [tool calls: ${names}]`;
+      }
+      line = `${head}: ${text}`;
+    } else if (msg.role === "tool") {
+      line = `TOOL RESULT [${msg.name ?? "tool"}]: ${text.slice(0, 300)}`;
+    } else {
+      line = `USER: ${text}`;
+    }
+    if (line.length > perMsgCap) line = line.slice(0, perMsgCap) + "…[truncated]";
+    const cost = line.length + 3;
+    if (used + cost > budget) break;
+    used += cost;
+    lines.push(line);
+  }
+  return lines.join("\n\n");
 }
 
 /**
@@ -168,8 +231,10 @@ export async function handleSlashCommand(
   const args = spaceIdx === -1 ? [] : message.slice(spaceIdx + 1).split(/\s+/);
 
   let reply: string;
+  let tokensUsed = 0;
   let action: "new_session" | "reset_session" | "compact" | null = null;
   let newThinkingLevel: "off" | "low" | "medium" | "high" | undefined;
+  let injectedMessage: string | undefined;
 
   switch (cmdName) {
     case "help": {
@@ -201,6 +266,10 @@ export async function handleSlashCommand(
         "`/resume <sessionId|taskId>` — 从检查点恢复中断的执行或后台续跑任务",
         "`/checkpoint <sessionId> <index>` — 查看指定快照详情",
         "`/pending` — 列出等待审批的操作",
+        "`/review [消息数]` — 后台评审 fork：快照会话 → 独立评审者（副任务通道，不进主历史）",
+        "`/learn <目录|URL|最近 <名>>` — 技能培育：从目录/URL/最近对话提炼 SKILL.md",
+        "`/btw <问题>` — 侧问：独立 side-task 通道回答，不进入主会话历史",
+        "`/plan <任务>` — 规划模式：拆解任务产出计划并写入文件，等待确认后执行",
         "`/approve <approvalId> [trust]` — 批准待审批操作（加 trust 自动信任后续同类操作）",
         "`/reject <approvalId> [reason]` — 拒绝待审批操作",
         "`/trust <toolName>` — 添加工具信任规则（自动批准）",
@@ -1392,9 +1461,103 @@ export async function handleSlashCommand(
       break;
     }
 
+    case "btw": {
+      // /btw 侧问（对齐 Hermes side_question.py）：
+      //  一次独立侧问回答，不写入主会话历史、不触发工具、不占主 turn 预算。
+      //  转录快照经侧任务通道交由独立回答者（aux-client 回退链，见 executor 接线）。
+      const question = args.join(" ").trim();
+      if (!question) {
+        reply = "⚠ 请在命令后附带侧问内容。例如：`/btw 这项改动会影响缓存命中率吗？`";
+        break;
+      }
+      if (!deps.sideQuestionFn) {
+        reply = "⚠ side-task 通道未接线（auxiliary-client）。/btw 暂不可用。";
+        break;
+      }
+      try {
+        const history = deps.conversationHistory.get(sessionId) || [];
+        const transcript = renderSideQuestionTranscript(history);
+        const { answer, tokensUsed: auxTokens } = await deps.sideQuestionFn({ question, transcript });
+        reply = [
+          "💭 **侧问**：" + question,
+          "",
+          answer,
+          "",
+          `（侧问由独立 side-task 通道回答：消耗 ${auxTokens} tokens，不进入主会话历史）`,
+        ].join("\n");
+        tokensUsed = auxTokens;
+        break;
+      } catch (err) {
+        reply = `❌ /btw 侧问失败: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      break;
+    }
+
+    case "plan": {
+      // /plan 规划模式（对齐 Hermes agent/plan_prompt.py）：
+      //  计划提示词注入当前主 turn（injectedMessage），调用方以该消息继续主循环，
+      //  回复 = 模型产出的计划本身——system prompt 与历史均不改动（prompt-cache 安全）。
+      const task = args.join(" ").trim();
+      if (!task) {
+        reply = "⚠ 请附带要规划的任务。例如：`/plan 重构登录页表单校验`";
+        break;
+      }
+      reply = `📐 规划模式已进入——正在产出「${task}」的计划…`;
+      injectedMessage = [
+        "[/plan — plan mode]",
+        "",
+        `请为以下任务制定计划：${task}`,
+        "",
+        "计划要求：",
+        "- 拆解为可执行步骤：每步目标 / 动作 / 交付物 / 验收方式",
+        "- 标注关键路径与可并行的步骤",
+        "- 列出各步骤依赖的外部资源（文件、命令、工具、数据）",
+        "- 先评估可行性与主要风险，再展开步骤",
+        "",
+        "执行规则（规划模式）：",
+        "- 不直接写生产代码、不执行有副作用的命令——先交付计划并请求确认",
+        "- 计划写入 markdown 文件（工作区 `plans/` 目录），回复中给出计划摘要与文件路径",
+        "- 用户确认后再切换为执行模式",
+      ].join("\n");
+      break;
+    }
+
     case "review": {
-      // /review — 独立审查者（对标 hermes agent/review_engine.py）
-      // 快照最近对话，生成审查提示词，用户可用此提示词启动一次独立审查。
+      // /review — 后台评审 fork（对齐 hermes agent/review_engine.py）
+      const DEFAULT_CONTEXT_MESSAGES = 10;
+      const MESSAGE_CHAR_CAP = 12_000;
+      const limit = parseInt(args[0], 10) || DEFAULT_CONTEXT_MESSAGES;
+      const history = deps.conversationHistory.get(sessionId) || [];
+      const recent = history.slice(-limit);
+
+      // ── fork 接线：reviewForkFn 存在时实际执行评审（executor 接线 runBackgroundReview）──
+      if (deps.reviewForkFn) {
+        if (recent.length === 0) {
+          reply = "📋 没有可评审的对话内容。当前会话为空。";
+          break;
+        }
+        try {
+          const { summary, tokensUsed: auxTokens } = await deps.reviewForkFn(
+            recent.map((h) => ({
+              role: h.role,
+              content: typeof h.content === "string" ? h.content : JSON.stringify(h.content ?? ""),
+            })),
+          );
+          reply = [
+            "**🪞 /review — 后台评审 fork 已执行**",
+            "",
+            summary,
+            "",
+            `（评审经独立副任务通道完成：消耗 ${auxTokens} tokens，未进入主会话历史）`,
+          ].join("\n");
+          tokensUsed = auxTokens;
+        } catch (err) {
+          reply = `❌ /review fork 失败: ${err instanceof Error ? err.message : String(err)}`;
+        }
+        break;
+      }
+
+      // ── 回退：未接线时输出评审提示词，用户可自行发送启动独立审查 ──
       const REVIEW_GOAL = [
         "Act as an independent senior reviewer. Thoroughly review the work presented",
         "in the conversation excerpt provided in your context: investigate any code,",
@@ -1405,12 +1568,6 @@ export async function handleSlashCommand(
         "risks found (with file/line references where possible), what was verified vs.",
         "only read, and a clear final verdict with recommended next steps.",
       ].join(" ");
-
-      const DEFAULT_CONTEXT_MESSAGES = 10;
-      const MESSAGE_CHAR_CAP = 12_000;
-      const limit = parseInt(args[0], 10) || DEFAULT_CONTEXT_MESSAGES;
-      const history = deps.conversationHistory.get(sessionId) || [];
-      const recent = history.slice(-limit);
 
       const excerpts: string[] = [];
       for (const msg of recent) {
@@ -1606,12 +1763,13 @@ export async function handleSlashCommand(
 
   return {
     reply,
-    tokensUsed: 0,
+    tokensUsed,
     duration: Date.now() - startTime,
     permissionRequests: [],
     toolsExecuted: false,
     files: [],
     action: action ?? undefined,
     thinkingLevel: newThinkingLevel,
+    injectedMessage,
   };
 }
