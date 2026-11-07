@@ -4,7 +4,10 @@
  * 借鉴 hermes-agent 的 credential_pool.py 设计：
  * - 4 种轮换策略（fill_first / round_robin / random / least_used）
  * - 三态管理（OK / EXHAUSTED / DEAD）
- * - 冷却 TTL（401=5min, 429=1h, default=1h）
+ * - 凭证级冷却 TTL（401=5min, 429=1h, default=1h）
+ * - **模型级冷却**（对齐 credential_pool_model_cooldowns.py）：
+ *   Anthropic 对每个模型独立限流，某模型 429 不牵连同凭证兄弟模型——
+ *   冷却记录在该 model 键上，凭证级状态（auth/billing）保持独立。
  * - 终端认证错误永久标记
  * - 兼容旧 API：getNextKey(provider) / reportRateLimit(provider, key)
  */
@@ -67,6 +70,14 @@ export interface CredentialEntry {
   errorCount: number;
   /** 标记为 DEAD 的原因 */
   deadReason?: string;
+  /**
+   * 模型级冷却：model → 冷却到期时间戳（借鉴 Hermes agent/credential_pool_model_cooldowns.py）。
+   *
+   * 与凭证级 cooldownUntil 正交：Anthropic 对每个模型独立限流，
+   * 某模型 429 只冷却该模型在该凭证（及其同 key 孪生）上的复用，
+   * 同凭证的其他模型不受影响。
+   */
+  modelCooldowns?: Record<string, number>;
 }
 
 export interface CredentialPoolOptions {
@@ -122,6 +133,7 @@ export class CredentialPool {
           cooldownUntil: 0,
           useCount: 0,
           errorCount: 0,
+          modelCooldowns: {},
         };
         this.entries.push(entry);
         this.providerMap.get(provider)!.push(entry.id);
@@ -139,6 +151,7 @@ export class CredentialPool {
           cooldownUntil: 0,
           useCount: 0,
           errorCount: 0,
+          modelCooldowns: {},
         });
       }
     }
@@ -186,7 +199,7 @@ export class CredentialPool {
       byId.set(p.id, p);
     }
 
-    // 仅恢复已存在条目的运行时状态
+    // 仅恢复已存在条目的运行时状态（凭证级 + 模型级冷却）
     for (const entry of this.entries) {
       const p = byId.get(entry.id);
       if (!p) continue;
@@ -198,16 +211,29 @@ export class CredentialPool {
       if (p.deadReason !== undefined) {
         entry.deadReason = p.deadReason;
       }
+      // 模型级冷却一并恢复（重启后模型级限流信息不丢失）
+      if (p.modelCooldowns !== undefined) {
+        entry.modelCooldowns = { ...p.modelCooldowns };
+      }
     }
   }
 
   /**
    * 获取一个可用凭证。返回 null 表示所有凭证均不可用。
+   *
+   * 对齐 Hermes credential_pool_model_cooldowns.py 的语义：
+   * - model 未指定（调用者不知道模型上下文）：保守策略——凭证上存在任一活跃
+   *   的模型级冷却即视为不可用（避免不该复用被限模型的凭证）。
+   * - model 指定：仅该模型自身的冷却阻止复用，其他模型仍可用该凭证。
+   *
+   * 参数顺序为 (model, now)——model 是主调用场景（provider 带模型上下文取凭证）。
    */
-  acquire(now = Date.now()): CredentialEntry | null {
+  acquire(model?: string, now: number = Date.now()): CredentialEntry | null {
     this.cleanDead(now);
 
-    const available = this.entries.filter((e) => this.isUsable(e, now));
+    const available = this.entries.filter(
+      (e) => this.isUsable(e, now) && !this.hasModelCooldown(e, model, now)
+    );
     if (available.length === 0) return null;
 
     let chosen: CredentialEntry;
@@ -307,22 +333,29 @@ export class CredentialPool {
 
   /**
    * 旧版 API：获取指定 provider 的下一个可用 API key。
+   *
+   * 对齐 Hermes provider_key_rotation 语义：model 可选——若提供，
+   * 模型级冷却的凭证对非该模型的调用仍可用（仅该模型冷却阻止其复用）。
+   * model 未指定（调用者无模型上下文）：保守——任一活跃模型冷却即跳过。
+   *
    * @returns API key 字符串，或 null 表示无可用 key
    */
-  getNextKey(provider: string): string | null {
+  getNextKey(provider: string, model?: string): string | null {
     // 先尝试从 providerMap 查找
     const ids = this.providerMap.get(provider);
     if (ids && ids.length > 0) {
       const now = Date.now();
       for (const id of ids) {
         const entry = this.entries.find((e) => e.id === id);
-        if (entry && this.isUsable(entry, now)) {
+        if (entry && this.isUsable(entry, now) && !this.hasModelCooldown(entry, model, now)) {
           entry.useCount++;
           return entry.apiKey;
         }
       }
       // 所有 key 都不可用，尝试 round-robin 重试
-      const rrEntry = this.entries.find((e) => ids.includes(e.id));
+      const rrEntry = this.entries.find(
+        (e) => ids.includes(e.id) && !this.hasModelCooldown(e, model, now)
+      );
       if (rrEntry && this.isUsable(rrEntry, now)) {
         return rrEntry.apiKey;
       }
@@ -330,7 +363,7 @@ export class CredentialPool {
     }
 
     // 如果没有 provider 映射，使用全局 acquire
-    const entry = this.acquire();
+    const entry = this.acquire(model, Date.now());
     return entry ? entry.apiKey : null;
   }
 
@@ -423,6 +456,83 @@ export class CredentialPool {
       return false;
     }
     return true;
+  }
+
+  /**
+   * 凭证对某模型的模型级冷却到期时间（对齐 Hermes model_cooldown_until 语义）。
+   *
+   * 返回 0 表示该凭证对指定模型（或未知模型：任一活跃冷却）无冷却；
+   * 返回 > now 的毫秒时间戳表示对指定模型处于冷却中。
+   *
+   * 语义对齐 Hermes model_cooldown_until：
+   * - model 未指定（调用者没有模型上下文）：任一活跃的模型冷却即视为已冷却（保守）。
+   * - model 指定：仅该模型自身的冷却阻止复用，该凭证对其他模型仍可用。
+   *
+   * 入参放宽为结构类型（Pick<CredentialEntry,"modelCooldowns">）：getStats() 快照
+   * （Omit<CredentialEntry,"apiKey">）可直接复用，无需构造完整条目。
+   */
+  modelCooldownUntil(
+    entry: Pick<CredentialEntry, "modelCooldowns">,
+    model?: string,
+    now = Date.now(),
+  ): number {
+    const mcd = entry.modelCooldowns ?? {};
+    const values = model ? (mcd[model] != null ? [mcd[model] as number] : []) : Object.values(mcd);
+    const active = values.filter((v): v is number => v > now);
+    return active.length > 0 ? Math.max(...active) : 0;
+  }
+
+  /**
+   * 记录某凭证在指定模型上遇到 429（模型级冷却）。
+   *
+   * 对齐 Hermes agent/credential_pool_model_cooldowns.py _cool_down_model：
+   * - 该凭证条目记录 model → 冷却到期时间；
+   * - 共享同一 apiKey 的孪生条目（Hermes model_config 同 key 多条目场景）一并记录，
+   *   防止漏选到冷却中的凭证——同一把 key 发出的请求会共享 429 限流。
+   * - 凭证级状态（ok/exhausted/dead）不受影响——该凭证对其他模型的复用不受牵连。
+   *
+   * @param credentialId 凭证条目 ID
+   * @param model 被限流的模型名
+   * @param expireAt 可选：自定义冷却到期毫秒时间戳（默认取 429 冷却 1h）
+   */
+  reportModelRateLimit(credentialId: string, model: string, expireAt?: number): void {
+    const entry = this.entries.find((e) => e.id === credentialId);
+    if (!entry) return;
+    const until = Math.max(expireAt ?? Date.now() + COOLDOWN_MS["429"], 0);
+    this.cooldownModelFor(entry, model, until);
+    this.persistSilently();
+  }
+
+  /**
+   * provider 侧报告：按 apiKey 字符串记录模型级冷却。
+   *
+   * 与 reportModelRateLimit 的差异：provider 持有 apiKey 而不持有条目 ID。
+   * 查找 apiKey == key 的所有条目（含孪生条目），对每个条目调用孪生传播逻辑。
+   * 若池中无该 key（env var 单 key 场景），无操作（fail-open 回退 rowKey）。
+   */
+  reportModelRateLimitForKey(key: string, model: string, expireAt?: number): void {
+    const until = Math.max(expireAt ?? Date.now() + COOLDOWN_MS["429"], 0);
+    for (const e of this.entries) {
+      if (e.apiKey === key) {
+        this.cooldownModelFor(e, model, until);
+      }
+    }
+    this.persistSilently();
+  }
+
+  /** 模型级冷却写入 + 孪生传播（共享 apiKey 的条目一并记录该模型冷却） */
+  private cooldownModelFor(entry: CredentialEntry, model: string, until: number): void {
+    for (const e of this.entries) {
+      if (e.apiKey !== entry.apiKey) continue; // 仅孪生（同 key）传播
+      // 已有冷却取较长者（复用已有冷却的 max 语义）
+      const prev = e.modelCooldowns?.[model] ?? 0;
+      e.modelCooldowns = { ...(e.modelCooldowns ?? {}), [model]: Math.max(prev, until) };
+    }
+  }
+
+  /** 模型级冷却判定（acquire/getNextKey 的过滤谓词） */
+  private hasModelCooldown(entry: CredentialEntry, model: string | undefined, now: number): boolean {
+    return this.modelCooldownUntil(entry, model, now) > 0;
   }
 
   private cleanDead(now: number): void {

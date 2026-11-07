@@ -119,7 +119,7 @@ export class AnthropicProvider implements ProviderPlugin {
     this.logger.info(`[Anthropic] → ${request.model} (${request.messages.length} msgs)`);
 
     const maxKeyRetries = this.credentialPool ? 3 : 0;
-    let lastKey = this.resolveApiKey();
+    let lastKey = this.resolveApiKey(request.model);
 
     for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
       const response = await this.fetchWithRetry(`${this.baseURL}/v1/messages`, {
@@ -130,9 +130,12 @@ export class AnthropicProvider implements ProviderPlugin {
       });
 
       if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
-        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        // 模型级冷却（对齐 Hermes credential_pool_model_cooldowns.py）：
+        // Anthropic 对每个模型独立限流——429 只冷却该模型对当前 key 的复用，
+        // 凭证级状态不变，同 key 的兄弟模型不受影响。
+        this.credentialPool.reportModelRateLimitForKey(lastKey, request.model);
         this.logger.warn(`[Anthropic] 429 rate limit on key, rotating (attempt ${keyAttempt + 1})`);
-        const nextKey = this.credentialPool.getNextKey(this.provider);
+        const nextKey = this.credentialPool.getNextKey(this.provider, request.model);
         if (nextKey && nextKey !== lastKey) {
           lastKey = nextKey;
           continue;
@@ -162,7 +165,7 @@ export class AnthropicProvider implements ProviderPlugin {
     this.logger.info(`[Anthropic] → ${request.model} (stream, ${request.messages.length} msgs)`);
 
     const maxKeyRetries = this.credentialPool ? 3 : 0;
-    let lastKey = this.resolveApiKey();
+    let lastKey = this.resolveApiKey(request.model);
 
     for (let keyAttempt = 0; keyAttempt <= maxKeyRetries; keyAttempt++) {
       const response = await this.fetchWithRetry(url, {
@@ -173,9 +176,11 @@ export class AnthropicProvider implements ProviderPlugin {
       });
 
       if (response.status === 429 && this.credentialPool && keyAttempt < maxKeyRetries) {
-        this.credentialPool.reportRateLimit(this.provider, lastKey);
+        // 模型级冷却（对齐 Hermes credential_pool_model_cooldowns.py）：
+        // 429 只冷却该模型对 key 的复用，同 key 的兄弟模型不受影响。
+        this.credentialPool.reportModelRateLimitForKey(lastKey, request.model);
         this.logger.warn(`[Anthropic] 429 rate limit on key (stream), rotating (attempt ${keyAttempt + 1})`);
-        const nextKey = this.credentialPool.getNextKey(this.provider);
+        const nextKey = this.credentialPool.getNextKey(this.provider, request.model);
         if (nextKey && nextKey !== lastKey) {
           lastKey = nextKey;
           continue;
@@ -351,10 +356,10 @@ export class AnthropicProvider implements ProviderPlugin {
     };
   }
 
-  /** Resolve the API key: try credential pool first, fall back to config */
-  private resolveApiKey(): string {
+  /** 解析初始 API key：provider 池取 key（带模型过滤），回退配置 API key */
+  private resolveApiKey(model?: string): string {
     if (this.credentialPool) {
-      const key = this.credentialPool.getNextKey(this.provider);
+      const key = this.credentialPool.getNextKey(this.provider, model);
       if (key) return key;
     }
     return this.config.apiKey ?? "";

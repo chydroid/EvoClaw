@@ -127,4 +127,95 @@ describe("CredentialPool", () => {
     pool.reportFailure(c!.id, 429);
     expect(pool.availableCount()).toBe(2);
   });
+
+  describe("模型级冷却（对齐 Hermes credential_pool_model_cooldowns.py）", () => {
+    /** 池策略：round_robin，key-1/key-2/key-3；每个 it 独立重建（rrIndex 从 0 起） */
+
+    it("某模型 429 只冷却该模型：兄弟模型仍可复用被冷却凭证", () => {
+      const p = new CredentialPool({
+        strategy: "fill_first",
+        credentials: [{ apiKey: "a" }, { apiKey: "b" }],
+      });
+      const a = p.acquire("claude-opus-4")!; // fill_first → 第一条（apiKey a）
+      p.reportModelRateLimit(a.id, "claude-opus-4");
+      // 同模型复用：被冷却的 a 不入选 → 返回 b
+      const opusNext = p.acquire("claude-opus-4")!;
+      expect(opusNext.apiKey).toBe("b");
+      // 兄弟模型（sonnet）不受影响：仍可复用 a（fill_first 首选即是 a）
+      const sonnet = p.acquire("claude-sonnet-4")!;
+      expect(sonnet.apiKey).toBe("a");
+    });
+
+    it("未指定模型时保守：任一活跃模型级冷却即跳过该凭证", () => {
+      const first = pool.acquire("claude-opus-4")!; // rr0 → key-1
+      pool.reportModelRateLimit(first.id, "claude-opus-4");
+      // 调用者无模型上下文 → 保守：key-1 上任何活跃模型冷却均阻断复用
+      const second = pool.acquire()!;
+      expect(second.apiKey).not.toBe("key-1");
+    });
+
+    it("模型级冷却到期后凭证恢复可用", () => {
+      const c = pool.acquire("claude-opus-4")!; // key-1
+      const futureExpiry = Date.now() + 60 * 1000;
+      pool.reportModelRateLimit(c.id, "claude-opus-4", futureExpiry);
+      // 冷却写入固定到期时间（可被检测/到期恢复逻辑使用）
+      const stats = pool.getStats();
+      const until = stats.find((s) => s.id === c.id)!.modelCooldowns?.["claude-opus-4"];
+      expect(until).toBe(futureExpiry);
+      // 该凭证在冷却期内对 opus-4 模拟不可用 → 直接断言到期后 modelCooldownUntil 归零
+      expect(pool.modelCooldownUntil(stats.find((s) => s.id === c.id)!, "claude-opus-4", futureExpiry + 1)).toBe(0);
+    });
+
+    it("模型级冷却到期后 provider 等待已清零", () => {
+      const c = pool.acquire("claude-opus-4")!;
+      pool.reportModelRateLimit(c.id, "claude-opus-4", Date.now() - 5_000); // 已过期
+      // 冷却已过期 → 对 opus-4 的下次选择可用（round_robin 下一次恰好可能选到该凭证）
+      // 验证方式：modelCooldownUntil 现在到期
+      const stats = pool.getStats();
+      const entry = stats.find((s) => s.id === c.id)!;
+      expect(pool.modelCooldownUntil(entry, "claude-opus-4")).toBe(0);
+      // acquire 可再拿到该凭证（若 rr 轮转回它）
+      const next = pool.acquire("claude-opus-4")!;
+      expect(next).not.toBeNull();
+    });
+
+    it("按 key 报告模型级冷却（provider 视角 Key-first）", () => {
+      pool.reportModelRateLimitForKey("key-1", "claude-sonnet-4");
+      const stats = pool.getStats();
+      // key-1 记录 sonnet-4 冷却
+      expect(stats[0].modelCooldowns?.["claude-sonnet-4"]).toBeGreaterThan(Date.now());
+      // 下次选 sonnet-4 → 不被 key-1 选中
+      const next = pool.acquire("claude-sonnet-4")!;
+      expect(next.apiKey).not.toBe("key-1");
+    });
+
+    it("同 key 孪生条目共享模型级冷却（传播不漏）", () => {
+      const twinPool = new CredentialPool({
+        strategy: "fill_first",
+        credentials: [
+          { apiKey: "shared" },
+          { apiKey: "shared" },
+        ],
+      });
+      const t = twinPool.acquire()!; // 孪生之一条
+      twinPool.reportModelRateLimit(t.id, "claude-opus-4");
+      // 两个孪生条目都记录了该模型冷却（共享 token 同限流）
+      const stats = twinPool.getStats();
+      const cooled = stats.filter((s) => s.modelCooldowns?.["claude-opus-4"] != null);
+      expect(cooled).toHaveLength(2);
+      // 冷却期内任何模型都无法复用这对孪生
+      expect(twinPool.acquire("claude-opus-4")).toBeNull();
+    });
+
+    it("凭证级冷却与模型级冷却独立（604 正交性）", () => {
+      const c = pool.acquire("claude-opus-4")!; // key-1
+      pool.reportFailure(c.id, 401); // 凭证级冷却 5min
+      const stats = pool.getStats();
+      // 凭证级冷却导致 key-1 exhausted → 对任何模型均不可用（先于模型过滤）
+      expect(pool.acquire("claude-sonnet-4")).not.toBeNull(); // sonnet 用其他 key
+      // 冷却到期恢复后，模型过滤始终参与—— modelCooldownUntil = 0（无模型冷却）
+      const s = stats.find((x) => x.id === c.id)!;
+      expect(s.modelCooldowns).toEqual({});
+    });
+  });
 });
