@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   ProcessRegistry,
   processRegistry,
@@ -113,7 +114,7 @@ describe("process-registry", () => {
       reg = new ProcessRegistry();
     });
 
-    it("regression: an ESRCH from kill() still marks the session finished and returns true", () => {
+    it("regression: an ESRCH from kill() still marks the session finished and returns true", async () => {
       // The bug: when the process had already exited, ChildProcess.kill()
       // throws ESRCH. The fix catches ESRCH/ENOENT, marks the session
       // completed (already_exited), and returns true — instead of leaving the
@@ -126,7 +127,7 @@ describe("process-registry", () => {
       } as unknown as ChildProcess;
 
       const session = reg.register({ command: "sleep 10", process: mockProc });
-      const result = reg.kill(session.id);
+      const result = await reg.kill(session.id);
 
       expect(result).toBe(true);
       expect(mockProc.kill).toHaveBeenCalledTimes(1);
@@ -139,24 +140,24 @@ describe("process-registry", () => {
       expect(finished!.terminationSource).toBe("process.kill");
     });
 
-    it("a normal kill marks the session finished with reason 'killed'", () => {
+    it("a normal kill marks the session finished with reason 'killed'", async () => {
       const mockProc = {
         kill: vi.fn(() => true),
       } as unknown as ChildProcess;
       const session = reg.register({ command: "sleep 10", process: mockProc });
-      const result = reg.kill(session.id);
+      const result = await reg.kill(session.id);
       expect(result).toBe(true);
       const finished = reg.listFinished().find((s) => s.id === session.id);
       expect(finished).toBeDefined();
       expect(finished!.completionReason).toBe("killed");
     });
 
-    it("returns false when the session has no process handle", () => {
+    it("returns false when the session has no process handle", async () => {
       const session = reg.register({ command: "sleep 10", process: null });
-      expect(reg.kill(session.id)).toBe(false);
+      expect(await reg.kill(session.id)).toBe(false);
     });
 
-    it("returns false for a non-ESRCH kill error", () => {
+    it("returns false for a non-ESRCH kill error", async () => {
       const otherErr = Object.assign(new Error("EPERM"), { code: "EPERM" as const });
       const mockProc = {
         kill: vi.fn(() => {
@@ -164,7 +165,7 @@ describe("process-registry", () => {
         }),
       } as unknown as ChildProcess;
       const session = reg.register({ command: "sleep 10", process: mockProc });
-      expect(reg.kill(session.id)).toBe(false);
+      expect(await reg.kill(session.id)).toBe(false);
       // Session stays in running.
       expect(reg.listRunning().find((s) => s.id === session.id)).toBeDefined();
     });
@@ -209,18 +210,127 @@ describe("process-registry", () => {
   });
 
   describe("killAll", () => {
-    it("kills all running sessions for a sessionKey and returns the count", () => {
+    it("kills all running sessions for a sessionKey and returns the count", async () => {
       const reg = new ProcessRegistry();
       const mk = (): ChildProcess => ({ kill: vi.fn(() => true) } as unknown as ChildProcess);
       const a = reg.register({ command: "a", sessionKey: "S1", process: mk() });
       const b = reg.register({ command: "b", sessionKey: "S2", process: mk() });
       const c = reg.register({ command: "c", sessionKey: "S1", process: mk() });
 
-      const killed = reg.killAll("S1");
+      const killed = await reg.killAll("S1");
       expect(killed).toBe(2);
       expect(reg.listRunning().find((s) => s.id === a.id)).toBeUndefined();
       expect(reg.listRunning().find((s) => s.id === c.id)).toBeUndefined();
       expect(reg.listRunning().find((s) => s.id === b.id)).toBeDefined();
+    });
+  });
+
+  describe("kill — 幸存者验证 fail-closed（Hermes ProcessTerminationMixin 对齐）", () => {
+    let reg: ProcessRegistry;
+
+    beforeEach(() => {
+      reg = new ProcessRegistry();
+    });
+
+    it("settle 复查后仍存活 → 不写 killed 收据、会话保留在 running", async () => {
+      const mockProc = { pid: 424900, kill: vi.fn(() => true) } as unknown as ChildProcess;
+      const session = reg.register({ command: "sleep 10", process: mockProc });
+      const result = await reg.kill(session.id, {
+        gracePeriodMs: 50,
+        killSettleMs: 80,
+        isAlive: async () => true,
+      });
+      expect(result).toBe(false);
+      expect(session.exited).toBe(false);
+      expect(reg.listRunning().some((s) => s.id === session.id)).toBe(true);
+      expect(reg.drainNotifications()).toEqual([]); // 无 killed 收据、也无完成通知
+      expect(mockProc.kill).toHaveBeenCalledTimes(1);
+    });
+
+    it("injected probe 异常（不可验证）→ fail-closed 同样保留会话", async () => {
+      const mockProc = { pid: 424901, kill: vi.fn(() => true) } as unknown as ChildProcess;
+      const session = reg.register({ command: "sleep 10", process: mockProc });
+      const result = await reg.kill(session.id, {
+        gracePeriodMs: 50,
+        killSettleMs: 60,
+        isAlive: async () => {
+          throw new Error("EPERM");
+        },
+      });
+      expect(result).toBe(false);
+      expect(reg.listRunning().some((s) => s.id === session.id)).toBe(true);
+    });
+
+    it("真实子进程树：kill 成功 → killed 收据", async () => {
+      const bash = spawn("bash", ["-c", "sleep 30 & wait"], { stdio: "ignore" });
+      await new Promise((r) => setTimeout(r, 150));
+      const mockProc = {
+        pid: bash.pid,
+        kill: vi.fn(((sig: NodeJS.Signals) => bash.kill(sig)) as ChildProcess["kill"]),
+      } as unknown as ChildProcess;
+      const session = reg.register({ command: "bash tree", process: mockProc });
+
+      const result = await reg.kill(session.id, { gracePeriodMs: 1000, killSettleMs: 300 });
+      expect(result).toBe(true);
+      const finished = reg.listFinished().find((s) => s.id === session.id);
+      expect(finished).toBeDefined();
+      expect(finished!.completionReason).toBe("killed");
+    });
+  });
+
+  describe("wait policy 集成（wait() + poll() 观察）", () => {
+    let reg: ProcessRegistry;
+
+    beforeEach(() => {
+      reg = new ProcessRegistry();
+    });
+
+    it("appendOutput 累计 totalOutputChars（Hermes 静默判定依据）", () => {
+      const session = reg.register({ command: "cat" });
+      reg.appendOutput(session.id, "hello");
+      reg.appendOutput(session.id, " world");
+      expect(session.totalOutputChars).toBe(11);
+    });
+
+    it("连续两次静默 wait 后晋升：notify_on_complete + stop note", async () => {
+      const session = reg.register({ command: "sleep 60" });
+      const s1 = await reg.wait(session.id, 20);
+      expect(s1).not.toBeNull();
+      expect(session.notifyOnComplete).toBe(false);
+      const s2 = await reg.wait(session.id, 20);
+      expect(s2).not.toBeNull();
+      expect(session.notifyOnComplete).toBe(true);
+      expect(reg.isWaitPromoted(session.id)).toBe(true);
+      expect(reg.getStopNote(session.id)).toContain("主动通知");
+    });
+
+    it("期间有输出 → 基线推进、不晋升", async () => {
+      const session = reg.register({ command: "long" });
+      await reg.wait(session.id, 15);
+      reg.appendOutput(session.id, "output-now"); // 推进基线
+      const after = await reg.wait(session.id, 15);
+      expect(session.notifyOnComplete).toBe(false);
+      expect(after!.totalOutputChars).toBe(10);
+    });
+
+    it("等待期间退出 → forget，返回快照", async () => {
+      const session = reg.register({ command: "short" });
+      await reg.wait(session.id, 10);
+      const p = reg.wait(session.id, 500);
+      reg.markCompleted(session.id, 0, "exited", "");
+      const snap = await p;
+      expect(snap).not.toBeNull();
+      expect(snap!.exited).toBe(true);
+      expect(reg.isWaitPromoted(session.id)).toBe(false);
+    });
+
+    it("poll 的静默推进也能晋升（2 次无输出 poll）", () => {
+      const session = reg.register({ command: "sleep 60" });
+      reg.poll(session.id);
+      expect(session.notifyOnComplete).toBe(false);
+      reg.poll(session.id);
+      expect(session.notifyOnComplete).toBe(true);
+      expect(reg.getStopNote(session.id)).toContain("主动通知");
     });
   });
 });

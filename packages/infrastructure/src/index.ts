@@ -85,6 +85,8 @@ export type { CheckpointConfig, CheckpointResult, RollbackResult, CheckpointEntr
 
 // ProcessTreeKiller — 跨平台进程树终止
 // 借鉴 hermes-agent tools/process_registry.py：POSIX psutil 递归 / Windows taskkill /T /F
+// （Step 6 对齐 Hermes ProcessTerminationMixin：父进程先 SIGTERM + grace 内存活重扫 /
+//  幸存者验证 settle 复查 1.0s / fail-closed = 不可验证即幸存者并入 KillResult.survivors）
 export {
   killProcessTree,
   killChildProcessTree,
@@ -92,6 +94,11 @@ export {
   pidExists,
 } from "./process-tree-killer";
 export type { KillOptions, KillResult } from "./process-tree-killer";
+
+// process-wait-policy — 静默等待策略（对齐 Hermes process_registry_wait_policy.py）
+// 连续静默 2 轮 → promote（notify_on_complete 接管 + stop note）；forget on exit/非 wait-poll 动作
+export { WaitPolicyTracker, PROMOTE_AFTER } from "./process-wait-policy";
+export type { WaitPolicyObserveResult } from "./process-wait-policy";
 
 // Diagnostic 体系 — 诊断阶段 / 载荷 / 稳定性 / 支持包
 // 对齐 openclaw-main 的 src/logging/diagnostic-*.ts

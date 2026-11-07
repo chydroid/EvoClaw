@@ -6,10 +6,11 @@
  *   - 输出缓冲（200KB 滚动窗口）
  *   - 状态轮询与日志检索
  *   - 阻塞等待（带中断支持）
- *   - 进程杀死
+ *   - 进程杀死（进程树终止 + 幸存者验证，Hermes ProcessTerminationMixin）
  *   - 崩溃恢复（JSON checkpoint）
  *   - 会话级 watch pattern 限速 + 全局断路器
  *   - PID 复用保护（host_start_time 内核 tick）
+ *   - wait policy 静默等待策略（连续静默 2 轮后转让完成通知，Hermes _PROMOTE_AFTER）
  *
  * 限速策略：
  *   - per-session: 至少 15s 间隔一次 watch 通知，3 次连续 strike 后降级为 notify_on_complete
@@ -21,6 +22,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { randomUUID } from "node:crypto";
+import { killProcessTree } from "./process-tree-killer";
+import type { KillOptions } from "./process-tree-killer";
+import { WaitPolicyTracker } from "./process-wait-policy";
 
 // ── 常量 ────────────────────────────────────────────────────
 
@@ -34,6 +38,13 @@ const WATCH_STRIKE_LIMIT = 3; // 连续 strike 上限 → 禁用 watch
 const WATCH_GLOBAL_MAX_PER_WINDOW = 15; // 全局 10s 窗口最大命中数
 const WATCH_GLOBAL_WINDOW_SECONDS = 10;
 const WATCH_GLOBAL_COOLDOWN_SECONDS = 30;
+
+/** 静默晋升停轮注（对齐 Hermes process_registry._STOP_NOTE）：
+ *  通知模型不要继续紧密轮询此静默进程——输出无变化时完成通知已接管。 */
+const STOP_NOTE = "该进程连续两轮轮询输出无变化，已转为完成后主动通知模式；不再需要紧密轮询。";
+
+/** wait 阻塞等待的事件门控步长（对齐 Hermes completion_event.wait(timeout≤1.0) 的 1s 节奏） */
+const WAIT_TICK_MS = 1000;
 
 // ── 类型定义 ────────────────────────────────────────────────
 
@@ -73,6 +84,11 @@ export interface ProcessSession {
   terminationSource: TerminationSource | "";
   /** 滚动输出缓冲（最后 MAX_OUTPUT_CHARS 字符） */
   outputBuffer: string;
+  /** 累计输出字符数（spawn 时从 0 单调递增）— wait policy 静默判定依据
+   * （对齐 Hermes ProcessSession.total_output_chars） */
+  totalOutputChars: number;
+  /** wait policy 晋升停轮注（对齐 Hermes _STOP_NOTE）：告知模型不再需要紧密轮询 */
+  stopNote: string;
   /** 最大输出字符数 */
   maxOutputChars: number;
   /** 是否从崩溃恢复（无管道） */
@@ -136,6 +152,8 @@ export class ProcessRegistry {
   private completionQueue: WatchEvent[] = [];
   private completionConsumed: Set<string> = new Set();
   private pollObserved: Set<string> = new Set();
+  /** wait policy 静默计数器（对齐 Hermes process_registry_wait_policy） */
+  private waitPolicy = new WaitPolicyTracker();
 
   // 全局 watch 断路器
   private globalWindowStart = 0;
@@ -202,6 +220,8 @@ export class ProcessRegistry {
       completionReason: "exited",
       terminationSource: "",
       outputBuffer: "",
+      totalOutputChars: 0,
+      stopNote: "",
       maxOutputChars: MAX_OUTPUT_CHARS,
       detached: false,
       pidScope: opts.pidScope ?? "host",
@@ -243,6 +263,9 @@ export class ProcessRegistry {
     const session = this.running.get(sessionId);
     if (!session) return;
     const trimmedChunk = this.stripShellNoise(chunk);
+    // wait policy 计数器：累计吞入字符数（log buffer 滚动丢弃早期字符不影响，
+    // 静默判定基于"自上次轮询起是否有新输出"）
+    session.totalOutputChars += trimmedChunk.length;
     session.outputBuffer = (session.outputBuffer + trimmedChunk).slice(-session.maxOutputChars);
 
     // 检查 watch patterns
@@ -277,6 +300,7 @@ export class ProcessRegistry {
 
   /**
    * 标记会话为已完成。
+   * wait policy：退出即 forget（静默计数失效）。
    */
   markCompleted(sessionId: string, exitCode: number | null, reason: CompletionReason = "exited", source: TerminationSource | "" = ""): void {
     const session = this.running.get(sessionId);
@@ -286,6 +310,7 @@ export class ProcessRegistry {
     session.completionReason = reason;
     session.terminationSource = source;
     session.finishedAt = Date.now();
+    this.waitPolicy.forget(sessionId);
 
     // 移到 finished 表
     this.running.delete(sessionId);
@@ -305,11 +330,16 @@ export class ProcessRegistry {
 
   /**
    * 轮询会话状态（只读，不消费通知）。
+   * wait policy：poll 是观察行为 → 静默计数推进（连续 2 轮无输出晋升完成通知接管）。
    */
   poll(sessionId: string): ProcessSession | null {
     const session = this.running.get(sessionId) ?? this.finished.get(sessionId);
     if (session) {
       this.pollObserved.add(sessionId);
+      this.waitPolicy.sawObserver(sessionId);
+      if (!session.exited) {
+        this.observeWaiting(sessionId, session, "poll");
+      }
     }
     return session ?? null;
   }
@@ -330,8 +360,11 @@ export class ProcessRegistry {
   /**
    * 杀死进程。
    * 对已退出的进程 kill() 会抛 ESRCH；捕获后仍标记完成，避免僵尸会话驻留。
+   *
+   * 挂接进程树终止 + 幸存者验证（对齐 Hermes ProcessTerminationMixin fail-closed）：
+   *   SIGTERM 后 settle 复查有幸存者 → 不写 killed 收据、会话保留在 running，返回 false。
    */
-  kill(sessionId: string): boolean {
+  async kill(sessionId: string, killOpts?: KillOptions): Promise<boolean> {
     const session = this.running.get(sessionId);
     if (!session || !session.process) return false;
     let alreadyExited = false;
@@ -346,6 +379,27 @@ export class ProcessRegistry {
         return false;
       }
     }
+
+    // 进程树终止 + 幸存者验证（grace 上限 2s；无真实 pid 时跳过复查）。
+    // killOpts 透传（测试注入 isAlive stub / 缩短 settle）。
+    const pid = session.process.pid ?? session.pid;
+    if (pid) {
+      const tree = await killProcessTree(pid, {
+        gracePeriodMs: killOpts?.gracePeriodMs ?? 2000,
+        killSettleMs: killOpts?.killSettleMs,
+        isAlive: killOpts?.isAlive,
+      });
+      if ((tree.survivors?.length ?? 0) > 0) {
+        // fail-closed：无法确认整棵树终止 → 不写 killed 收据、会话保留在 running
+        console.warn("[process-registry] kill 幸存者验证失败，会话保留在 running", {
+          sessionId,
+          pid,
+          survivors: tree.survivors,
+        });
+        return false;
+      }
+    }
+
     this.markCompleted(
       sessionId,
       null,
@@ -358,7 +412,7 @@ export class ProcessRegistry {
   /**
    * 杀死所有运行中的进程（用于 session reset）。
    */
-  killAll(sessionKey?: string): number {
+  async killAll(sessionKey?: string): Promise<number> {
     // 先快照待杀死的 id，避免迭代 Map 时 kill()->markCompleted()->running.delete
     // 修改 Map 导致迭代器跳过条目。
     const ids = Array.from(this.running.entries())
@@ -366,9 +420,84 @@ export class ProcessRegistry {
       .map(([id]) => id);
     let killed = 0;
     for (const id of ids) {
-      if (this.kill(id)) killed++;
+      if (await this.kill(id)) killed++;
     }
     return killed;
+  }
+
+  /**
+   * 阻塞等待会话结束或超时。
+   *
+   * 对齐 Hermes wait policy（process_registry_wait_policy.py）：
+   *   - 节奏：≤1s 事件门控轮询（sleep 而非空转；WAIT_TICK_MS 对齐 Hermes 1.0s 上限）；
+   *   - 超时歧义：等待期间输出无变化 → 该次等待计一次静默轮；连续 2 次静默后晋升
+   *     ——notify_on_complete 接管 + stop note 告知模型不再紧密轮询（Hermes _STOP_NOTE 语义）；
+   *   - 进程已退出 → 计数器 forget，返回快照（调用方可选 drainNotifications）。
+   */
+  async wait(sessionId: string, timeoutMs: number = 1000): Promise<ProcessSession | null> {
+    const existing = this.running.get(sessionId) ?? this.finished.get(sessionId);
+    if (!existing) return null;
+    this.waitPolicy.sawObserver(sessionId);
+
+    // 事件门控节奏轮询（Hermes completion_event.wait(timeout≤1.0) 语义）
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      await this.sleep(Math.min(WAIT_TICK_MS, remaining));
+      if (existing.exited) break; // 同一对象引用：markCompleted 置位 exited 即可提前退出等待
+    }
+
+    const session = this.running.get(sessionId) ?? this.finished.get(sessionId);
+    if (!session) return null;
+    if (session.exited) {
+      this.waitPolicy.forget(sessionId); // 退出 → 计数失效
+      return session;
+    }
+    // 本次 wait 的静默观察（超时仍在运行）→ 静默计数推进 / 晋升
+    const observed = this.waitPolicy.observeAction(sessionId, "wait", session.totalOutputChars, true);
+    if (observed.promoted) {
+      session.notifyOnComplete = true;
+      session.stopNote = STOP_NOTE;
+    }
+    return session;
+  }
+
+  /**
+   * 会话是否已被 wait policy 晋升（测试/诊断用）。
+   */
+  isWaitPromoted(sessionId: string): boolean {
+    return this.waitPolicy.isPromoted(sessionId);
+  }
+
+  /**
+   * 读取会话静默晋升 stop note（测试/诊断用）。
+   */
+  getStopNote(sessionId: string): string {
+    const s = this.running.get(sessionId) ?? this.finished.get(sessionId);
+    return s?.stopNote ?? "";
+  }
+
+  // ── wait policy 观察辅助 ──────────────────────────────────
+
+  /**
+   * 一次 wait/poll 观察 → 静默计数推进；晋升时执行副作用
+   * （notify_on_complete 接管 + stop note，Hermes _STOP_NOTE 语义）。
+   */
+  private observeWaiting(sessionId: string, session: ProcessSession, action: "wait" | "poll"): void {
+    const observed = this.waitPolicy.observeAction(sessionId, action, session.totalOutputChars, !session.exited);
+    if (observed.promoted) {
+      session.notifyOnComplete = true;
+      session.stopNote = STOP_NOTE;
+    }
+  }
+
+  /** 等待用 sleep（unref 不阻止进程退出——wait() 自身驱动等待不受其影响） */
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const t = setTimeout(resolve, Math.max(1, ms));
+      t.unref?.();
+    });
   }
 
   /**
@@ -522,6 +651,8 @@ export class ProcessRegistry {
 
   /**
    * LRU 剪枝最旧的运行中会话。
+   * kill() 为异步（树终止 + 幸存者验证）：fire-and-forget；markCompleted 成功时
+   * 会话已移入 finished表；验证失败/无句柄时在此移除以维持 MAX_PROCESSES 上限。
    */
   private pruneOldestRunning(): void {
     let oldestId: string | null = null;
@@ -535,13 +666,9 @@ export class ProcessRegistry {
     if (oldestId) {
       const session = this.running.get(oldestId);
       if (session) {
-        // kill() 成功时内部会通过 markCompleted() 同步删除 running 条目；
-        // 失败时（信号发送异常）从此处删除，确保调用方 size 检查正确，
-        // 不让 MAX_PROCESSES 被新会话暂时突破。
-        const ok = this.kill(oldestId);
-        if (!ok) {
-          this.running.delete(oldestId);
-        }
+        void this.kill(oldestId).then((ok) => {
+          if (!ok) this.running.delete(oldestId);
+        });
       }
     }
   }
@@ -595,6 +722,7 @@ export class ProcessRegistry {
       completionReason: s.completionReason,
       detached: true, // 恢复后无管道
       pidScope: s.pidScope,
+      totalOutputChars: s.totalOutputChars,
     }));
     return JSON.stringify({
       version: 1,
@@ -632,6 +760,8 @@ export class ProcessRegistry {
           completionReason: s.completionReason ?? "exited",
           terminationSource: "",
           outputBuffer: "",
+          totalOutputChars: s.totalOutputChars ?? 0,
+          stopNote: "",
           maxOutputChars: MAX_OUTPUT_CHARS,
           detached: true,
           pidScope: s.pidScope ?? "host",

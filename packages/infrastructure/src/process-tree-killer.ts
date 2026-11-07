@@ -25,6 +25,16 @@ import { platform } from "os";
 
 const isWindows = platform() === "win32";
 
+// ── 幸存者复查（对齐 Hermes process_registry_termination.py._post_kill_survivors）──
+// killProcessTree 在一轮信号杀完、settle 复查后，KillResult 携带 survivors（仍存活
+// 的进程）。调用方据此 fail-closed（不写 killed 收据、会话保留在 running）。
+// 复查覆盖：grace 期间新 spawn 的孤儿（reparent 到 init 之前的短窗口内仍可被
+// /proc children 抓到）、惰性 exit（killPid 的 100ms 兜底验证可能错过）。
+// 存活探测可注入（KillOptions.isAlive，默认 pidExists → process.kill(pid,0)）。
+// settle 参数：20 步 × 50ms = 1.0s，对齐 Hermes _KILL_SETTLE_SECONDS 0.05s 探针节奏。
+const KILL_SETTLE_STEPS = 20; // 对齐 Hermes _KILL_SETTLE_SECONDS = 1.0
+const KILL_SETTLE_STEP_MS = 50; // 对齐 Hermes 0.05s 探针间隔
+
 const logger = {
   debug(msg: string, data?: Record<string, unknown>): void {
     if (process.env.EVOCLAW_DEBUG === "1" || process.env.LOG_LEVEL === "debug") {
@@ -45,12 +55,20 @@ export interface KillOptions {
   force?: boolean;
   /** 是否递归终止子进程，默认 true */
   recursive?: boolean;
+  /** 存活探测（可注入；默认 pidExists）。测试用注入桩控制幸存者验证；
+   *  prob 抛异常按 survive 处理（fail-closed）。 */
+  isAlive?: (pid: number) => Promise<boolean>;
+  /** 幸存者复查 settle 总时长（毫秒），默认 KILL_SETTLE_STEPS × KILL_SETTLE_STEP_MS = 1.0s */
+  killSettleMs?: number;
 }
 
 export interface KillResult {
   success: boolean;
   killedPids: number[];
   failedPids: number[];
+  /** 复查后仍存活的进程（fail-closed：调用方据此不写 killed 收据、保留会话在 running）。
+   * 与 failedPids 同一集合，显式命名供语义区分（幸存者验证）。 */
+  survivors?: number[];
   error?: string;
 }
 
@@ -252,7 +270,21 @@ export async function pidExists(pid: number): Promise<boolean> {
   }
 }
 
-// ── 进程终止 ────────────────────────────────────────────────────────────────
+// ── 低层信号 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 发送信号（永不抛出：ESRCH/无权限 → false = 无法送达（进程已退出））。
+ */
+function sendSignal(pid: number, signal: NodeJS.Signals): boolean {
+  try {
+    process.kill(pid, signal);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── 单进程终止 ───────────────────────────────────────────────────────────────
 
 /**
  * 终止单个进程。
@@ -262,9 +294,9 @@ export async function pidExists(pid: number): Promise<boolean> {
  *   - 等待 grace period
  *   - 仍存活则 SIGKILL
  */
-async function killPid(pid: number, options: KillOptions): Promise<boolean> {
+async function killPid(pid: number, options: KillOptions, probe?: (pid: number) => Promise<boolean>): Promise<boolean> {
   if (!isSafeToKill(pid)) return false;
-
+  const isAlive = probe ?? ((p: number) => pidExists(p));
   const gracePeriodMs = options.gracePeriodMs ?? 5000;
   const force = options.force ?? false;
 
@@ -288,37 +320,29 @@ async function killPid(pid: number, options: KillOptions): Promise<boolean> {
   try {
     if (!force) {
       // 先 SIGTERM
-      process.kill(pid, "SIGTERM");
+      sendSignal(pid, "SIGTERM");
 
       // 等待 grace period
       const startTime = Date.now();
       while (Date.now() - startTime < gracePeriodMs) {
         await sleep(100);
-        if (!(await pidExists(pid))) {
+        if (!(await isAlive(pid))) {
           return true;
         }
       }
 
       // 仍存活，SIGKILL
-      if (await pidExists(pid)) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-          // 可能刚好退出
-        }
+      if (await isAlive(pid)) {
+        sendSignal(pid, "SIGKILL");
       }
     } else {
       // 直接 SIGKILL
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // 可能已退出
-      }
+      sendSignal(pid, "SIGKILL");
     }
 
     // 验证已终止
     await sleep(100);
-    return !(await pidExists(pid));
+    return !(await isAlive(pid));
   } catch (err) {
     logger.debug("killPid failed", { pid, error: (err as Error).message });
     return false;
@@ -337,10 +361,16 @@ function sleep(ms: number): Promise<void> {
 /**
  * 终止进程树（包括所有子进程）。
  *
- * 借鉴 hermes-agent ProcessRegistry.kill_process_tree：
- *   1. 获取所有子进程 PID（递归）
- *   2. 先终止子进程（叶子优先），再终止父进程
- *   3. 收集结果
+ * 借鉴 hermes-agent ProcessRegistry.kill_process_tree + ProcessTerminationMixin：
+ *   1. 信号前快照子进程（term 前先抓一遍 /proc children）；
+ *   2. 先向父进程发送 SIGTERM，在 grace 窗口内
+ *      **父进程仍存活时反复重扫子进程**（grace 期间新 spawn 的后代在
+ *      reparent 到 init 之前仍挂在父进程 children 下，重扫把它们一网打尽并信号）；
+ *   3. grace 结束后仍存活 → SIGKILL 升级（父 + 全部已知后代）；
+ *   4. 幸存者复查：KILL_SETTLE_STEPS × KILL_SETTLE_STEP_MS = 1.0s 的 settle 窗口内
+ *      对全部已知 PID 探测存活（父存活时再重扫一次新 children），
+ *      复查后仍存活者记为 survivors → 调用方 fail-closed（不写 killed 收据、保留会话在 running）。
+ *      探测异常按存活处理（fail-closed：不可验证 = 幸存者）。
  *
  * @param pid 根进程 PID
  * @param options 终止选项
@@ -354,58 +384,146 @@ export async function killProcessTree(
       success: false,
       killedPids: [],
       failedPids: [],
+      survivors: [],
       error: "unsafe pid (protected or self)",
     };
   }
 
+  const force = options.force ?? false;
+  // 存活探测注入（默认 pidExists）；probe 抛异常 → 按存活处理（fail-closed）
+  const isAlive = options.isAlive ?? ((p: number) => pidExists(p));
+  const alive = async (p: number): Promise<boolean> => {
+    try {
+      return await isAlive(p);
+    } catch {
+      return true;
+    };
+  };
+
+  const seen = new Set<number>([pid]); // 已确认的树内 PID
   const killedPids: number[] = [];
   const failedPids: number[] = [];
 
   try {
     // Windows：taskkill /T /F 一次性终止整个树
     if (isWindows) {
-      const success = await killPid(pid, { ...options, recursive: true });
+      const success = await killPid(pid, { ...options, recursive: true }, isAlive);
+      const survivors = (await alive(pid)) ? [pid] : [];
       if (success) {
         killedPids.push(pid);
       } else {
         failedPids.push(pid);
       }
-      return { success: failedPids.length === 0, killedPids, failedPids };
+      return {
+        success: failedPids.length === 0,
+        killedPids,
+        failedPids,
+        survivors: survivors.length > 0 ? survivors : undefined,
+      };
     }
 
-    // POSIX：先获取所有子进程
-    const childPids = await getChildPidsPosix(pid);
-    logger.debug("found child processes", { parentPid: pid, childCount: childPids.length });
+    // ── POSIX ──
+    // 1) 信号前快照子进程（recursive=false 时不扩张后代集）
+    if (options.recursive !== false) {
+      for (const c of await getChildPidsPosix(pid)) seen.add(c);
+    }
+    logger.debug("found child processes", { parentPid: pid, childCount: seen.size - 1 });
 
-    // 反向终止（叶子优先）：子进程在后获取的通常是更深的后代
-    for (const childPid of childPids.reverse()) {
-      const success = await killPid(childPid, options);
-      if (success) {
-        killedPids.push(childPid);
-      } else {
-        failedPids.push(childPid);
+    // 2) 父进程先 SIGTERM；grace 窗口内父存活时每 100ms 重扫 children
+    //    并信号（对齐 Hermes _terminate_tree 的"存活时重扫"语义）。
+    if (!force) {
+      sendSignal(pid, "SIGTERM");
+      const gracePeriodMs = options.gracePeriodMs ?? 5000;
+      const graceDeadline = Date.now() + gracePeriodMs;
+      while (Date.now() < graceDeadline) {
+        if (!(await alive(pid))) break;
+        if (options.recursive !== false) {
+          // 重扫捕获 grace 期间新 spawn 的后代（在 reparent 前的短暂窗口仍可见）
+          for (const c of await getChildPidsPosix(pid)) {
+            if (!seen.has(c)) {
+              seen.add(c);
+              sendSignal(c, "SIGTERM");
+            }
+          }
+        }
+        const remaining = graceDeadline - Date.now();
+        await sleep(remaining <= 100 ? Math.max(1, remaining) : 100);
+      }
+
+      // 3) 升级：仍存活的父 + 全部已知后代 → SIGKILL
+      if (await alive(pid)) {
+        sendSignal(pid, "SIGKILL");
+      }
+      for (const c of seen) {
+        if (c !== pid && (await alive(c))) sendSignal(c, "SIGKILL");
+      }
+    } else {
+      // force：直接 SIGKILL（先快照已知后代再一并信号）
+      sendSignal(pid, "SIGKILL");
+      if (options.recursive !== false) {
+        for (const c of await getChildPidsPosix(pid)) {
+          if (!seen.has(c)) {
+            seen.add(c);
+            sendSignal(c, "SIGKILL");
+          }
+        }
       }
     }
 
-    // 最后终止父进程
-    const parentSuccess = await killPid(pid, options);
-    if (parentSuccess) {
-      killedPids.push(pid);
-    } else {
-      failedPids.push(pid);
+    // 4) 幸存者复查（Hermes _post_kill_survivors 语义）：
+    //    settle 窗口内反复探测全部已知 PID；父进程仍存活时再重扫新 children；
+    //    窗口结束后仍存活者 = survivors（fail-closed）。
+    const settleMs = options.killSettleMs ?? KILL_SETTLE_STEPS * KILL_SETTLE_STEP_MS;
+    const settleDeadline = Date.now() + settleMs;
+    let survivors: number[] = [];
+    do {
+      // 父存活时重扫新后代（复查窗口可能还有晚生进程挂着链表尾）
+      if ((await alive(pid)) && options.recursive !== false) {
+        for (const c of await getChildPidsPosix(pid)) {
+          if (!seen.has(c)) {
+            seen.add(c);
+            sendSignal(c, "SIGKILL"); // 晚生存活者直接强杀
+          }
+        }
+      }
+      const still: number[] = [];
+      if (await alive(pid)) still.push(pid);
+      for (const c of seen) {
+        if (c !== pid && (await alive(c))) still.push(c);
+      }
+      survivors = Array.from(new Set(still)).sort((a, b) => a - b);
+      if (survivors.length === 0) break;
+      const remaining = Math.max(1, settleDeadline - Date.now());
+      await sleep(Math.min(KILL_SETTLE_STEP_MS, remaining));
+    } while (Date.now() < settleDeadline);
+
+    for (const p of Array.from(seen).sort((a, b) => a - b)) {
+      if (survivors.includes(p)) {
+        failedPids.push(p);
+      } else {
+        killedPids.push(p);
+      }
     }
 
     return {
       success: failedPids.length === 0,
       killedPids,
       failedPids,
+      survivors,
     };
   } catch (err) {
     logger.warn("killProcessTree exception", { pid, error: (err as Error).message });
+    // exception 路径不甘心跳过验证：对仍存活者按幸存者上报（fail-closed）
+    const s: number[] = [];
+    if (await alive(pid)) s.push(pid);
+    for (const c of seen) {
+      if (c !== pid && (await alive(c))) s.push(c);
+    }
     return {
       success: false,
       killedPids,
       failedPids,
+      survivors: Array.from(new Set(s)).sort((a, b) => a - b),
       error: (err as Error).message,
     };
   }
