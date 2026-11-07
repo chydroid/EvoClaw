@@ -16,6 +16,7 @@ import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnSto
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
+import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
@@ -2725,6 +2726,9 @@ function convertToolsToAnthropic(
 interface AnthropicContentPart {
   type?: string;
   text?: string;
+  /** Anthropic 先手回合 thinking 块（带 signature；见 anthropic-thinking-policy.ts） */
+  thinking?: string;
+  signature?: string;
   image_url?: { url?: string };
   file?: { data?: string; mimeType?: string; filename?: string };
   input_audio?: { data?: string; format?: "wav" | "mp3" | "flac" | "ogg" };
@@ -2733,6 +2737,7 @@ interface AnthropicContentPart {
 function extractAnthropicContentBlocks(
   content: unknown,
   cacheCtrl: unknown,
+  opts?: { thinkingReplay?: boolean },
 ): Array<Record<string, unknown>> {
   const blocks: Array<Record<string, unknown>> = [];
 
@@ -2744,6 +2749,15 @@ function extractAnthropicContentBlocks(
       if (!part || typeof part !== "object") continue;
       if (part.type === "text" && typeof part.text === "string") {
         blocks.push({ type: "text", text: part.text });
+      } else if (part.type === "thinking" && opts?.thinkingReplay) {
+        // Hermes 策略：native 路由 + 保留模型 → 原样重放（带 signature）；
+        // 其余路由一律剥离（中继无法校验签名）。内容来自本 kernel 产出的
+        // assistant 轮，非伪造。
+        if (typeof part.thinking === "string" && part.thinking) {
+          const blk: Record<string, unknown> = { type: "thinking", thinking: part.thinking };
+          if (typeof part.signature === "string") blk.signature = part.signature;
+          blocks.push(blk);
+        }
       } else if (part.type === "image_url") {
         const url = part.image_url?.url;
         if (typeof url === "string") {
@@ -2785,8 +2799,9 @@ function extractAnthropicContentBlocks(
  * - role:"tool" 工具结果 → user 消息中的 tool_result blocks
  *   （连续 tool 消息合并进同一条 user 消息，符合 Anthropic 工具往返约定）
  */
-function convertMessagesToAnthropic(
+export function convertMessagesToAnthropic(
   messages: Array<Record<string, unknown>>,
+  opts?: { thinkingReplay?: boolean },
 ): { system?: unknown; messages: Array<Record<string, unknown>> } {
   const systemBlocks: Array<Record<string, unknown>> = [];
   const out: Array<Record<string, unknown>> = [];
@@ -2839,7 +2854,7 @@ function convertMessagesToAnthropic(
     const toolCalls = Array.isArray(m.tool_calls)
       ? (m.tool_calls as Array<Record<string, unknown>>)
       : [];
-    const contentBlocks = extractAnthropicContentBlocks(m.content, undefined);
+    const contentBlocks = extractAnthropicContentBlocks(m.content, undefined, opts);
     for (const tc of toolCalls) {
       const fn = tc.function as Record<string, unknown> | undefined;
       let input: Record<string, unknown> = {};
@@ -2858,6 +2873,11 @@ function convertMessagesToAnthropic(
     // cache_control 统一挂在最后一个 block（tool_use 或 text）上
     if (cacheCtrl && contentBlocks.length > 0) {
       contentBlocks[contentBlocks.length - 1].cache_control = cacheCtrl;
+    }
+    // 空 assistant 轮（无 content 又无 tool_calls）在 Anthropic 侧不合法
+    // （content:[] 触发 400，且破坏 role 交替）。这类消息无信息量，跳过。
+    if (contentBlocks.length === 0 && toolCalls.length === 0) {
+      continue;
     }
     out.push({
       role: role === "assistant" ? "assistant" : "user",
@@ -2888,10 +2908,13 @@ function convertAnthropicResponseToOpenAI(data: unknown): Record<string, unknown
   };
   const blocks = Array.isArray(d.content) ? d.content : [];
   let text = "";
+  let reasoningText = "";
   const toolCalls: Array<Record<string, unknown>> = [];
   for (const block of blocks) {
     if (block?.type === "text" && typeof block.text === "string") {
       text += block.text;
+    } else if (block?.type === "thinking" && typeof block.thinking === "string") {
+      reasoningText += block.thinking;
     } else if (block?.type === "tool_use") {
       toolCalls.push({
         id: String(block.id ?? ""),
@@ -2903,16 +2926,18 @@ function convertAnthropicResponseToOpenAI(data: unknown): Record<string, unknown
       });
     }
   }
+  // 先手回合 thinking 块文本回填 reasoning_content（供 4a 晋升路径，对齐
+  // Hermes：content 空而 reasoning 含答案时晋升）。signature 不进入 OpenAI
+  // 形状（签名仅 Anthropic 原生重放需要，见 anthropic-thinking-policy）。
+  const messageObj: Record<string, unknown> = { role: "assistant", content: text || null };
+  if (reasoningText && !text) messageObj.reasoning_content = reasoningText;
+  if (toolCalls.length > 0) messageObj.tool_calls = toolCalls;
   const usage = d.usage ?? {};
   const inputTokens = usage.input_tokens ?? 0;
   const outputTokens = usage.output_tokens ?? 0;
   return {
     choices: [{
-      message: {
-        role: "assistant",
-        content: text || null,
-        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-      },
+      message: messageObj,
     }],
     usage: {
       total_tokens: inputTokens + outputTokens,
@@ -3427,10 +3452,17 @@ export async function parseStreamingResponse(
               function: { name: tc.name, arguments: tc.arguments },
             }))
           : undefined;
+        // ── 4a reasoning promotion（对齐 Hermes extract_content_or_reasoning）──
+        // 流中断恢复后正文为空但推理含完整答案 → 晋升推理为 content；
+        // 工具轮（有 tool_calls）不晋升（空正文在工具轮是合法形态）。
+        const recoveredContent =
+          !recoveredToolCalls && !result.response.trim() && reasoningAccum.trim()
+            ? reasoningAccum
+            : result.response;
         return {
           message: {
             role: "assistant",
-            content: result.response,
+            content: recoveredContent,
             tool_calls: recoveredToolCalls,
           },
           tokensUsed: totalTokens || Math.ceil(result.response.length / 4),
@@ -3472,6 +3504,13 @@ export async function parseStreamingResponse(
   const flushedTail = tagScrubber.flush();
   if (flushedTail) {
     content += flushedTail;
+  }
+
+  // ── 4a reasoning promotion（对齐 Hermes extract_content_or_reasoning）──
+  // 最终回复为空但推理内容含完整答案（模型把答案放进了 reasoning_content /
+  // <think> 而被清洗器剥离）→ 晋升推理为正文。工具轮（有 tool_calls）不晋升。
+  if (!toolCalls && !content.trim() && reasoningAccum.trim()) {
+    content = reasoningAccum;
   }
 
   return {
@@ -3633,6 +3672,9 @@ export async function callLLMOnce(
     if (isAnthropicProvider) {
       const anth = convertMessagesToAnthropic(
         messagesToSend as unknown as Array<Record<string, unknown>>,
+        // Hermes anthropic_thinking_policy：native 路由+保留模型重放签名
+        // thinking 块；中继/第三方/DeepSeek 一律剥离（签名校验失败 → 400 风险）。
+        { thinkingReplay: shouldReplayPriorThinking(provider.baseURL, provider.model) },
       );
       body = {
         model: provider.model,
@@ -3869,8 +3911,9 @@ const response = await nativeFetch(apiURL, {
       msg.content = visible;
     }
 
+    // ── 非流式 reasoning 轨迹（同流式：落盘 ≠ 用户可见） ──
+    const rc = (msg as { reasoning_content?: string | null }).reasoning_content;
     if (trace) {
-      const rc = (msg as { reasoning_content?: string | null }).reasoning_content;
       if (rc && String(rc).trim()) {
         trace.addReasoning(String(rc), trace.round);
         // 非流式也要下发 —— 否则"落盘了但用户看不到"的老毛病又犯一次
@@ -3885,6 +3928,13 @@ const response = await nativeFetch(apiURL, {
           thinkingSteps: trace.toJSON(),
         });
       }
+    }
+
+    // ── 4a reasoning promotion（对齐 Hermes extract_content_or_reasoning）──
+    // 最终回复为空但推理含完整答案 → 晋升推理为 content；工具轮不晋升。
+    const visibleContent = typeof msg.content === "string" ? msg.content : "";
+    if (!msg.tool_calls?.length && !visibleContent.trim() && rc && String(rc).trim()) {
+      msg.content = String(rc);
     }
 
     return {

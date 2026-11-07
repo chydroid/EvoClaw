@@ -105,10 +105,10 @@
 2. `apps/server`：`execute_code` 增 `persistent`/`reset` 参数 → 仅 python + process 软沙箱后端（docker/remote 明确报错非静默降级）；服务注册 `"codeKernel"`；shutdown 钩子 kill 全部内核。结果附 `persistent/kernel(mode,reused,execution_count,state_reset)`。
 3. 测试：`code-kernel.test.ts` 10 个（跨调用状态+计数/异常存活/超时丢弃/reset/LRU+附着保护/idle 回收/SystemExit/并发串行化/raw stdout 归属/staging 清扫）+ `persistent-kernel-tools.test.ts` 7 个（handler 级：持久复用/reset/timeout kill/非 python 报错/docker 报错/codeKernel 缺席报错/工具定义）。7093 tests passed。
 
-**Step 4 — thinking 细节（4a 4b）**
-1. reasoning promotion：llm-caller 收尾处检测"final reply 为空但 reasoning 含完整答案"→ 晋升提示/引导（白名单模型配置）。
-2. anthropic thinking policy：历史装配处按 provider/model 决定 thinking 块保留策略（防多轮签名不一致 400）。
-3. 测试：空回复+thinking 场景、多轮跨 provider 切换场景。
+**Step 4 — thinking 细节（4a 4b）** ✅ 已完成（2026-11-07，本提交）
+1. reasoning promotion（对齐 Hermes `extract_content_or_reasoning`）：`llm-caller` 三个收尾处（非流式 finish / 流式 doParse finish / 流式 recovery——均在工具轮判定之外）检测"最终回复为空但推理内容含完整答案"→ 晋升推理为正文。`convertAnthropicResponseToOpenAI` 在 text 为空时把 thinking 块文本回填 `reasoning_content`（4a 晋升的数据源）；工具轮（有 tool_calls）不晋升。实现为纯函数门控 `shouldReplayPriorThinking(baseURL, model)`（模型能力矩阵 + 端点路由契约），非硬编码白名单。
+2. anthropic thinking policy（对齐 `anthropic_thinking_policy.py`）：`packages/agent/src/anthropic-thinking-policy.ts` 纯函数模块——`claudeFamilyVersion`（`claude-opus-4-5` 语义 minor 解析，快照日期 `claude-opus-4-20250514` 记为 4.0，`claude[-_.]?3(?!\d)` 一律剥离）、`KEEP_ALL_FROM` opus(4.5)/sonnet(4.6)/haiku(5.5)，未知家族默认保留（主版本 ≥5，未来模型安全默认）；`anthropicThinkingRoute`（native=官方/Bedrock/Vertex/Nous、minimax 自有签名、kimi 原样、deepseek 无签名、third_party 剥离）；重放条件 = minimax || (native AND modelPreserves)。接线点：`convertMessagesToAnthropic` 导出 + `opts.thinkingReplay` 门控 → 第三方中继默认剥离历史 thinking 块（防签名 400）。转换器另跳过空数组 assistant 轮（content:[] 触发 Anthropic 400）。
+3. 测试：`anthropic-thinking-policy.test.ts` 13 个（版本解析/保留边界/路由分类/重放矩阵）+ `reasoning-promotion.test.ts` 10 个（非流式晋升/text 优先/工具轮不晋升/流式 SSE 晋升/中继剥离接线/转换器矩阵/空 assistant/tool_use/tool_result 合并）。7116 tests passed。
 
 **Step 5 — TTS provider 注册表化 + Edge 免费默认**
 1. `tts-providers.ts`：注册表（env 探测 + 可用性 checkFn）。
