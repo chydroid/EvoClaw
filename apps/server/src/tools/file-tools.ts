@@ -78,10 +78,17 @@ function validatePathWithinBase(resolvedPath: string, baseDir: string): string |
  * 绝对路径与项目根的边界校验保持原样：项目根依旧不会被自动放行。
  */
 /**
- * 剥掉模型习惯性带上的 workspace 前缀。
- * `data/workspace/x`、`.\data\workspace\x`、甚至多套几层的
- * `data/workspace/data/workspace/x` 都归一为 `x`。
- * 同时处理绝对路径：`/home/chy/EvoClaw/data/workspace/packages/x` → `/home/chy/EvoClaw/packages/x`
+ * 剥掉模型习惯性带上的 workspace 前缀（P2 路径契约收敛，2026-11-08）。
+ *
+ * 路径契约（钉在工具描述里，这里是实现侧的归一化兜底）：
+ *   - **相对路径** → 以 workspace 根为基准；若模型把 `data/workspace/...`
+ *     误当相对路径（它以为是仓库根），这里归一为 `...`。
+ *   - **绝对路径** → 一律原样直通（剥段前 resolveToolPath 已保证
+ *     「原路径存在 → 原样直通」，走到这里的绝对路径必然不存在）。
+ *     仅当剥掉 `/data/workspace/` 段后的目标在磁盘上真实存在时
+ *     才剥离（模型给真实仓库文件误加了前缀的恢复启发式，2026-11-03）；
+ *     否则保持声明路径（新建文件场景，v9 Task 6 事故根因）。
+ * 该函数对不含 data/workspace/ 段的路径是 no-op。
  */
 function stripWorkspacePrefix(filePath: string): string {
   let candidate = filePath.replace(/^\.[\\/]+/, "");
@@ -346,10 +353,10 @@ export function registerFileTools(
     "file_write",
     {
       name: "file_write",
-      description: "Create a new file or overwrite an existing file's content. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。",
+      description: "Create a new file or overwrite an existing file's content. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。路径契约：相对路径以工作区根（workspace）为基准；绝对路径一律原样直通、不被改写——写产物请始终使用「工作区根相对路径」（如 v9-novel/the-last-city.md），不要把 /data/workspace/ 拼进相对路径。",
       parameters: {
         action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容", required: true, enum: ["create", "modify"] },
-        path: { type: "string", description: "Relative file path to create or modify", required: true },
+        path: { type: "string", description: "File path. 相对路径以 workspace 根为基准；绝对路径原样直通（不会被剥段改写）。", required: true },
         content: { type: "string", description: "Content to write to the file", required: true },
         overwrite: { type: "boolean", description: "Whether to overwrite if the file already exists（仅 action=create 生效，default: false）", required: false, default: false },
       },
@@ -366,9 +373,9 @@ export function registerFileTools(
     "file_delete",
     {
       name: "file_delete",
-      description: "Delete a file at the specified path",
+      description: "Delete a file at the specified path（路径契约：相对路径以 workspace 根为基准；绝对路径原样直通）",
       parameters: {
-        path: { type: "string", description: "Relative file path to delete", required: true },
+        path: { type: "string", description: "File path. 相对路径以 workspace 根为基准；绝对路径原样直通。", required: true },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -413,9 +420,9 @@ export function registerFileTools(
     "file_read",
     {
       name: "file_read",
-      description: "Read the contents of a file. For large files, use offset (1-based line number) and limit (max lines) to read in chunks. Each read returns up to 16000 characters.",
+      description: "Read the contents of a file. For large files, use offset (1-based line number) and limit (max lines) to read in chunks. Each read returns up to 16000 characters. 路径契约：相对路径以 workspace 根为基准；绝对路径原样直通（已存在的绝对路径永不被改写）。",
       parameters: {
-        path: { type: "string", description: "File path to read", required: true },
+        path: { type: "string", description: "File path. 相对路径以 workspace 根为基准；绝对路径原样直通。", required: true },
         offset: { type: "string", description: "Line number to start reading from (1-based, default: 1)", required: false },
         limit: { type: "string", description: "Number of lines to read (default: all up to 16K char limit)", required: false },
       },
