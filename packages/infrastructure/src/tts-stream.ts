@@ -27,7 +27,7 @@ export interface TTSChunk {
 }
 
 /** TTS provider 抽象（可插拔：OpenAI / Nous Portal / 本地引擎） */
-export interface TTSProvider {
+export interface VoiceStreamProvider {
   /** 该 provider 当前是否可用（缺 key / 未配置时返回 false） */
   readonly name: string;
   isAvailable(): boolean;
@@ -83,7 +83,7 @@ function silenceChunk(textFragment: string, ms = 200): TTSChunk {
  * 若 provider 返回 mp3 则前端用 <audio> 播放而非 AudioBuffer——
  * 具体协商见 gateway /api/voice/tts 端点的 event 元数据）。
  */
-export class OpenAITTSProvider implements TTSProvider {
+export class OpenAITTSProvider implements VoiceStreamProvider {
   readonly name = "openai-tts";
   private readonly endpoint: string;
   private readonly apiKey: string;
@@ -156,7 +156,7 @@ export class OpenAITTSProvider implements TTSProvider {
 // ── 默认 provider 工厂 ───────────────────────────────────────────────────────
 
 /** 根据环境变量构造默认 TTS provider（缺 key 自动降级静音，不报错） */
-export function createDefaultTTSProvider(env: NodeJS.ProcessEnv = process.env): TTSProvider {
+export function createDefaultTTSProvider(env: NodeJS.ProcessEnv = process.env): VoiceStreamProvider {
   return new OpenAITTSProvider(env);
 }
 

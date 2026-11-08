@@ -47,7 +47,7 @@ import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCir
 import { EvolutionEngine } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
-import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, CodeKernelRegistry, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry } from "@evoclaw/infrastructure";
+import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, CodeKernelRegistry, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry, createTTSRegistry, createSttRegistry } from "@evoclaw/infrastructure";
 import { EmailClient } from "@evoclaw/email";
 import { ScheduleManager, CronSuggestionManager, CronScheduler, RunLogStore, listBlueprints, getBlueprint, fillBlueprint, type SqliteDatabaseLike } from "@evoclaw/scheduler";
 import { ReportGenerator } from "@evoclaw/reporting";
@@ -75,6 +75,7 @@ import {
   registerSessionSearchTools,
   registerClarifyTools,
   registerTtsTools,
+  registerSttTools,
   registerKanbanTools,
   registerVerifyTools,
   registerTodoTools,
@@ -534,6 +535,10 @@ export class EvoClawServer {
     // gateway 的 /api/voice/tts、/api/voice/barge-in 惰性 resolve 这两个服务
     this.registry.registerService("ttsProvider", createDefaultTTSProvider(process.env));
     this.registry.registerService("ttsPlaybackRegistry", new TTSPlaybackRegistry());
+    // TTS/STT Provider Registry（Hermes 对齐 Step 5：edge/local 免费默认链）——
+    // 工具层 + 状态面通过 resolveService 取用；无 key 只是 isAvailable=false（不抛）。
+    this.registry.registerService("ttsRegistry", createTTSRegistry(process.env));
+    this.registry.registerService("sttRegistry", createSttRegistry(process.env));
 
     this.gateway = new GatewayServer(this.registry, this.eventBus);
     this.agentPool = new AgentPoolManager(this.registry, this.eventBus);
@@ -2643,7 +2648,8 @@ export class EvoClawServer {
     registerMemoryTools(this.agentModelExecutor);
     registerSessionSearchTools(this.agentModelExecutor);
     registerClarifyTools(this.agentModelExecutor);
-    registerTtsTools(this.agentModelExecutor);
+    registerTtsTools(this.agentModelExecutor, this.registry);
+    registerSttTools(this.agentModelExecutor, this.registry);
     registerVerifyTools(this.agentModelExecutor);
   }
 

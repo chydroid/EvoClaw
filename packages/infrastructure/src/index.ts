@@ -4,7 +4,7 @@ export { FileSystemManager, atomicWriteFile, atomicReplace, CrossProcessLock } f
 export { Logger } from "./logger";
 export type { LogLevel, FileLoggingOptions } from "./logger";
 export { OpenAITTSProvider, createDefaultTTSProvider, splitTextIntoFragments, TTSPlaybackRegistry } from "./tts-stream";
-export type { TTSProvider, TTSChunk, TTSPlaybackSession } from "./tts-stream";
+export type { VoiceStreamProvider, TTSChunk, TTSPlaybackSession } from "./tts-stream";
 export { RotatingFileAppender, pruneOldRollingLogs } from "./rotating-file-appender";
 export type { RotatingFileAppenderConfig } from "./rotating-file-appender";
 export {
@@ -259,3 +259,46 @@ export type {
 // 借鉴 hermes-agent 的 shutdown_forensics.py
 export { ShutdownForensics } from "./shutdown-forensics";
 export type { ShutdownSnapshot } from "./shutdown-forensics";
+
+// TTS Provider Registry（Hermes 对齐 Step 5 —— G5）
+//   文件合成方程：synthesize(text) → 落盘路径；BUILTIN 8 家；edge 免费默认。
+//   流式侧仍由 tts-stream.ts 承载（WebUI voice SSE），不在本模块。
+export type {
+  TTSProvider,
+  TTSSynthesizeOptions,
+  TTSOutputFormat,
+} from "./tts-providers";
+export {
+  ProviderRegistry,
+  BUILTIN_TTS_PROVIDERS,
+  TTS_DEFAULT_CHAIN,
+  createTTSRegistry,
+  resolveOutputFormat,
+  defaultTTSOutputDir,
+  EdgeTTSProvider,
+  OpenAiCompatibleTTSProvider,
+  XAITTTSProvider,
+  ElevenLabsTTSProvider,
+  MistralTTSProvider,
+  GeminiTTSProvider,
+  MiniMaxTTSProvider,
+  runPythonProcess,
+  PythonModuleProbe,
+} from "./tts-providers";
+
+// STT Provider Registry（Hermes 对齐 Step 5 —— G5）
+//   信封 {success, transcript, provider, error} 永不抛；BUILTIN 7 家；local faster-whisper 免费默认。
+export type {
+  TranscriptionEnvelope,
+  TranscriptionProvider,
+  TranscribeOptions,
+} from "./stt-providers";
+export {
+  SttRegistry,
+  BUILTIN_STT_PROVIDERS,
+  STT_DEFAULT_CHAIN,
+  createSttRegistry,
+  LocalFasterWhisperProvider,
+  OpenAiCompatibleSttProvider,
+  ElevenLabsSttProvider,
+} from "./stt-providers";

@@ -24,6 +24,8 @@ export { registerMemoryTools } from "./memory-tools";
 export { registerSessionSearchTools } from "./session-search-tools";
 export { registerClarifyTools } from "./clarify-tools";
 export { registerTtsTools, checkTtsRequirements } from "./tts-tools";
+// 语音转文本（Hermes 对齐 Step 5：Provider Registry 链选，local faster-whisper 免费默认）
+export { registerSttTools, checkSttRequirements } from "./stt-tools";
 // Kanban 多 Agent 工作队列工具集
 export { registerKanbanTools } from "./kanban-tools";
 export type { KanbanToolDeps } from "./kanban-tools";

@@ -6,7 +6,7 @@ import path from "path";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { Observability } from "@evoclaw/infrastructure";
 import { TTSPlaybackRegistry, createDefaultTTSProvider } from "@evoclaw/infrastructure";
-import type { TTSProvider } from "@evoclaw/infrastructure";
+import type { VoiceStreamProvider } from "@evoclaw/infrastructure";
 import type { TokenUsageTracker } from "@evoclaw/agent";
 import type {
   InstallPolicyManager,
@@ -1043,7 +1043,7 @@ export class GatewayServer {
       const sessionId = body.sessionId || `tts-${Date.now()}`;
 
       // 惰性获取/创建 provider + 会话注册表（避免构造期缺 env 时崩溃，缺 key 自动降级静音）
-      let ttsProvider = this.registry.resolveService<TTSProvider>("ttsProvider");
+      let ttsProvider = this.registry.resolveService<VoiceStreamProvider>("ttsProvider");
       let ttsRegistry = this.registry.resolveService<TTSPlaybackRegistry>("ttsPlaybackRegistry");
       if (!ttsProvider || !ttsRegistry) {
         ttsProvider = ttsProvider ?? createDefaultTTSProvider(process.env);
