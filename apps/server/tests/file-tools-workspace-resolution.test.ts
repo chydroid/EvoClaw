@@ -104,10 +104,29 @@ describe("resolveToolPath × 绝对路径真实性优先（2026-11-07 修正）"
     expect(r.forFs).toBe(path.join("data", "workspace", "analyze_app_log.py").replace(/\\/g, "/"));
   });
 
-  it("不存在的绝对路径含 /data/workspace/ 段 → 仍剥离（2026-11-03 仓库根场景保留）", () => {
+  it("绝对路径含 /data/workspace/ 段且剥段目标真实存在 → 仍剥离（2026-11-03 仓库根读场景保留）", () => {
     // 仓库源码文件场景：模型把 /repo/packages/... 误写成 /repo/data/workspace/packages/...
+    // 剥段目标（/repo/packages/...）在磁盘上真实存在 → 判定为「读真实仓库文件」→ 剥离。
+    const target = path.join(tmp, "packages", "agent", "src", "x.ts");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "export {};\n", "utf-8");
     const r = resolveToolPath(fsBase, workspace, path.join(tmp, "data", "workspace", "packages", "agent", "src", "x.ts"));
-    expect(r.resolved).toBe(path.join(tmp, "packages", "agent", "src", "x.ts"));
+    expect(r.resolved).toBe(target);
+  });
+
+  it("★ Task 6 事故回归：绝对路径含 /data/workspace/ 段且剥段目标**不存在** → 保持声明路径，文件落在 workspace", () => {
+    // v9 压测 Task 6（2026-11-08）：模型声称写
+    //   /home/chy/EvoClaw/data/workspace/v9-novel/the-last-city.md
+    // 但旧逻辑无条件剥掉 /data/workspace/ 段 → 文件实际落到仓库根
+    //   /home/chy/EvoClaw/v9-novel/the-last-city.md（不存在 data/workspace）
+    // 磁盘核验判缺失 → 续跑指令要求「原样重传该绝对路径」→ 又被剥段 → 死循环。
+    // 修复：剥段目标（仓库根同名）不存在时不再剥离，声明的 workspace 路径直通。
+    const claimed = path.join(workspace, "v9-novel", "the-last-city.md");
+    // 仓库根下的剥段目标此时不存在
+    expect(fs.existsSync(path.join(tmp, "v9-novel", "the-last-city.md"))).toBe(false);
+    const r = resolveToolPath(fsBase, workspace, claimed);
+    expect(r.resolved).toBe(claimed);
+    expect(r.forFs).toBe(path.join("data", "workspace", "v9-novel", "the-last-city.md").replace(/\\/g, "/"));
   });
 
   it("相对路径带 data/workspace/ 前缀 → 归一到 workspace 下同名文件", () => {

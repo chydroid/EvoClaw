@@ -93,13 +93,28 @@ function stripWorkspacePrefix(filePath: string): string {
   }
   // ★ 2026-11-03 修复：绝对路径中的 data/workspace/ 段也要剥离
   //   模型有时会传 /home/chy/EvoClaw/data/workspace/packages/xxx 这种绝对路径，
-  //   但实际文件在 /home/chy/EvoClaw/packages/xxx
+  //   但实际文件在 /home/chy/EvoClaw/packages/xxx（读仓库源码场景）。
+  // ★ 2026-11-08 修复（v9 压测 Task 6 事故）：只剥离「剥完即存在」的绝对路径。
+  //   剥段前 resolveToolPath 已保证「原路径存在 → 原样直通」，走到这里的绝对路径
+  //   必然**不存在**。不存在时有两种语义：
+  //   a) 新建文件（file_write 声明目标就是 data/workspace/... 本身）——剥段会把
+  //      文件挪到仓库根（Task 6 根因：声称写 /home/chy/EvoClaw/data/workspace/
+  //      v9-novel/the-last-city.md，实际落到 /home/chy/EvoClaw/v9-novel/，
+  //      磁盘核验判缺失、续跑指令要求原样重传又再次被剥段，死循环至收尾）；
+  //   b) 模型给真实仓库文件误加了 data/workspace/ 前缀（2026-11-03 目标场景，
+  //      剥段后的路径在磁盘上真实存在）。
+  //   判别式：剥段目标存在 → 剥离（b）；否则保持声明路径（a）。
   const lower = candidate.toLowerCase().replace(/\\/g, "/");
   const marker = "/data/workspace/";
   const idx = lower.indexOf(marker);
   if (idx >= 0) {
     // idx 指向 marker 开头的 /，slice(0, idx+1) 保留这个 /
-    candidate = candidate.slice(0, idx + 1) + candidate.slice(idx + marker.length);
+    const stripped = candidate.slice(0, idx + 1) + candidate.slice(idx + marker.length);
+    try {
+      if (fs.existsSync(stripped)) candidate = stripped;
+    } catch {
+      /* existsSync 不抛；保险起见静默保持声明路径 */
+    }
   }
   return candidate;
 }
