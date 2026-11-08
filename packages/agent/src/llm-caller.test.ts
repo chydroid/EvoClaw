@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -2708,3 +2708,83 @@ describe("extractExecutedShellCommands", () => {
     expect(cmds).toEqual([]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// 测试套件：reconcileClaimedAgainstReceipts
+// 覆盖：v9 压测 Task 6 落点漂移回归（2026-11-08，hermes 回执对账同构）
+// ═══════════════════════════════════════════════════════════
+
+describe("reconcileClaimedAgainstReceipts — 回执对账（v9 Task 6 回归）", () => {
+  // exists 注入：给定"盘上真实存在"路径集合，返回存在性判定（纯函数，脱离真实盘）
+  const mkExists = (present: string[]) => (p: string) => present.includes(p);
+
+  it("声称 P 缺失但回执 L 存在且 P≠L → 落点漂移（不报真缺失）", () => {
+    // v9 Task 6 根因：声称 data/workspace/v9-novel/x.md，实际落 /home/chy/EvoClaw/v9-novel/x.md
+    const r = reconcileClaimedAgainstReceipts(
+      ["/repo/data/workspace/v9-novel/x.md"],
+      ["/repo/v9-novel/x.md"],
+      mkExists(["/repo/v9-novel/x.md"]),
+    );
+    expect(r.landingMismatch).toEqual([{ claimed: "/repo/data/workspace/v9-novel/x.md", actual: "/repo/v9-novel/x.md" }]);
+    expect(r.trulyMissing).toEqual([]);
+  });
+
+  it("声称与回执一致且盘上存在 → 无任何更正（正常完成）", () => {
+    const r = reconcileClaimedAgainstReceipts(
+      ["/repo/v9-novel/x.md"],
+      ["/repo/v9-novel/x.md"],
+      mkExists(["/repo/v9-novel/x.md"]),
+    );
+    expect(r.landingMismatch).toEqual([]);
+    expect(r.trulyMissing).toEqual([]);
+  });
+
+  it("声称缺失且无对应回执 → 真缺失（旧语义保留，应报任务未完成）", () => {
+    const r = reconcileClaimedAgainstReceipts(
+      ["/repo/v9-novel/x.md"],
+      [],
+      mkExists([]),
+    );
+    expect(r.landingMismatch).toEqual([]);
+    expect(r.trulyMissing).toEqual(["/repo/v9-novel/x.md"]);
+  });
+
+  it("声称缺失但有无关回执存在 → 仍报该声称真缺失（不挪用无关落点）", () => {
+    // 回执是另一个文件（y.md），与声称的 x.md 无关 → x.md 应判真缺失
+    const r = reconcileClaimedAgainstReceipts(
+      ["/repo/x.md"],
+      ["/repo/y.md"],
+      mkExists(["/repo/y.md"]),
+    );
+    expect(r.landingMismatch).toEqual([]);
+    expect(r.trulyMissing).toEqual(["/repo/x.md"]);
+  });
+
+  it("回执自身缺失（工具报成功但盘上无文件）→ 真缺失（最严重不一致）", () => {
+    const r = reconcileClaimedAgainstReceipts(
+      ["/repo/y.md"],
+      ["/repo/y.md"],
+      mkExists([]),
+    );
+    expect(r.landingMismatch).toEqual([]);
+    expect(r.trulyMissing).toContain("/repo/y.md");
+  });
+
+  it("多个落点漂移同时报出，真缺失去重", () => {
+    // 落点漂移 = 同 basename、不同目录（v9 Task 6 根因）。
+    // claimed.md 落点漂到 /real/claimed.md（同名）；missing.md 无同名回执 → 真缺失
+    const r = reconcileClaimedAgainstReceipts(
+      ["/a/claimed.md", "/a/missing.md"],
+      ["/real/claimed.md", "/real/other.md"],
+      mkExists(["/real/claimed.md", "/real/other.md"]),
+    );
+    // claimed.md 落点漂移（→ /real/claimed.md）；missing.md 无对应回执 → 真缺失
+    expect(r.landingMismatch.length).toBe(1);
+    expect(r.landingMismatch[0]).toEqual({ claimed: "/a/claimed.md", actual: "/real/claimed.md" });
+    expect(r.trulyMissing).toContain("/a/missing.md");
+    // 无关回执 other.md 存在，但 basename 与任何声称不符 → 不作为落点，也不进真缺失
+    expect(r.trulyMissing).not.toContain("/real/other.md");
+  });
+});
+
+

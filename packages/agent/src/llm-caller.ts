@@ -1972,6 +1972,64 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
 }
 
 /**
+ * 回执对账结果：把「文案声称的路径」与「工具回执记录的真实落点」对齐。
+ * ★ 2026-11-08 新增（hermes file_mutation_result_landed / WriteResult.verified
+ * 同构）——"任务是否真完成"的第一事实源是工具回执，不是回复文案。
+ */
+export interface ClaimReceiptReconciliation {
+  /** 声称路径 P 在盘上缺失，但某回执路径 L 存在且 P≠L（落点漂移）。 */
+  landingMismatch: Array<{ claimed: string; actual: string }>;
+  /** 声称/回执路径在盘上真实缺失（无对应存在回执）→ 才应报"任务未完成"。 */
+  trulyMissing: string[];
+}
+
+/**
+ * 纯函数：claimed（文案声称）× receipt（工具回执）× exists（盘上存在性）
+ * → 落点漂移 / 真缺失 的判别。导出供测试（回归用例见 llm-caller.test.ts）。
+ *
+ * 落点漂移的可靠信号是**同 basename、不同目录**（v9 Task 6 根因：
+ * 声称 …/data/workspace/v9-novel/the-last-city.md，实际落 …/v9-novel/
+ * the-last-city.md——同名文件写到了另一目录）。故判定：
+ * - 声称 P：若 exists(P) 视为已交付（跳过）；否则若某回执 L 的
+ *   basename 与 P 相同、L≠P 且 exists(L) → 记 landingMismatch{P,L}
+ *   （同名文件其实写在别处）；否则记 trulyMissing（该名文件从未落盘）。
+ *   **不借用无关回执**（basename 不同的 L 不作为 P 的实际落点）。
+ * - 回执 L：若 !exists(L) 且未被上述覆盖 → trulyMissing（工具报成功
+ *   但盘上无文件，最严重的"回执与磁盘不一致"）。
+ * 传 `exists` 注入（而非内部直接 fs）使纯函数可脱离真实盘测。
+ */
+export function reconcileClaimedAgainstReceipts(
+  claimedPaths: string[],
+  receiptPaths: string[],
+  exists: (p: string) => boolean,
+): ClaimReceiptReconciliation {
+  const basename = (p: string): string => {
+    const n = p.replace(/\\/g, "/");
+    return n.split("/").pop() || n;
+  };
+  const landingMismatch: Array<{ claimed: string; actual: string }> = [];
+  const trulyMissing: string[] = [];
+  for (const p of claimedPaths) {
+    if (exists(p)) continue;
+    const pb = basename(p);
+    const landed = receiptPaths.find((l) => l !== p && basename(l) === pb && exists(l));
+    if (landed) landingMismatch.push({ claimed: p, actual: landed });
+    else trulyMissing.push(p);
+  }
+  for (const l of receiptPaths) {
+    if (exists(l)) continue;
+    const known =
+      trulyMissing.includes(l) ||
+      landingMismatch.some((m) => m.claimed === l || m.actual === l);
+    if (!known) trulyMissing.push(l);
+  }
+  return {
+    landingMismatch,
+    trulyMissing: [...new Set(trulyMissing)],
+  };
+}
+
+/**
  * 判断路径是否为候选文件路径（有扩展名、不是 URL、不是系统路径）。
  */
 function isCandidateFilePath(p: string): boolean {
@@ -5867,14 +5925,31 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   后追加更正说明，从不回灌到 auto-continue —— 导致声称"已创建
             //   cache-analysis.md"但文件不存在时，模型不会重试（Task 10 失败）。
             //   现在把磁盘核验移入循环内：声称文件不存在 → 触发续跑让模型真正创建。
+            // ★ 2026-11-08 回执对账（hermes WriteResult 同构）：工具执行处已把
+            //   成功写操作的**实际落点**（resolvedPath，结构化回执，非文案）记入
+            //   createdFiles（见下方"收集产物文件下载链"处）。磁盘核验改为
+            //   **回执优先、文案兜底**：
+            //   - 文案声称路径 P：若某回执路径 L 与 P 不一致但 fs.existsSync(L)，
+            //     说明文件实际落到了 L（stripWorkspacePrefix 类落点漂移）——记入
+            //     landingMismatch，指令直接告知真实落点，模型无需再猜、不再死循环
+            //     （v9 Task 6 根因：声称 data/workspace/x、实际落仓库根，续跑
+            //     "原样重传"又被剥段，循环至收尾）。
+            //   - 文案声称但无对应回执且盘上不存在 → 才触发重创建（旧语义保留）。
+            //   - 无文案声称（Task 7 实测 0 事件类漏报）但存在回执缺失 → 同样触发。
             let diskMissingPaths: string[] = [];
+            let landingMismatch: Array<{ claimed: string; actual: string }> = [];
             try {
               const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
-              if (claimedPaths.length > 0) {
-                diskMissingPaths = claimedPaths.filter((p) => {
-                  try { return !fs.existsSync(p); } catch { return true; }
-                });
-              }
+              const receiptPaths = createdFiles
+                .map((f) => f.path)
+                .filter((p): p is string => typeof p === "string" && p.length > 0);
+              const rec = reconcileClaimedAgainstReceipts(
+                claimedPaths,
+                receiptPaths,
+                (p) => { try { return fs.existsSync(p); } catch { return false; } },
+              );
+              landingMismatch = rec.landingMismatch;
+              diskMissingPaths = rec.trulyMissing;
             } catch { /* skip — 磁盘核验失败不阻断主流程 */ }
 
             // 只有在"确实有活可干"的语境下才续跑，避免把纯闲聊的承诺句式误判成停顿
@@ -5883,6 +5958,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               failedTools.length > 0 ||
               emptyResultTools.length > 0 ||
               diskMissingPaths.length > 0 ||
+              landingMismatch.length > 0 ||
               hasActionIntentFn(message);
             // ★ 2026-10-26 修复：创造性任务的首次响应可能较短但已包含实质内容
             //   （1307 chars），不应触发 auto-continuation——续跑会额外消耗
@@ -5892,7 +5968,13 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   文件不存在时（diskMissingPaths > 0），即使回复已是实质内容也
             //   必须放行续跑——否则"文档贴在聊天里、文件不落盘"的回复会直接
             //   收尾（实测：更正脚注已追加但文件始终没写）。
-            const isCreativeSubstantive = isCreativeTask && finalReply.length > 300 && diskMissingPaths.length === 0;
+            // ★ 2026-11-08：落点漂移（landingMismatch > 0）同样须放行——文件在
+            //   错误位置，创造性任务即便正文够长也不能算"实质完成"。
+            const isCreativeSubstantive =
+              isCreativeTask &&
+              finalReply.length > 300 &&
+              diskMissingPaths.length === 0 &&
+              landingMismatch.length === 0;
             asyncLog(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
             // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
             // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
@@ -5915,6 +5997,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               (premature !== null ||
                 stalledAfterFailure ||
                 diskMissingPaths.length > 0 ||
+                landingMismatch.length > 0 ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
             // ── 验证门（Verification Gate）───────────────────────────
@@ -6018,6 +6101,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               //   看不到"为什么续跑"。实测日志确为 `trigger=unknown`。
               //   现在归因清楚，并把失败工具名列进 detail。
               const trigger = premature
+                ?? (landingMismatch.length > 0 ? "file_landed_wrong_path" : null)
                 ?? (diskMissingPaths.length > 0 ? "disk_files_missing" : null)
                 ?? (stalledAfterFailure ? "tool_failed" : preVerdict.reason)
                 ?? "unknown";
@@ -6025,6 +6109,9 @@ if (deps.contextPruningManager && !prunerNoop) {
                 `自动续跑 #${autoContinueCount}/${MAX_AUTO_CONTINUE}（原因：${trigger}）`,
                 [
                   premature ? `停顿检测：${premature}` : "",
+                  landingMismatch.length > 0
+                    ? `落点核验：文件实际落点与声称不一致：${landingMismatch.map((m) => `${m.claimed} → ${m.actual}`).join("、")}`
+                    : "",
                   diskMissingPaths.length > 0
                     ? `磁盘文件核验：声称创建的文件不存在：${diskMissingPaths.join("、")}`
                     : "",
@@ -6037,14 +6124,21 @@ if (deps.contextPruningManager && !prunerNoop) {
                     : "",
                 ].filter(Boolean).join("\n"),
               );
-              // 磁盘文件缺失时，把缺失文件列表注入续跑指令，让模型明确知道要补建哪些
+              // 磁盘文件缺失/落点漂移时，把详情注入续跑指令，让模型明确知道要补建哪些、
+              // 或文件实际在哪。
               // ★ 2026-10-28 强化（v4 Task 7/8 事故）：此前指令只说"必须重新创建"，
               //   模型仍可能创建其他文件名的文件替代、或只在回复里描述内容。
               //   v9 复测新增：模型曾把相对路径 `tmp_v4_monitor/...` 传给 file_write，
               //   文件落到了工作区 data/workspace/ 下、磁盘核验仍失败。现在明确要求
               //   使用绝对路径原样传入——相对路径会解析到工作区，写到错误位置。
+              // ★ 2026-11-08 落点漂移指令（v9 Task 6）：文件已存在但落点 ≠ 声称路径
+              //   时，直接告知真实落点——不要按声称路径重建（会再次落错），而是
+              //   把文件**移动**到声称路径，或确认实际落点正确后按实际路径汇报。
               const diskCorrection = diskMissingPaths.length > 0
                 ? `\n\n**磁盘文件核验失败**：以下声称创建的文件在磁盘上不存在，必须重新创建：\n${diskMissingPaths.map((p) => `- \`${p}\``).join("\n")}\n\n必须真正调用 file_write 工具创建这些文件，并把上面列出的路径**原样作为 path 参数传入**（例如 file_write action=create、path="/tmp/v4-monitor/monitor.sh"）。**不要用相对路径**——相对路径会解析到工作区 data/workspace/ 下，文件会写到错误位置、磁盘核验仍会失败。**文件名必须与上面完全一致**——不要创建其他文件名替代。**绝对禁止把文件内容（包括完整代码/代码块）贴在回复里**——贴在回复里不算完成，磁盘核验会判定失败；v5 实测模型多次把测试代码贴在聊天里而不调用 file_write，6 次续跑均未纠正。创建后立即用 file_read 或 \`ls -la <目录>\` 验证文件确实存在，再继续。`
+                : undefined;
+              const landingCorrection = landingMismatch.length > 0
+                ? `\n\n**落点核验**：以下文件声称已写入某路径，但实际落在了另一路径（工具回执记录的真实落点）：\n${landingMismatch.map((m) => `- 声称 \`${m.claimed}\` → 实际 \`${m.actual}\``).join("\n")}\n\n请先把文件从实际路径**移动**到声称路径（例如 shell_exec \`mv <实际> <声称>\`，注意保留目录创建），再用 file_read 按声称路径验证；若任务本就只要求实际路径的内容，则按实际路径如实汇报，不要再声称写入声称路径。**不要按声称路径重新创建同名文件**——会造成两份内容且声称路径仍与回执不一致。`
                 : undefined;
               const directive = buildContinuationDirective({
                 kind: premature ?? "needs_correction",
@@ -6052,6 +6146,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 correction: [
                   preVerdict.needsCorrection ? preVerdict.notice : undefined,
                   diskCorrection,
+                  landingCorrection,
                 ].filter(Boolean).join("\n") || undefined,
                 failedTools,
                 emptyResultTools,
@@ -7217,37 +7312,55 @@ if (deps.contextPruningManager && !prunerNoop) {
           );
         }
 
-        // ── 磁盘文件核验 ──
-        // ★ 2026-10-27 新增：完成声明对账只检查"是否调用了写工具"，
-        //   但不验证声称创建的文件是否真的存在于磁盘上。
+        // ── 磁盘文件核验（★ 2026-11-08 改为回执对账）─────────────────
+        // ★ 2026-10-27 新增：完成声明对账只检查"是否调用了写工具"，但不验证
+        //   声称创建的文件是否真的存在于磁盘上。
         //   实测 Task 1（声称创建 cli.py/__init__.py 等文件但实际不存在）
         //   和 Task 10（声称 shell 写入报告但文件不存在）都未被捕获。
         //   此步骤从回复中提取被声称创建/写入的文件路径，逐一验证磁盘存在性。
+        // ★ 2026-11-08 回执对账（hermes WriteResult 同构）：工具回执
+        //   （createdFiles，结构化落点）为第一事实源：
+        //   - 声称 P 缺失但回执 L 存在（P≠L）→ 落点漂移 footer（v9 Task 6：
+        //     文件实际落在别处，如实告知真实落点而非误报"任务未完成"）；
+        //   - 声称缺失且无对应回执 / 回执缺失 → 仍报"任务未完成"（旧语义）。
         try {
           const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
-          if (claimedPaths.length > 0) {
-            const missingPaths: string[] = [];
-            for (const p of claimedPaths) {
-              try {
-                if (!fs.existsSync(p)) missingPaths.push(p);
-              } catch {
-                missingPaths.push(p);
-              }
-            }
-            if (missingPaths.length > 0) {
-              const correction =
-                "\n\n---\n\n**⚠️ 任务未完成**：回复中声称已创建/写入的文件在磁盘上不存在：\n" +
-                missingPaths.map((p) => `- \`${p}\``).join("\n") +
-                "\n\n请以实际执行结果为准，以上文件可能未被成功写入。";
-              finalReply += correction;
-              process.stderr.write(
-                `[AgentModelExecutor] Disk verification found ${missingPaths.length} missing claimed file(s) for session "${sessionId}"\n`
-              );
-              trace?.addSystem?.(
-                `磁盘文件核验：${missingPaths.length} 个声称文件不存在`,
-                missingPaths.join("\n")
-              );
-            }
+          const receiptPaths = createdFiles
+            .map((f) => f.path)
+            .filter((p): p is string => typeof p === "string" && p.length > 0);
+          const { landingMismatch: landingMismatches, trulyMissing } =
+            reconcileClaimedAgainstReceipts(
+              claimedPaths,
+              receiptPaths,
+              (p) => { try { return fs.existsSync(p); } catch { return false; } },
+            );
+          if (trulyMissing.length > 0) {
+            const correction =
+              "\n\n---\n\n**⚠️ 任务未完成**：回复中声称已创建/写入的文件在磁盘上不存在：\n" +
+              trulyMissing.map((p) => `- \`${p}\``).join("\n") +
+              "\n\n请以实际执行结果为准，以上文件可能未被成功写入。";
+            finalReply += correction;
+            process.stderr.write(
+              `[AgentModelExecutor] Disk verification found ${trulyMissing.length} missing claimed file(s) for session "${sessionId}"\n`
+            );
+            trace?.addSystem?.(
+              `磁盘文件核验：${trulyMissing.length} 个声称文件不存在`,
+              trulyMissing.join("\n")
+            );
+          }
+          if (landingMismatches.length > 0) {
+            const footer =
+              "\n\n---\n\n**⚠️ 落点更正**：以下文件实际落点与回复中声称的路径不一致（以工具回执记录的实际落点为准）：\n" +
+              landingMismatches.map((m) => `- 声称 \`${m.claimed}\` → 实际 \`${m.actual}\``).join("\n") +
+              "\n\n以上为文件实际写入位置，请以实际路径为准。";
+            finalReply += footer;
+            process.stderr.write(
+              `[AgentModelExecutor] Disk verification found ${landingMismatches.length} landing mismatch(es) for session "${sessionId}": ${landingMismatches.map((m) => `${m.claimed}→${m.actual}`).join(", ")}\n`
+            );
+            trace?.addSystem?.(
+              `落点核验：${landingMismatches.length} 个声称文件落点不一致`,
+              landingMismatches.map((m) => `${m.claimed} → ${m.actual}`).join("\n")
+            );
           }
         } catch (diskErr) {
           process.stderr.write(
