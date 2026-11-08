@@ -1,0 +1,13 @@
+{
+  "max_deficit": {
+    "month": "2026-06",
+    "amount": 733328,
+    "net": -733328
+  },
+  "balance_change": {
+    "initial": 2000000,
+    "final": -1770556,
+    "delta": -3770556
+  },
+  "avg_monthly_burn": 628426
+}

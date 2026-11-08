@@ -1,0 +1,108 @@
+{
+  "generated_at": "2026-11-08T04:38:07.440Z",
+  "source": "cashflow-h1.csv",
+  "initial_cash_reserve": 2000000,
+  "total_inflow": 1162490,
+  "total_outflow": 4933046,
+  "net_cashflow": -3770556,
+  "final_cash_reserve": -1770556,
+  "total_txn_count": 11773,
+  "max_monthly_deficit": {
+    "month": "2026-06",
+    "amount": 733328
+  },
+  "rolling_balance": [
+    {
+      "month": "2026-01",
+      "balance": 1351990
+    },
+    {
+      "month": "2026-02",
+      "balance": 869364
+    },
+    {
+      "month": "2026-03",
+      "balance": 288058
+    },
+    {
+      "month": "2026-04",
+      "balance": -386683
+    },
+    {
+      "month": "2026-05",
+      "balance": -1037228
+    },
+    {
+      "month": "2026-06",
+      "balance": -1770556
+    }
+  ],
+  "monthly_burn_rate": {
+    "2026-01": 648010,
+    "2026-02": 482626,
+    "2026-03": 581306,
+    "2026-04": 674741,
+    "2026-05": 650545,
+    "2026-06": 733328
+  },
+  "category_outflow_share": {
+    "Facilities": 16.31,
+    "Marketing": 14.29,
+    "Payroll": 36.25,
+    "R&D": 7.6,
+    "Revenue": 0,
+    "Vendor": 25.56
+  },
+  "monthly_net_cashflow": {
+    "2026-01": -648010,
+    "2026-02": -482626,
+    "2026-03": -581306,
+    "2026-04": -674741,
+    "2026-05": -650545,
+    "2026-06": -733328
+  },
+  "dept_month_net_cashflow": {
+    "2026-01": {
+      "Engineering": -348154,
+      "Marketing": -111841,
+      "Sales": 2400,
+      "Operations": -145714,
+      "HR": -44701
+    },
+    "2026-02": {
+      "Engineering": -135842,
+      "Marketing": -189467,
+      "Sales": 75,
+      "Operations": -119376,
+      "HR": -38016
+    },
+    "2026-03": {
+      "Engineering": -176065,
+      "Marketing": -121979,
+      "Sales": 1660,
+      "Operations": -235245,
+      "HR": -49677
+    },
+    "2026-04": {
+      "Engineering": -334333,
+      "Marketing": -125274,
+      "Sales": 1852,
+      "Operations": -165955,
+      "HR": -51031
+    },
+    "2026-05": {
+      "Engineering": -196131,
+      "Marketing": -135722,
+      "Sales": -85677,
+      "Operations": -177760,
+      "HR": -55255
+    },
+    "2026-06": {
+      "Engineering": -183537,
+      "Marketing": -126760,
+      "Sales": 2244,
+      "Operations": -373911,
+      "HR": -51364
+    }
+  }
+}
