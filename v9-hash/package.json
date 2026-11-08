@@ -1,0 +1,10 @@
+{
+  "name": "v9-hash",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Consistent hash ring for distributed cache routing",
+  "scripts": {
+    "test": "node --test"
+  }
+}
