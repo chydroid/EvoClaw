@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -2903,6 +2903,67 @@ describe("runScriptSyntaxProbe — 确定性探针实现（真实 tmp 文件）"
     // 不会把不存在的路径送进探针；此处只锁「探针自身绝不抛」。
     const r = runScriptSyntaxProbe(path.join(tmpDir, "not-there.js"));
     expect(typeof r).toBe("string");
+  });
+});
+
+// ─── 创造性任务分类器回归（v10 Task 4 产品缺陷）─────────────────────────
+// 旧实现（正则内联在 tryCallLLM 调用点）两次线上误杀：
+//   v5 Task 4/5（2026-10-28）：动词组缺「保存」；
+//   v10 Task 4（2026-11-09）：动词组缺裸「写」，"写 /abs/path/x.md" 最自然的
+//   落盘措辞反而不命中 → 任务被判为创造性 → 工具全禁 → 模型把方案贴在聊天里、
+//   磁盘上零文件。本组测试锁全 v10 任务矩阵（prompt 全文逐字复制自
+//   scripts/test-sim-tasks-v10.mjs）+ 若干回归 case。
+// ─── 创造性任务分类器回归 ─────────────────────────────────────────────────
+describe("judgeCreativeTask / looksLikeWritePathRequest — 创造性任务分类（v10 Task 4 回归）", () => {
+  const WS = "/home/chy/EvoClaw/data/workspace";
+
+  // v10 任务 4 实际 prompt（${WS} 已展开，与 harness 逐字一致）
+  const task4Prompt =
+    "你是平台架构师，为公网 API 网关设计限流与配额方案。1）写 " +
+    WS +
+    "/v10-gateway/rate-limit-plan.md：a) 三层限流（IP 层 / API Key 层 / 租户+接口层），各层算法选型（令牌桶/滑动窗口/漏桶）与理由；b) 参数表：默认 QPS、burst、配额维度与数值、429 响应头约定（Retry-After + X-RateLimit-*）；c) 分布式实现：Redis 令牌桶 Lua 脚本骨架（伪代码）+ Redis 故障时的本地降级限流策略；d) 配额计量与计费联动：用量流水怎么存、限流与计费口径不一致时以谁为准；e) 灰度上线与回滚：分步放量、观测指标、kill switch；2）写 " +
+    WS +
+    "/v10-gateway/rate-limit.yaml：网关可加载的配置示例（租户×接口矩阵 + 默认值 + 黑名单），YAML 必须语法合法；3）回复中给一段结论：最关键的一个设计决策及理由。";
+
+  it("looksLikeWritePathRequest：裸「写」+ 绝对路径 识别为写路径请求", () => {
+    expect(looksLikeWritePathRequest(task4Prompt)).toBe(true);
+    expect(looksLikeWritePathRequest("把设计文档写入 /tmp/v5-billing/x.md")).toBe(true);
+    expect(looksLikeWritePathRequest("保存到 C:\\data\\out.txt")).toBe(true);
+  });
+
+  it("judgeCreativeTask：Task 4（API 网关设计 + 写路径）不判创造性（保留工具）", () => {
+    expect(judgeCreativeTask(task4Prompt)).toBe(false);
+  });
+
+  it("纯创意任务（无路径 token）仍判创造性", () => {
+    for (const s of [
+      "为我写一篇关于时间旅行悖论的短篇小说",
+      "帮我起草一份创业 PRD 的商业计划书",
+      "给我一份竞品分析",
+    ]) {
+      expect(judgeCreativeTask(s), s).toBe(true);
+      expect(looksLikeWritePathRequest(s), s).toBe(false);
+    }
+  });
+
+  it("creative 模式但带写路径请求 → 不判创造性", () => {
+    expect(judgeCreativeTask("设计 RESTful API 并写 /tmp/api-draft/spec.md 输出")).toBe(false);
+  });
+
+  it("prevUserContent 命中 creative 模式时补判创造性（2026-10-27 语义）", () => {
+    expect(judgeCreativeTask("好的，请继续", "为我写一个时间旅行故事的初稿")).toBe(true);
+    // 当前消息带写路径 → 即便上一条是 creative 也不判（当前消息的写路径请求优先）
+    expect(judgeCreativeTask("把上面的故事写 /tmp/story.md", "为我写一个时间旅行故事的初稿")).toBe(false);
+  });
+
+  it("非 creative 且无写路径 → 不判创造性（普通工具任务）", () => {
+    for (const s of [
+      "分析这份日志找出根因",
+      "给这个 K8s 工作负载写 HPA 和 Ingress 的 yaml",
+      "跑一遍测试并修复失败的用例",
+    ]) {
+      expect(judgeCreativeTask(s), s).toBe(false);
+    }
   });
 });
 

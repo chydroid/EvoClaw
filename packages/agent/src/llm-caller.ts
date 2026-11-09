@@ -2106,6 +2106,48 @@ export function probeDeliverableSyntax(
 }
 
 /**
+ * 创造性任务分类器（v10 Task 4 事故抽自 AgentModelExecutor，单一真相）。
+ *
+ * 旧实现把两个正则（CREATIVE_TASK_PATTERN / WRITE_PATH_REQUEST_RE）内联在
+ * tryCallLLM 调用点，既不可单测，又出过两次线上误杀：
+ * - v5 Task 4/5（2026-10-28）：动词组只收「写入」，"把设计文档保存 /tmp/..."
+ *   措辞漏检 → 工具全禁 → 文件从未落盘。
+ * - v10 Task 4（2026-11-09）：「写 /abs/path/x.md」不在动词组 → 同样事故。
+ *
+ * 判定语义：任务文本命中 CREATIVE_TASK_PATTERN，且**未**在文本前后出现
+ * 「落盘动词 + 路径 token」结构（looksLikeWritePathRequest），才算创造性任务。
+ * 纯创意任务（"写一篇故事"）没有路径 token，仍判创造性；
+ * "写 /path/x.md 方案" 因含写路径请求而保留工具能力。
+ */
+const CREATIVE_TASK_PATTERN =
+  /(?:设计.*API|RESTful.*API|API.*设计|产品需求文档|PRD|商业计划书|商业分析|技术文档|入门指南|操作指南|学习路径|短篇小说|写一篇|创作一篇|写一个.*故事|起草.*方案|需求分析|竞品分析|市场痛点|商业模式|财务预测|融资需求|团队配置|目标用户画像|用户旅程图|技术约束|成功指标|差异化策略)/i;
+
+/** 路径 token 组 + 落盘动词组：「写」必须放在「写入」之后——若「写」排在最前，
+ * 「写入」的「写」先命中、留下「入」半截参与后续匹配，路径 40 字窗口偏移，
+ * 漏检风险回归。用普通正则字面量（反引号在 /…/ 里是普通字符，无需 String.raw）。 */
+const WRITE_PATH_REQUEST_RE =
+  /(?:写入|写|保存到|保存|创建|生成|输出到|放到|落盘|另存)\s*[^。\n]{0,40}?(?:`[^`]+`|\/[A-Za-z0-9_\-./]+|[A-Za-z]:\\)/;
+
+/** 文本是否含「写文件落路径」结构（如 `写 /abs/path/x.md`）。 */
+export function looksLikeWritePathRequest(text: string): boolean {
+  return WRITE_PATH_REQUEST_RE.test(text);
+}
+
+/**
+ * 判定是否为创造性任务。prevUserContent 为可选的上一条 user 消息文本：
+ * 仅当文本本身或上一条消息命中 creative 模式才判创造性（2026-10-27 防跨任务
+ * 粘连），且两者都未含写路径请求时保留工具能力。
+ */
+export function judgeCreativeTask(text: string, prevUserContent?: string): boolean {
+  if (looksLikeWritePathRequest(text)) return false;
+  if (prevUserContent !== undefined && looksLikeWritePathRequest(prevUserContent)) return false;
+  return (
+    CREATIVE_TASK_PATTERN.test(text) ||
+    (prevUserContent !== undefined && CREATIVE_TASK_PATTERN.test(prevUserContent))
+  );
+}
+
+/**
  * 判断路径是否为候选文件路径（有扩展名、不是 URL、不是系统路径）。
  */
 function isCandidateFilePath(p: string): boolean {
@@ -4921,7 +4963,6 @@ if (deps.contextPruningManager && !prunerNoop) {
       //   之后每一轮（包括用户转而要求写代码/跑测试）都会把 tools 置空，
       //   模型彻底失去工具能力——这是持久性误伤。只看上一条 user 消息即可
       //   覆盖「继续/是的请继续」这类跟进，又不会跨任务粘连。
-      const CREATIVE_TASK_PATTERN = /(?:设计.*API|RESTful.*API|API.*设计|产品需求文档|PRD|商业计划书|商业分析|技术文档|入门指南|操作指南|学习路径|短篇小说|写一篇|创作一篇|写一个.*故事|起草.*方案|需求分析|竞品分析|市场痛点|商业模式|财务预测|融资需求|团队配置|目标用户画像|用户旅程图|技术约束|成功指标|差异化策略)/i;
       const historyMsgs = deps.conversationHistory.get(sessionId) || [];
       // 上一条 user 消息（不含本轮：本轮 message 单独判断）
       const prevUserIdx = lastIndexOfRole(historyMsgs, "user");
@@ -4935,14 +4976,14 @@ if (deps.contextPruningManager && !prunerNoop) {
       //   模型无法 file_write 落盘——文档只贴在聊天里、文件始终不存在（磁盘
       //   核验追加了更正脚注，但工具已被禁用、续跑指令也无工具可用，3 轮空转
       //   后循环保护退出）。识别到写文件请求时不判为创造性任务，保留工具能力。
-      const WRITE_PATH_REQUEST_RE =
-        /(?:写入|保存到|保存|创建|生成|输出到|放到|落盘|另存)\s*[^。\n]{0,40}?(?:`[^`]+`|\/[A-Za-z0-9_\-./]+|[A-Za-z]:\\)/;
-      const hasWritePathRequest = WRITE_PATH_REQUEST_RE.test(rawMessage);
+      // ★ 2026-11-09（v10 Task 4）：判定逻辑抽到导出的 judgeCreativeTask /
+      //   looksLikeWritePathRequest（单一真相，可单测）——旧内联实现两次线上
+      //   误杀（v5 Task 4/5 动词组漏「保存」；v10 Task 4 漏裸「写」）。
+      const hasWritePathRequest = looksLikeWritePathRequest(rawMessage);
       const prevHasWritePathRequest =
-        prevUserMsg && typeof prevUserMsg.content === "string" && WRITE_PATH_REQUEST_RE.test(prevUserMsg.content);
+        prevUserMsg && typeof prevUserMsg.content === "string" && looksLikeWritePathRequest(prevUserMsg.content);
       const isCreativeTask = !hasWritePathRequest && !prevHasWritePathRequest &&
-        (CREATIVE_TASK_PATTERN.test(rawMessage) ||
-        (prevUserMsg && typeof prevUserMsg.content === "string" && CREATIVE_TASK_PATTERN.test(prevUserMsg.content)));
+        judgeCreativeTask(rawMessage, prevUserMsg && typeof prevUserMsg.content === "string" ? prevUserMsg.content : undefined);
       if (isCreativeTask && tools.length > 0) {
         asyncLog(`[AgentModelExecutor] Creative task detected — tools disabled (${tools.length}→0), forcing direct response in 1 round\n`);
         tools = [];
