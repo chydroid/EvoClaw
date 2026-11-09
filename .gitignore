@@ -53,9 +53,11 @@ server-stderr.log
 server-start.err
 test-*.js
 test-*.mjs
-# 例外：v9 复杂任务压测 harness（2026-11-09 入库，P1 不变量门 + 便携化依赖解析）。
-# 仅豁免这一个文件；其余 test-*.mjs 仍按上条忽略。
+# 例外：复杂任务压测 harness（2026-11-09 入库，P1 不变量门 + 便携化依赖解析）。
+# 仅豁免这两个文件；其余 test-*.mjs 仍按上条忽略。
+# （运行产物 test-results-sim9/sim10.json 由下方 test-*.json 继续忽略。）
 !scripts/test-sim-tasks-v9.mjs
+!scripts/test-sim-tasks-v10.mjs
 test-*.json
 *-report.json
 *-report.html
