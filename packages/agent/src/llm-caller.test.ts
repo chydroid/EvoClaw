@@ -1,9 +1,9 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -2784,6 +2784,125 @@ describe("reconcileClaimedAgainstReceipts — 回执对账（v9 Task 6 回归）
     expect(r.trulyMissing).toContain("/a/missing.md");
     // 无关回执 other.md 存在，但 basename 与任何声称不符 → 不作为落点，也不进真缺失
     expect(r.trulyMissing).not.toContain("/real/other.md");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 测试套件：交付物语法探针（needsSyntaxProbe / probeDeliverableSyntax /
+// runScriptSyntaxProbe）
+// 覆盖：v9 P1 压测 Task 1 残余缺口（2026-11-09 方案 B）——可执行产物
+// 语法不通时须计入未验证（node --check / bash -n 确定性探针）
+// ═══════════════════════════════════════════════════════════
+
+describe("needsSyntaxProbe — 脚本类交付物识别", () => {
+  it("js/mjs/cjs/sh/bash 需要探针", () => {
+    for (const p of ["/w/v9.js", "/w/v9.mjs", "/w/v9.cjs", "/w/v9.sh", "/w/v9.bash"]) {
+      expect(needsSyntaxProbe(p)).toBe(true);
+    }
+  });
+
+  it("扩展名大小写不敏感", () => {
+    expect(needsSyntaxProbe("/w/v9.JS")).toBe(true);
+    expect(needsSyntaxProbe("/w/v9.SH")).toBe(true);
+  });
+
+  it("非脚本类（md/csv/py 等）不需要", () => {
+    for (const p of ["/w/report.md", "/w/data.csv", "/w/analyze.py", "/w/v9"]) {
+      expect(needsSyntaxProbe(p)).toBe(false);
+    }
+  });
+});
+
+describe("probeDeliverableSyntax — 聚合探针（纯函数，注入 exists/probe）", () => {
+  // 注入式 probe：'' = 通过；'err...' = 失败；null = 不适用
+  const fakeProbe = (broken: Set<string>) => (p: string) =>
+    broken.has(p) ? "SyntaxError: Unexpected token" : "";
+
+  it("脚本类产物语法坏 → broken 聚合；其余跳过", () => {
+    const exists = (p: string) => true;
+    const r = probeDeliverableSyntax(
+      ["/w/ok.js", "/w/bad.js", "/w/report.md"],
+      exists,
+      fakeProbe(new Set(["/w/bad.js"])),
+    );
+    expect(r.ok).toEqual(["/w/ok.js"]);
+    expect(r.broken).toEqual([{ path: "/w/bad.js", error: "SyntaxError: Unexpected token" }]);
+  });
+
+  it("盘上不存在的脚本 → 不探（缺失归回执对账负责）", () => {
+    const r = probeDeliverableSyntax(
+      ["/w/missing.js", "/w/missing.sh"],
+      () => false,
+      () => "", // 探针若被调用将污染结果，故故意置为必炸标记
+    );
+    expect(r.ok).toEqual([]);
+    expect(r.broken).toEqual([]);
+  });
+
+  it("probe 返回 null（非脚本类探针不适用）→ 跳过，不计 ok/broken", () => {
+    const r = probeDeliverableSyntax(
+      ["/w/x.sh"],
+      () => true,
+      () => null,
+    );
+    expect(r.ok).toEqual([]);
+    expect(r.broken).toEqual([]);
+  });
+
+  it("空输入 → 空结果（收尾路径无产物时的常规形态）", () => {
+    const r = probeDeliverableSyntax([], () => true, fakeProbe(new Set()));
+    expect(r.ok).toEqual([]);
+    expect(r.broken).toEqual([]);
+  });
+});
+
+describe("runScriptSyntaxProbe — 确定性探针实现（真实 tmp 文件）", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-synprobe-"));
+  });
+
+  afterEach(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* 忽略 */ }
+  });
+
+  it("语法坏的 .js → 返回错误文本（非空非 null）", () => {
+    const p = path.join(tmpDir, "broken.js");
+    fs.writeFileSync(p, "const x = { totalInflow: 1; }\n", "utf-8"); // 非法：对象字面量缺开括号
+    const r = runScriptSyntaxProbe(p);
+    expect(typeof r).toBe("string");
+    expect(r.length).toBeGreaterThan(0);
+  });
+
+  it("语法合法的 .js / .sh → 返回空串（通过）", () => {
+    const js = path.join(tmpDir, "good.js");
+    fs.writeFileSync(js, "console.log(1);\n", "utf-8");
+    expect(runScriptSyntaxProbe(js)).toBe("");
+    const sh = path.join(tmpDir, "good.sh");
+    fs.writeFileSync(sh, "#!/bin/sh\necho hi\n", "utf-8");
+    expect(runScriptSyntaxProbe(sh)).toBe("");
+  });
+
+  it("语法坏的 .sh → 返回 bash -n 错误文本", () => {
+    const sh = path.join(tmpDir, "bad.sh");
+    fs.writeFileSync(sh, "if [ -z $x; then\n", "utf-8"); // 缺 fi
+    const r = runScriptSyntaxProbe(sh);
+    expect(typeof r).toBe("string");
+    expect(r.length).toBeGreaterThan(0);
+  });
+
+  it("非脚本类扩展名 → 返回 null（不适用）", () => {
+    expect(runScriptSyntaxProbe("/nonexistent/report.md")).toBeNull();
+    expect(runScriptSyntaxProbe("/nonexistent/x.py")).toBeNull();
+  });
+
+  it("文件不存在的 .js → 返回 node 报错文本而非抛异常（不炸收尾路径）", () => {
+    // node --check 对不存在文件报 Cannot find module → 非零退出 → 捕获返回
+    // 错误文本。生产路径由 probeDeliverableSyntax 的 exists 前置过滤保证
+    // 不会把不存在的路径送进探针；此处只锁「探针自身绝不抛」。
+    const r = runScriptSyntaxProbe(path.join(tmpDir, "not-there.js"));
+    expect(typeof r).toBe("string");
   });
 });
 

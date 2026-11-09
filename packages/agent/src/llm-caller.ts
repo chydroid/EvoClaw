@@ -11,6 +11,7 @@ import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "@
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
+import { execFileSync } from "node:child_process";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
@@ -2027,6 +2028,81 @@ export function reconcileClaimedAgainstReceipts(
     landingMismatch,
     trulyMissing: [...new Set(trulyMissing)],
   };
+}
+
+/**
+ * 可执行产物语法探针（★ 2026-11-09 新增，hermes verification_stop 同构的
+ * 确定性无 LLM 判据）：对回执/声称记录里的脚本类交付物做「语法能否通过」
+ * 静态检查——JS/TS 用 `node --check`、shell 用 `bash -n`。
+ *
+ * 治 v9 P1 压测 Task 1 残余缺口：模型写出带语法错的分析脚本（如
+ * `(daily[x]=...) += i` 非法左值 + 缺对象字面量开括号），sed 修一半就撞
+ * 收尾线，磁盘上留着一个**跑不起来的脚本**，任务却照常报完成。磁盘核验
+ * （reconcileClaimedAgainstReceipts）只看文件**在不在**，看不见**能不能跑**。
+ *
+ * 纯函数（注入 probe，返回探针结果而非内部 exec）+ 确定性 probe 实现
+ * （runScriptSyntaxProbe，node --check / bash -n，短超时防卡死）分离：
+ * 探针结果可注入测试；实现只做 I/O。
+ * 只探存在的文件；失败只标记不抛——收尾路径对探针异常必须保持静默降级。
+ */
+export interface SyntaxProbeResult {
+  /** 通过语法检查的交付物路径（原样返回）。 */
+  ok: string[];
+  /** 语法检查失败的交付物路径 + 错误首行（供续跑指令精确定位）。 */
+  broken: Array<{ path: string; error: string }>;
+}
+
+const SYNTAX_PROBE_EXTS: ReadonlyArray<[RegExp, string]> = [
+  [/\.(js|mjs|cjs)$/i, "node --check"],
+  [/\.(sh|bash)$/i, "bash -n"],
+];
+
+/** 判断单个文件是否需要语法探针（脚本类交付物）。 */
+export function needsSyntaxProbe(p: string): boolean {
+  return SYNTAX_PROBE_EXTS.some(([re]) => re.test(p));
+}
+
+/** 对单个文件跑语法探针。返回 null（不适用）/ 空串（通过）/ 错误首行（失败）。
+ * 短超时 + 吞所有异常：探针自身故障绝不升级为任务失败。 */
+export function runScriptSyntaxProbe(p: string): string | null {
+  const kind = SYNTAX_PROBE_EXTS.find(([re]) => re.test(p))?.[1];
+  if (!kind) return null;
+  try {
+    const args = kind === "bash -n" ? ["-n", p] : ["--check", p];
+    const bin = kind === "bash -n" ? "bash" : "node";
+    try {
+      execFileSync(bin, args, { timeout: 8000, encoding: "utf8", stdio: "pipe" });
+      return ""; // 退出码 0 即通过
+    } catch (err: unknown) {
+      const e = err as { stdout?: string; stderr?: string };
+      const raw = ((e?.stderr || e?.stdout) || "").toString().trim();
+      return raw.split("\n").slice(0, 3).join(" ") || "syntax check failed";
+    }
+  } catch {
+    return ""; // 探针自身异常（超时 / node、bash 缺失）→ 视为通过，不阻断收尾
+  }
+}
+
+/**
+ * 对一组交付物路径做语法探针，聚合 ok / broken。纯函数（依赖注入的
+ * 单文件探针），导出供测试。
+ */
+export function probeDeliverableSyntax(
+  paths: string[],
+  exists: (p: string) => boolean,
+  probe: (p: string) => string | null,
+): SyntaxProbeResult {
+  const ok: string[] = [];
+  const broken: Array<{ path: string; error: string }> = [];
+  for (const p of paths) {
+    if (!needsSyntaxProbe(p)) continue;
+    if (!exists(p)) continue; // 缺失由回执对账负责，这里只判语法
+    const r = probe(p);
+    if (r === null) continue; // 不适用
+    if (r === "") ok.push(p);
+    else broken.push({ path: p, error: r });
+  }
+  return { ok, broken };
 }
 
 /**
@@ -5938,6 +6014,10 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   - 无文案声称（Task 7 实测 0 事件类漏报）但存在回执缺失 → 同样触发。
             let diskMissingPaths: string[] = [];
             let landingMismatch: Array<{ claimed: string; actual: string }> = [];
+            // ★ 2026-11-09 方案 B：可执行产物语法探针（node --check / bash -n）。
+            // 回执/声称的脚本类交付物若语法不通 → 记 syntaxBroken，续跑让模型
+            // 修完再收尾（治 r1 场景：sed 修一半撞预算线，磁盘留下跑不起来的脚本）。
+            let syntaxBroken: Array<{ path: string; error: string }> = [];
             try {
               const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
               const receiptPaths = createdFiles
@@ -5950,7 +6030,19 @@ if (deps.contextPruningManager && !prunerNoop) {
               );
               landingMismatch = rec.landingMismatch;
               diskMissingPaths = rec.trulyMissing;
-            } catch { /* skip — 磁盘核验失败不阻断主流程 */ }
+              const probeTargets = [...new Set([
+                ...receiptPaths.filter((p) => needsSyntaxProbe(p)),
+                ...claimedPaths.filter((p) => needsSyntaxProbe(p)),
+              ])];
+              const probeResult = probeDeliverableSyntax(
+                probeTargets,
+                (p) => { try { return fs.existsSync(p); } catch { return false; } },
+                (p) => {
+                  try { return runScriptSyntaxProbe(p); } catch { return null; }
+                },
+              );
+              syntaxBroken = probeResult.broken;
+            } catch { /* skip — 磁盘核验/语法探针失败不阻断主流程 */ }
 
             // 只有在"确实有活可干"的语境下才续跑，避免把纯闲聊的承诺句式误判成停顿
             const hasWorkContext =
@@ -5959,6 +6051,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               emptyResultTools.length > 0 ||
               diskMissingPaths.length > 0 ||
               landingMismatch.length > 0 ||
+              syntaxBroken.length > 0 ||
               hasActionIntentFn(message);
             // ★ 2026-10-26 修复：创造性任务的首次响应可能较短但已包含实质内容
             //   （1307 chars），不应触发 auto-continuation——续跑会额外消耗
@@ -5974,7 +6067,8 @@ if (deps.contextPruningManager && !prunerNoop) {
               isCreativeTask &&
               finalReply.length > 300 &&
               diskMissingPaths.length === 0 &&
-              landingMismatch.length === 0;
+              landingMismatch.length === 0 &&
+              syntaxBroken.length === 0;
             asyncLog(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
             // ★ 第三条触发条件（2026-10-07 补充）：**工具失败了，但模型只是把错误
             // 复述一遍就收尾**，既没说完成（对账不会触发），用词也不像在求确认
@@ -5998,6 +6092,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 stalledAfterFailure ||
                 diskMissingPaths.length > 0 ||
                 landingMismatch.length > 0 ||
+                syntaxBroken.length > 0 ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
             // ── 验证门（Verification Gate）───────────────────────────
@@ -6102,6 +6197,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               //   现在归因清楚，并把失败工具名列进 detail。
               const trigger = premature
                 ?? (landingMismatch.length > 0 ? "file_landed_wrong_path" : null)
+                ?? (syntaxBroken.length > 0 ? "deliverable_syntax_broken" : null)
                 ?? (diskMissingPaths.length > 0 ? "disk_files_missing" : null)
                 ?? (stalledAfterFailure ? "tool_failed" : preVerdict.reason)
                 ?? "unknown";
@@ -6111,6 +6207,9 @@ if (deps.contextPruningManager && !prunerNoop) {
                   premature ? `停顿检测：${premature}` : "",
                   landingMismatch.length > 0
                     ? `落点核验：文件实际落点与声称不一致：${landingMismatch.map((m) => `${m.claimed} → ${m.actual}`).join("、")}`
+                    : "",
+                  syntaxBroken.length > 0
+                    ? `交付物语法核验：以下可执行产物语法校验失败：${syntaxBroken.map((b) => `${b.path}（${b.error.slice(0, 120)}）`).join("、")}`
                     : "",
                   diskMissingPaths.length > 0
                     ? `磁盘文件核验：声称创建的文件不存在：${diskMissingPaths.join("、")}`
@@ -6140,6 +6239,13 @@ if (deps.contextPruningManager && !prunerNoop) {
               const landingCorrection = landingMismatch.length > 0
                 ? `\n\n**落点核验**：以下文件声称已写入某路径，但实际落在了另一路径（工具回执记录的真实落点）：\n${landingMismatch.map((m) => `- 声称 \`${m.claimed}\` → 实际 \`${m.actual}\``).join("\n")}\n\n请先把文件从实际路径**移动**到声称路径（例如 shell_exec \`mv <实际> <声称>\`，注意保留目录创建），再用 file_read 按声称路径验证；若任务本就只要求实际路径的内容，则按实际路径如实汇报，不要再声称写入声称路径。**不要按声称路径重新创建同名文件**——会造成两份内容且声称路径仍与回执不一致。`
                 : undefined;
+              // ★ 2026-11-09 方案 B：可执行产物语法探针。node --check / bash -n 报
+              //   语法错 → 产物不可运行，与「文件缺失」同级计入未验证，必须让模型
+              //   **原位修复**（sed/apply_patch 改错行），禁止重建整个文件（重建
+              //   会丢失已修好的部分，r1 实测 sed 修一半被打断后模型倾向整文件重写）。
+              const syntaxCorrection = syntaxBroken.length > 0
+                ? `\n\n**交付物语法校验失败**：以下脚本类产物通过 \`node --check\`/\`bash -n\` 校验发现语法错误，当前状态下无法运行：\n${syntaxBroken.map((b) => `- \`${b.path}\`：${b.error.slice(0, 200)}`).join("\n")}\n\n请**在原文件上定位并修复报错行**（用 apply_patch 或 sed 精确改错处，不要整文件重写），修完立即用 \`node --check <文件>\`（js/mjs/cjs）或 \`bash -n <文件>\`（sh）复核通过，再运行验证产物效果后收尾。`
+                : undefined;
               const directive = buildContinuationDirective({
                 kind: premature ?? "needs_correction",
                 userMessage: message,
@@ -6147,6 +6253,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                   preVerdict.needsCorrection ? preVerdict.notice : undefined,
                   diskCorrection,
                   landingCorrection,
+                  syntaxCorrection,
                 ].filter(Boolean).join("\n") || undefined,
                 failedTools,
                 emptyResultTools,
@@ -7360,6 +7467,33 @@ if (deps.contextPruningManager && !prunerNoop) {
             trace?.addSystem?.(
               `落点核验：${landingMismatches.length} 个声称文件落点不一致`,
               landingMismatches.map((m) => `${m.claimed} → ${m.actual}`).join("\n")
+            );
+          }
+          // ★ 2026-11-09 方案 B：交付物语法校验 footer（与循环内探针同源）。
+          // 收尾时若脚本类产物（js/mjs/cjs/sh/bash）语法不通，如实告知——
+          // 续跑指令已给过修复机会，末轮仍坏则不再回灌，只记事实（hermes 同构：
+          // 验证证据进 footer，正文不撒谎）。
+          const syntaxProbeTargets = [...new Set([
+            ...receiptPaths.filter((p) => needsSyntaxProbe(p)),
+            ...claimedPaths.filter((p) => needsSyntaxProbe(p)),
+          ])];
+          const syntaxProbe = probeDeliverableSyntax(
+            syntaxProbeTargets,
+            (p) => { try { return fs.existsSync(p); } catch { return false; } },
+            (p) => { try { return runScriptSyntaxProbe(p); } catch { return null; } },
+          );
+          if (syntaxProbe.broken.length > 0) {
+            const footer =
+              "\n\n---\n\n**⚠️ 交付物语法校验失败**：以下脚本类产物当前无法运行（node --check / bash -n 未通过）：\n" +
+              syntaxProbe.broken.map((b) => `- \`${b.path}\`：${b.error.slice(0, 160)}`).join("\n") +
+              "\n\n以上文件存在语法错误，请先修复后再运行。";
+            finalReply += footer;
+            process.stderr.write(
+              `[AgentModelExecutor] Syntax probe found ${syntaxProbe.broken.length} broken deliverable(s) for session "${sessionId}": ${syntaxProbe.broken.map((b) => b.path).join(", ")}\n`
+            );
+            trace?.addSystem?.(
+              `交付物语法核验：${syntaxProbe.broken.length} 个脚本产物语法校验失败`,
+              syntaxProbe.broken.map((b) => `${b.path}（${b.error.slice(0, 160)}）`).join("\n")
             );
           }
         } catch (diskErr) {
