@@ -148,7 +148,13 @@ const BUILTIN_INPUT_RULES: InputRule[] = [
   // Harmful content
   {
     id: "harm-violence",
-    pattern: /\b(kill|murder|assassinate|massacre|torture|mutilate|bomb|shoot|stab)\s+(someone|people|person|him|her|them|a\s+\w+)?/i,
+    // 宾语组必填且收窄为暴力目标词：旧版末尾 `(...a\s+\w+)?` 是**可选**宾语组，
+    // 导致 `kill `（动词+空格）即命中——`"kill switch"`、`"kill -9 123"`、
+    // `"kill the process"` 等正常运维输入被整单静默拦截（v10 压测 Task 4 实证）。
+    // 现在宾语必须是明确的暴力目标名词：`"kill a person"`/`"kill someone"` 仍拦，
+    // 而 kill switch / 进程 / 线程 等惯用语放行。
+    pattern:
+      /\b(kill|murder|assassinate|massacre|torture|mutilate|bomb|shoot|stab)\s+(someone|somebody|people|person|him|her|them|themselves|the\s+(?:person|people|man|woman|child|victim|prisoner|enemy)|a\s+(?:person|human|man|woman|child|victim|baby|kid|prisoner|enemy)|an\s+(?:enemy|innocent))\b/i,
     severity: "high",
     action: "block",
     description: "Harmful content: violence",
