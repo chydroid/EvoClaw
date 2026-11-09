@@ -19,6 +19,7 @@ import * as fs from "fs";
 import type { AgentModelExecutor, GitOperations, CodeIntelligence } from "@evoclaw/agent";
 import type { PermissionManager } from "@evoclaw/security";
 import { applyPatch as applyPatchFn, parsePatch } from "@evoclaw/agent";
+import { getWorkspaceDir } from "@evoclaw/core";
 
 /** 校验解析后的路径不超出允许的基目录，防止路径遍历攻击。
  *  Bug 9 修复：原实现仅做词法检查，不解析符号链接。改为词法检查通过后
@@ -429,8 +430,16 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
             "(3) 简化 unified diff：--- a/path +++ b/path + @@ hunks。",
         };
       }
-      // workspaceRoot 固定为服务器 fsBase，不接受用户传入（防止路径遍历）
-      const workspaceRoot = fsBase;
+      // ★ 2026-11-09 P2 路径契约：apply_patch 的相对路径必须与 file_write /
+      //   shell_exec 的基准一致——即当前工作区（data/workspace），而非仓库根 fsBase。
+      //   此前固定用 fsBase，模型传 `v9-finance/process-csv.js`（它按 shell_exec
+      //   的 cwd 推断是工作区相对路径）被解析到仓库根 → File not found，反复失败
+      //   （v9 压测 Task 1 实测 8 次 apply_patch 因落点错配浪费多轮，任务 10 轮后
+      //   收尾时 process-csv.js 仍带 for-of→async iterable 语法错，报告未产出）。
+      //   改：相对路径以 getWorkspaceDir() 为根（支持运行时工作区切换，与
+      //   file-tools 的 resolveToolPath 同构）；绝对路径由 applyPatch 的
+      //   path.resolve 语义原样直通。
+      const workspaceRoot = getWorkspaceDir();
       const result = await applyPatchFn(workspaceRoot, hunks);
       return result;
     } catch (err) {
