@@ -22,6 +22,7 @@ import { detectPrematureStop, buildContinuationDirective } from "./auto-continua
 import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
+import { normalizeToolActionArg } from "./tool-arg-normalization";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
 import { estimateTokensCached, estimateMessagesTokensCached } from "./token-estimate-cache";
@@ -6392,6 +6393,21 @@ if (deps.contextPruningManager && !prunerNoop) {
           try { args = JSON.parse(tc.function.arguments || "{}"); } catch (parseErr) {
             process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n`);
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
+          }
+
+          // ★ 2026-11-10（v10 Task 6 全局化）：action 枚举容错归一化。
+          //   模型偶尔把枚举取值写坏（实测 file_write 收到
+          //   "create\n</parameter=overwrite>\ntrue"），各 handler 严格 ===
+          //   判别会让整条调用报废。按工具定义里的 action enum 取「首 token」
+          //   归一化（大小写不敏感）；未命中的取值保持原样交 handler 报错。
+          //   改写发生在这里而不是各 handler，保证所有 action 判别工具一致，
+          //   且下游（审批/守卫/轨迹/缓存键）看到的都是归一化后的参数。
+          const actionNorm = normalizeToolActionArg(toolEntry?.definition, args);
+          if (actionNorm.rewrittenFrom !== undefined) {
+            process.stderr.write(
+              `[LLMCaller] Normalized "${toolName}" action ${JSON.stringify(actionNorm.rewrittenFrom.slice(0, 60))} -> "${actionNorm.rewrittenTo}"\n`,
+            );
+            args = actionNorm.args;
           }
 
           // ★ P0 性能优化（performance-analysis.md 建议 1）：args 序列化只做一次。

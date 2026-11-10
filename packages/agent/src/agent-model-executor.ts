@@ -55,6 +55,7 @@ import * as crypto from "crypto";
 import { DurableTaskRunner, getDurableTaskRunner, type DurableTask } from "./durable-task-runner";
 import { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
 import { resolveContextWindow } from "./model-context-window";
+import { normalizeToolActionArg } from "./tool-arg-normalization";
 
 // Re-export types and singletons from extracted modules for backward compatibility
 export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
@@ -1284,7 +1285,10 @@ export class AgentModelExecutor {
     if (!entry) {
       throw new Error(`Tool not found or not executable: ${name}`);
     }
-    return await entry.handler(params);
+    // 与 llm-caller 主循环同源的 action 归一化（v10 Task 6）：脚本侧
+    // tools.call()/扩展转发同样可能传入被模型写坏的 action 取值。
+    const normalized = normalizeToolActionArg(entry.definition, params);
+    return await entry.handler(normalized.args);
   }
 
   /**

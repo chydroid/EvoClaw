@@ -306,7 +306,7 @@ export function registerBrowserTools(
       name: "browser_tabs",
       description: "Manage browser tabs (list, new, switch, close)",
       parameters: {
-        action: { type: "string", description: "Action: list, new, switch, or close", required: true },
+        action: { type: "string", description: "Action: list, new, switch, or close", required: true, enum: ["list", "new", "switch", "close"] },
         tabId: { type: "string", description: "Tab ID for switch/close actions", required: false },
       },
     },

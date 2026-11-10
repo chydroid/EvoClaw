@@ -8,6 +8,7 @@
 
 import type { ServiceRegistry, EventBus, DAGNode, Skill, SkillExecutionResult } from "@evoclaw/core";
 import type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./types";
+import { normalizeToolActionArg } from "./tool-arg-normalization";
 
 // ── Dependencies interface ──
 
@@ -54,7 +55,8 @@ export async function execute(
       try {
         const toolParams = extractToolParams(prompt, tool.definition);
 
-        const toolResult = await tool.handler(toolParams);
+        // 参数由模型文本抽取，action 可能带杂质 → 与主循环同源归一化（v10 Task 6）
+        const toolResult = await tool.handler(normalizeToolActionArg(tool.definition, toolParams).args);
         toolCalls.push({ name: tool.definition.name, result: toolResult });
         output = toolResult;
       } catch (err) {

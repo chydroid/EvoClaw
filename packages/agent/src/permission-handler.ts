@@ -4,6 +4,7 @@
 import type { ServiceRegistry, EventBus } from "@evoclaw/core";
 import type { LedgerEventType, LedgerEntry } from "./event-ledger";
 import type { ToolDefinition } from "./types";
+import { normalizeToolActionArg } from "./tool-arg-normalization";
 
 /** EventLedger interface for permission handler */
 export interface EventLedgerLike {
@@ -85,13 +86,16 @@ export async function approveAndExecute(
 
   try {
     const toolStartTime = Date.now();
-    const rawResult = await toolEntry.handler(pending.toolArgs);
+    // 与 llm-caller 主循环同源的 action 归一化（v10 Task 6）：批准后重放的
+    // 参数是当初被拦下的模型参数，同样可能带坏 action 取值。
+    const normalized = normalizeToolActionArg(toolEntry.definition, pending.toolArgs);
+    const rawResult = await toolEntry.handler(normalized.args);
     const duration = Date.now() - toolStartTime;
 
     // 记录到 EventLedger
     const ledger = deps.getEventLedger();
     if (ledger) {
-      ledger.recordToolExecution(pending.toolName, pending.toolArgs, rawResult, duration, { agentId: "default", sessionId: pending.sessionId });
+      ledger.recordToolExecution(pending.toolName, normalized.args, rawResult, duration, { agentId: "default", sessionId: pending.sessionId });
     }
 
     // 构建用户友好的反馈
