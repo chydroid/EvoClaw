@@ -17,6 +17,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
+import { redactSensitiveText } from "@evoclaw/security";
 
 /** 单一固定形状的截断标记（Hermes truncation_notice 语义：下游只认一种标记）。 */
 export function truncationNotice(omitted: number, total: number): string {
@@ -47,11 +48,19 @@ export interface ToolSpill {
   path: string;
   /** 原文总字符数 */
   totalChars: number;
+  /** 落盘前被脱敏的密钥数量（0 = 无命中） */
+  redactedSecrets: number;
 }
 
 /**
  * 把全文写入 spill 文件：`<workspacePath|tmpdir>/tool-spill/<id>.<rand>.log`。
  * workspacePath 缺失时落系统临时目录（spill 是 best-effort，目录不可写则跳过）。
+ *
+ * ★ 2026-11-10（hermes 对齐 G1）：落盘前用同一套 secret pass 脱敏。
+ * 命令输出里可能带 API key / token（`echo $OPENAI_API_KEY`、curl -v 回显
+ * Authorization 头等），spill 文件会长期留在 workspace 里被后续读取/提交，
+ * 明文密钥等价于落盘泄漏。hermes terminal_tool_result.py 的 spill 同样先
+ * 脱敏再持久化。占位符 `[REDACTED:<kind>]`，上下文前缀也不保留。
  */
 export function writeToolSpill(
   workspacePath: string | undefined,
@@ -65,8 +74,9 @@ export function writeToolSpill(
     fs.mkdirSync(base, { recursive: true });
     const safeId = String(callId || "call").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 64) || "call";
     const file = path.join(base, `${safeId}-${Date.now()}-${randomBytes(4).toString("hex")}.log`);
-    fs.writeFileSync(file, text, "utf8");
-    return { path: file, totalChars: text.length };
+    const redaction = redactSensitiveText(text, { preservePrefix: false });
+    fs.writeFileSync(file, redaction.redacted, "utf8");
+    return { path: file, totalChars: text.length, redactedSecrets: redaction.count };
   } catch {
     return null; // best-effort：落盘失败不阻断工具结果
   }

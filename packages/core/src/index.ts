@@ -107,6 +107,7 @@ export type {
 export {
   ENV_ALIASES, CONFIG_ALIASES, TOOL_ALIASES,
   getEnvWithCompat, translateLegacyKey, resolveToolName,
+  resolveRegisteredToolName,
   detectLegacyEnv, printMigrationHints,
 } from "./compat-layer";
 

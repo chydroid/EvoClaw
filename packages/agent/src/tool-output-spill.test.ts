@@ -100,6 +100,24 @@ describe("sanitizeExecResult", () => {
     spilledFiles = fs.readdirSync(path.join(ws, "tool-spill")).map((f) => path.join(ws, "tool-spill", f));
   });
 
+  it("redacts secrets before persisting the spill file", () => {
+    // ★ 2026-11-10（hermes 对齐 G1）：spill 文件长期留在 workspace，
+    // 命令回显的 API key 不能以明文落盘。
+    const ws = makeWorkspace();
+    const secret = "sk-proj-" + "A".repeat(40);
+    const full = `OPENAI_API_KEY=${secret}\n` + "x".repeat(100000);
+    const out = sanitizeExecResult(ws, "call-4", { success: true, output: full }, 48000);
+    const next = out as { full_output_path?: string };
+    const onDisk = fs.readFileSync(next.full_output_path as string, "utf8");
+    expect(onDisk).not.toContain(secret);
+    // generic_api_key 规则可能先于 openai 前缀规则命中（按匹配长度排序），
+    // 占位符的 kind 因此可能是 generic_api_key；关键是密钥本身不再落盘。
+    expect(onDisk).toContain("[REDACTED:");
+    // 其余内容保真、长度基本不变（只替换密钥本身）
+    expect(onDisk.length).toBeGreaterThan(100000 - 100);
+    spilledFiles = fs.readdirSync(path.join(ws, "tool-spill")).map((f) => path.join(ws, "tool-spill", f));
+  });
+
   it("does not mutate the input object", () => {
     const ws = makeWorkspace();
     const input = { success: true, output: "B".repeat(100000), exitCode: 0 };

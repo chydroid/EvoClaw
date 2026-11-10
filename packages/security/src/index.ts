@@ -227,6 +227,8 @@ export {
   checkSkillStructure,
   scanSkill,
   evaluateTrustPolicy,
+  BLOCKING_THREAT_KINDS,
+  hasBlockingThreats,
 } from "./skill-scanner";
 export type {
   ThreatScope,

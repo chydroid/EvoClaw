@@ -21,6 +21,7 @@
   "dependencies": {
     "@evoclaw/core": "workspace:*",
     "@evoclaw/infrastructure": "workspace:*",
+    "@evoclaw/security": "workspace:*",
     "@types/uuid": "^9.0.0",
     "adm-zip": "^0.5.17",
     "gray-matter": "^4.0.0",

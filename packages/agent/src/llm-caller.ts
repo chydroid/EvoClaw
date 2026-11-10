@@ -7,7 +7,7 @@
  */
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
-import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl } from "@evoclaw/core";
+import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl, resolveRegisteredToolName } from "@evoclaw/core";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
@@ -6385,7 +6385,21 @@ if (deps.contextPruningManager && !prunerNoop) {
         // (extracted from the original for-loop body below)
         const executeSingleToolCall = async (tc: typeof toolCalls[0]): Promise<{ role: string; tool_call_id: string; name: string; content: string }> => {
           const toolStartTime = Date.now();
-          const toolName = tc.function.name;
+          let toolName = tc.function.name;
+          // ★ 2026-11-10（hermes 对齐 G2）：旧名/别名本地修复。
+          // 模型常用历史工具名（write_file/read_file/send_mail…）调用，
+          // 一次确定性改名比让它从「Tool not registered」自行猜测省一轮往返。
+          // 原名已注册时绝不改写（TOOL_ALIASES 的目标名可能恰好也被占用）。
+          const resolvedToolName = resolveRegisteredToolName(
+            toolName,
+            (candidate) => deps.registeredTools.has(candidate),
+          );
+          if (resolvedToolName !== toolName) {
+            process.stderr.write(
+              `[LLMCaller] Resolved tool alias "${toolName}" -> "${resolvedToolName}"\n`,
+            );
+            toolName = resolvedToolName;
+          }
           const toolEntry = deps.registeredTools.get(toolName);
 
           taskStatusTracker.set(sessionId, "tool_calling", `正在执行: ${toolName}...`, 50 + Math.floor((toolCalls.indexOf(tc) / toolCalls.length) * 20));

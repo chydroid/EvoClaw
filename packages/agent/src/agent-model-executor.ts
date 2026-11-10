@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus, type DAGNode, type Skill, type PersonaConfig } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, type DAGNode, type Skill, type PersonaConfig, resolveRegisteredToolName } from "@evoclaw/core";
 import type { Span } from "@opentelemetry/api";
 import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
 import { PromptRegistry } from "./prompt-registry";
@@ -1281,7 +1281,13 @@ export class AgentModelExecutor {
    * 绝不要把它当成"少一轮往返"的快捷通道。
    */
   async executeToolByName(name: string, params: Record<string, unknown>): Promise<unknown> {
-    const entry = this.registeredTools.get(name);
+    // 与 llm-caller 主循环同源的旧名/别名修复（hermes turn_tool_validation 语义）：
+    // 脚本侧 tools.call() / 扩展转发可能沿用历史工具名。
+    const resolvedName = resolveRegisteredToolName(
+      name,
+      (candidate) => this.registeredTools.has(candidate),
+    );
+    const entry = this.registeredTools.get(resolvedName);
     if (!entry) {
       throw new Error(`Tool not found or not executable: ${name}`);
     }

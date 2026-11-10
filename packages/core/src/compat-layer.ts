@@ -139,6 +139,26 @@ export function resolveToolName(name: string): string {
   return TOOL_ALIASES[name] || name;
 }
 
+/**
+ * 把模型给出的工具名解析为**已注册**工具名。
+ *
+ * 只在「原名未注册、别名目标已注册」时改写：原名本身可用时绝不覆盖
+ * （避免把真实存在的同名工具错误指向别名目标）；两者都不可用时原样返回，
+ * 由调用方走「未注册」错误路径。
+ *
+ * 对标 hermes agent/turn_tool_validation.py：模型偶尔用旧名/别名
+ * （write_file、read_file、send_mail…）调用工具，一次靠谱的本地修复
+ * 比让模型从「Tool not registered」里自行猜测便宜得多。
+ */
+export function resolveRegisteredToolName(
+  name: string,
+  isRegistered: (candidate: string) => boolean,
+): string {
+  if (isRegistered(name)) return name;
+  const alias = TOOL_ALIASES[name];
+  return alias && isRegistered(alias) ? alias : name;
+}
+
 // ──────────────────────────────────────────────────────────────
 // Migration helper
 // ──────────────────────────────────────────────────────────────

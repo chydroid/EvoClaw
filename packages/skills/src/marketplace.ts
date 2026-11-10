@@ -16,6 +16,7 @@
 import * as path from "path";
 import type { EventBus } from "@evoclaw/core";
 import * as crypto from "crypto";
+import { scanDownloadedSkill, quarantineSkillDir } from "./install-scan";
 
 // ── Types ─────────────────────────────────────────────────
 
@@ -681,6 +682,27 @@ export class SkillMarketplace {
           packageName: name,
           version: targetVersion,
           error: `SKILL.md not found in downloaded ZIP for "${name}"`,
+        };
+      }
+
+      // ── 供应链安全扫描（hermes skills_guard「community」信任级）──
+      // 远程包 = 不可信输入：解压后、注册前扫描全部支撑文件。命中阻断类
+      // 威胁或扫描器异常 → 拒绝安装，并把解压目录归档到 quarantine/（不删除，
+      // 便于事后取证；也不进 SkillManager 索引）。
+      const scanVerdict = scanDownloadedSkill(pathMod.dirname(skillMdPath));
+      if (scanVerdict.blocked) {
+        const quarantineRoot = pathMod.join(this.config.cacheDir, "quarantine");
+        const quarantined = quarantineSkillDir(installDir, quarantineRoot, name);
+        process.stderr.write(
+          `[SkillMarketplace] Blocked remote skill "${name}": ${scanVerdict.reason}\n`,
+        );
+        return {
+          success: false,
+          packageName: name,
+          version: targetVersion,
+          error:
+            `Security scan blocked remote skill "${name}": ${scanVerdict.reason}` +
+            (quarantined ? ` (archived to ${quarantined})` : ""),
         };
       }
 

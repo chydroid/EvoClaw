@@ -55,6 +55,28 @@ export type ThreatKind =
   | "supply_chain"
   | "obfuscation";
 
+/**
+ * 阻断类威胁：命中即拒绝安装（与 hermes skills_guard「dangerous」判定同源）。
+ *
+ * 只收录**语义确定**的危险类别；send_to_url 一类依赖语境的启发式不在此列，
+ * 避免把「上传报告到 https://…」这类正常文档误判为 exfiltration。
+ */
+export const BLOCKING_THREAT_KINDS: ReadonlySet<ThreatKind> = new Set<ThreatKind>([
+  "prompt_injection",
+  "exfiltration",
+  "destructive",
+  "supply_chain",
+  "persistence",
+  "hardcoded_secret",
+  "known_c2_framework",
+  "role_hijack",
+]);
+
+/** 威胁列表里是否存在阻断类（供安装门等调用方复用同一判定）。 */
+export function hasBlockingThreats(threats: readonly ThreatFinding[]): boolean {
+  return threats.some((t) => BLOCKING_THREAT_KINDS.has(t.kind));
+}
+
 export interface ThreatPattern {
   /** 编译后的正则 */
   regex: RegExp;
@@ -513,17 +535,7 @@ export function scanSkill(
   // 判定：strict scope 的威胁 + 结构问题 + AST 发现 → 不安全
   // 与 Hermes skills_guard.py 一致：persistence / hardcoded_secret /
   // known_c2_framework 同样属于阻断类（含 SSH 后门、硬编码密钥、已知 C2）
-  const hasCriticalThreats = threats.some(
-    (t) =>
-      t.kind === "prompt_injection" ||
-      t.kind === "exfiltration" ||
-      t.kind === "destructive" ||
-      t.kind === "supply_chain" ||
-      t.kind === "persistence" ||
-      t.kind === "hardcoded_secret" ||
-      t.kind === "known_c2_framework" ||
-      t.kind === "role_hijack",
-  );
+  const hasCriticalThreats = hasBlockingThreats(threats);
   const hasStructIssues = structuralIssues.length > 0;
   const hasAst = astFindings.length > 0;
 
