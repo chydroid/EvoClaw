@@ -14,6 +14,13 @@
  *   9. PR 写作（新闻通稿 + 媒体 Q&A，含 3 个尖锐问题）
  *  10. 流程设计+脚本（Git 发版策略 + bash 检查脚本 bash -n 真验证）
  *
+ * v11 办公任务轮（2026-11-10 新增，id 11-15，用户要求 5 个多步办公任务）：
+ *  11. Q3 销售复盘（生成 1200 行 CSV → aggregate.js 实跑 → summary.json → 报告）
+ *  12. 会议纪要+行动项（minutes.md + actions.csv 结构校验 + 跟进邮件）
+ *  13. 竞品分析（feature-matrix.csv 三档取值 + 分析文档）
+ *  14. 费用报销审核（30 行数据 + audit.js 实跑 → violations.csv + 报告）
+ *  15. 团队周报（40 行任务数据 + weekly-report.js 实跑 → metrics.json + 周报）
+ *
  * 继承 v9 harness 的 P1 策略（详见 test-sim-tasks-v9.mjs 头部注释）：
  *   - 通过门 = 结构不变量（存在+新鲜+量化下限+回执对账）+ 可执行证据
  *     （node --test / bash -n / YAML loadAll，确定性无 LLM 判断）
@@ -55,6 +62,28 @@ const RUN_START = Date.now();
 function isFresh(p) { try { return fs.statSync(p).mtimeMs > RUN_START; } catch { return false; } }
 function readFileSafe(p) { try { return fs.readFileSync(p, 'utf-8'); } catch { return ''; } }
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+/** 容错 CSV 行解析（支持双引号包裹与转义引号；办公任务 11-15 校验用）。 */
+function parseCsvLine(line) {
+  const out = [];
+  let cur = '';
+  let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (q) {
+      if (c === '"') {
+        if (line[i + 1] === '"') { cur += '"'; i++; } else q = false;
+      } else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { out.push(cur); cur = ''; }
+    else cur += c;
+  }
+  out.push(cur);
+  return out;
+}
+function parseCsvFile(p) {
+  return readFileSafe(p).split(/\r?\n/).filter((l) => l.trim()).map(parseCsvLine);
+}
 
 function apiRequest(method, endpoint, body, timeoutMs = 500000) {
   return new Promise((resolve, reject) => {
@@ -475,6 +504,235 @@ const tasks = [
       ];
     },
   },
+  // ────────────────────────────────────────────────────────────────────────
+  // v11 办公任务轮（2026-11-10 新增，id 11-15）：全部「多步执行」——
+  // 生成数据 → 写脚本 → 真跑 → 汇总报告；通过门仍用结构不变量 + 可执行证据。
+  // ────────────────────────────────────────────────────────────────────────
+  {
+    id: 11,
+    name: "Q3 销售复盘（数据生成→聚合脚本→报告）",
+    type: "办公·经营分析",
+    prompt: `你是零售公司的运营分析师，做 2026 Q3（07-01~09-30）销售复盘。全部放 ${WS}/v11-sales/：1）生成 sales-data.csv：严格表头 date,region,channel,sku,units,unit_price，共 1200 行数据（region 取 华东/华南/华北/西南；channel 取 线上/线下/分销；日期都在 Q3；units 1-20；unit_price 10-999 两位小数），建议写一个 Node 脚本 gen-data.js 生成后再运行（脚本留不留均可）；2）写 aggregate.js（CommonJS、零第三方依赖）：逐行读取 sales-data.csv，计算 ① 总营收 ② 分 region 营收 ③ 分 channel 营收 ④ 按月营收环比（7→8→9）⑤ Top5 sku（按营收），结果写 summary.json，必须含 totalRevenue、byRegion、byChannel、monthOverMonth、topSkus 五个键；3）真实运行 node aggregate.js 生成 summary.json；4）写 report.md（≥2500 字节）：概览、分区域表、分渠道表、月度环比分析、Top5 SKU 表、3 条可执行建议（各带数据依据）。回复中给出总营收与最强区域。`,
+    expect: "sales-data.csv(1200行) + aggregate.js 实跑 + summary.json 五键 + report.md",
+    dir: `${WS}/v11-sales`,
+    deliverables: [
+      { file: 'sales-data.csv', minLines: 1200 },
+      { file: 'aggregate.js', minBytes: 800 },
+      { file: 'summary.json', minBytes: 150 },
+      { file: 'report.md', minBytes: 2500 },
+    ],
+    exec: (dir) => {
+      const js = path.join(dir, 'aggregate.js');
+      if (!isFresh(js)) return { ok: false, detail: 'exec=无新鲜 aggregate.js' };
+      if (!isFresh(path.join(dir, 'sales-data.csv'))) return { ok: false, detail: 'exec=无新鲜 sales-data.csv' };
+      try {
+        execSync('node aggregate.js', { cwd: dir, timeout: 60000, encoding: 'utf8' });
+      } catch (e) {
+        return { ok: false, detail: `exec=node aggregate.js 失败 :: ${String(e.message || e).split('\n')[0].slice(0, 120)}` };
+      }
+      try {
+        const s = JSON.parse(readFileSafe(path.join(dir, 'summary.json')));
+        const need = ['totalRevenue', 'byRegion', 'byChannel', 'monthOverMonth', 'topSkus'];
+        const miss = need.filter((k) => !(k in s));
+        if (miss.length) return { ok: false, detail: `exec=summary.json 缺键 ${miss.join('|')}` };
+        return { ok: true, detail: `exec=aggregate.js 实跑通过，summary.json 五键齐（totalRevenue=${s.totalRevenue}）` };
+      } catch (e) {
+        return { ok: false, detail: `exec=summary.json 解析失败 :: ${String(e.message || e).split('\n')[0].slice(0, 100)}` };
+      }
+    },
+    quality: (dir) => {
+      const md = readFileSafe(path.join(dir, 'report.md'));
+      const header = (readFileSafe(path.join(dir, 'sales-data.csv')).split('\n')[0] || '').trim();
+      return [
+        ['环比', /环比|MoM|月环比/i.test(md)],
+        ['Top5', /Top\s*5|前五|top5/i.test(md)],
+        ['建议', /建议/.test(md)],
+        ['CSV表头', header === 'date,region,channel,sku,units,unit_price'],
+      ];
+    },
+  },
+  {
+    id: 12,
+    name: "会议纪要+行动项跟踪表+跟进邮件",
+    type: "办公·项目管理",
+    prompt: `你是项目经理，整理知识库 v2.1 发布评审会（2026-11-10 10:00-11:00）的会后材料，全部放 ${WS}/v11-meeting/。参会人：张伟（产品）、李娜（前端）、王强（后端）、赵敏（测试）、陈晨（运营）。会议原始记录：
+- 张伟：v2.1 定在 11-28 上线，但权限隔离必须本周收尾，否则回退到 11-21 的候选版本。
+- 李娜：权限矩阵前端交互还有 3 个页面没做，预计 11-13 完成；暗色模式推迟到下个迭代。
+- 王强：SSO 的 OKTA 兼容层有风险，如果 11-18 前测不通，就只支持 OIDC 标准流程。
+- 赵敏：回归用例还差 40 条（主要是审计日志）；需要王强在 11-12 前提供审计事件字段清单。
+- 陈晨：两家种子客户希望 11-20 前拿到试用环境，运营侧可以先给只读账号。
+- 争论：Q4 是否加「跨库检索」。张伟主张加，王强认为排期不够；结论：不进 v2.1 范围，进 v2.2 规划，张伟 11-17 前出方案。
+- 决定：v2.1 范围冻结，11-14 做一次 go/no-go 评审。
+产出：1）minutes.md：会议信息、决议（≥4 条）、风险（≥2 条）、分歧与结论（含跨库检索）、行动项摘要表、下一步；2）actions.csv：严格表头 id,action,owner,due,priority，≥8 条行动项；owner 必须是参会人姓名之一；due 日期在 2026-11-11 至 2026-12-05 之间；priority 只能是 P0/P1/P2；3）followup-email.md：邮件草稿（主题、收件人、正文摘要、行动项与截止日、下次评审时间 2026-11-14 10:00）。回复中列出所有 P0 行动项。`,
+    expect: "minutes.md + actions.csv(≥8 条、列/负责人/优先级/日期合规) + followup-email.md",
+    dir: `${WS}/v11-meeting`,
+    deliverables: [
+      { file: 'minutes.md', minBytes: 1800 },
+      { file: 'actions.csv', minLines: 9 },
+      { file: 'followup-email.md', minBytes: 600 },
+    ],
+    exec: (dir) => {
+      const p = path.join(dir, 'actions.csv');
+      if (!isFresh(p)) return { ok: false, detail: 'exec=无新鲜 actions.csv' };
+      const rows = parseCsvFile(p);
+      if (!rows.length) return { ok: false, detail: 'exec=actions.csv 为空' };
+      const header = rows[0].map((s) => s.trim());
+      const need = ['id', 'action', 'owner', 'due', 'priority'];
+      const miss = need.filter((k) => !header.some((h) => h.toLowerCase() === k));
+      if (miss.length) return { ok: false, detail: `exec=actions.csv 缺列 ${miss.join('|')}` };
+      const idx = (k) => header.findIndex((h) => h.toLowerCase() === k);
+      const body = rows.slice(1).filter((r) => r.some((c) => c.trim()));
+      if (body.length < 8) return { ok: false, detail: `exec=行动项 ${body.length}<8` };
+      const owners = ['张伟', '李娜', '王强', '赵敏', '陈晨'];
+      const badOwner = body.map((r) => (r[idx('owner')] || '').trim()).filter((o) => !owners.some((x) => o.includes(x)));
+      if (badOwner.length) return { ok: false, detail: `exec=负责人不在参会人名单: ${[...new Set(badOwner)].slice(0, 3).join('/')}` };
+      const badPri = body.map((r) => (r[idx('priority')] || '').trim()).filter((v) => !/^P[0-2]/.test(v));
+      if (badPri.length) return { ok: false, detail: `exec=优先级非法 ${[...new Set(badPri)].slice(0, 3).join('/')}` };
+      const badDue = body.map((r) => (r[idx('due')] || '').trim().replace(/\//g, '-'))
+        .filter((v) => !/^2026-11-(1[1-9]|2\d|30)$/.test(v) && !/^2026-12-0[1-5]$/.test(v));
+      if (badDue.length) return { ok: false, detail: `exec=截止日越界 ${[...new Set(badDue)].slice(0, 3).join('/')}` };
+      return { ok: true, detail: `exec=actions.csv ${body.length} 条行动项（列/负责人/优先级/日期全合规）` };
+    },
+    quality: (dir) => {
+      const md = readFileSafe(path.join(dir, 'minutes.md'));
+      const em = readFileSafe(path.join(dir, 'followup-email.md'));
+      return [
+        ['决议', /决议|决定/.test(md)],
+        ['风险', /风险/.test(md)],
+        ['分歧', /分歧|争论|跨库检索/.test(md)],
+        ['邮件主题', /主题|Subject/.test(em)],
+      ];
+    },
+  },
+  {
+    id: 13,
+    name: "竞品分析+特性对比矩阵",
+    type: "办公·产品研究",
+    prompt: `你是产品经理，为企业知识库产品「Nebula」编写竞品分析，全部放 ${WS}/v11-competitor/。已知情报：
+我方 Nebula：RAG 问答 支持、多跳检索 支持、权限粒度 字段级、SSO 支持、操作审计 全量+导出、私有化部署 支持、开放 API 支持、移动端 不支持、实施周期 4 周、价格 260 元/人/月。
+竞品A DocuMind：RAG 问答 支持、多跳检索 不支持、权限粒度 空间级、SSO 支持（SAML）、操作审计 不支持、私有化部署 支持、开放 API 支持、移动端 不支持、实施周期 2 周、价格 200 元/人/月。
+竞品B WikiWorks：RAG 问答 不支持、多跳检索 不支持、权限粒度 页面级、SSO 支持（OIDC）、操作审计 基础日志、私有化部署 支持、开放 API 支持、移动端 支持、实施周期 1 周、价格 120 元/人/月。
+竞品C KnowBase：RAG 问答 支持、多跳检索 支持、权限粒度 字段级、SSO 支持（SAML+OIDC）、操作审计 全量+导出、私有化部署 仅企业版、开放 API 不支持、移动端 支持、实施周期 4 周、价格 260 元/人/月。
+产出：1）feature-matrix.csv：严格表头 特性,竞品A,竞品B,竞品C,我方；≥10 个特性行；每格取值只能是 支持 / 部分 / 不支持（把「仅企业版」等表述归并到这三档）；2）competitor-analysis.md（≥2500 字节）：对比矩阵表（markdown）、逐家优劣（每家 3 优 3 劣）、我方与竞品C 的关键差异、差异化定位（1 段）、3 条按优先级排序的产品路线建议（带理由）。回复中给出一句话定位。`,
+    expect: "feature-matrix.csv(严格表头+≥10行+三档取值) + competitor-analysis.md",
+    dir: `${WS}/v11-competitor`,
+    deliverables: [
+      { file: 'feature-matrix.csv', minLines: 11 },
+      { file: 'competitor-analysis.md', minBytes: 2500 },
+    ],
+    exec: (dir) => {
+      const p = path.join(dir, 'feature-matrix.csv');
+      if (!isFresh(p)) return { ok: false, detail: 'exec=无新鲜 feature-matrix.csv' };
+      const rows = parseCsvFile(p);
+      const header = (rows[0] || []).map((s) => s.trim());
+      const need = ['特性', '竞品A', '竞品B', '竞品C', '我方'];
+      const miss = need.filter((k) => !header.includes(k));
+      if (miss.length) return { ok: false, detail: `exec=表头缺列 ${miss.join('|')}（实际: ${header.join(',')}）` };
+      const body = rows.slice(1).filter((r) => r.some((c) => c.trim()));
+      if (body.length < 10) return { ok: false, detail: `exec=特性行 ${body.length}<10` };
+      const bad = [];
+      for (const r of body) {
+        for (let i = 1; i < 5; i++) {
+          const v = (r[i] || '').trim();
+          if (!['支持', '部分', '不支持'].includes(v)) bad.push(v || '(空)');
+        }
+      }
+      if (bad.length) return { ok: false, detail: `exec=取值非三档: ${[...new Set(bad)].slice(0, 3).join('/')}` };
+      return { ok: true, detail: `exec=feature-matrix.csv ${body.length} 行 × 4 竞品，取值全为三档` };
+    },
+    quality: (dir) => {
+      const md = readFileSafe(path.join(dir, 'competitor-analysis.md'));
+      return [
+        ['差异化', /差异化|定位/.test(md)],
+        ['建议', /建议/.test(md)],
+        ['竞品名', /DocuMind/.test(md) && /WikiWorks/.test(md) && /KnowBase/.test(md)],
+      ];
+    },
+  },
+  {
+    id: 14,
+    name: "费用报销审核（数据+审核脚本+违规报告）",
+    type: "办公·财务审核",
+    prompt: `你是财务共享中心专员，对 ${WS}/v11-expense/ 下的一批报销做自动化审核。报销政策（2026 版）：A) 差旅-酒店每晚上限 500 元；差旅-交通按实报（须发票）；B) 招待费人均上限 150 元（people 列=陪客人数，含本方）；C) 办公用品单笔上限 2000 元；D) 所有报销必须提供增值税发票（has_invoice=是）；E) 单笔金额超过 5000 元必须「总监+财务VP」双审批（approval_level=双重）。数据列：expense_id,date,category,amount,people,vendor,has_invoice,approval_level,employee。产出：1）expenses.csv：表头按上述列，30 行数据，category 取 差旅-酒店 / 差旅-交通 / 招待 / 办公，其中至少 6 行故意违规且覆盖三类（超限 / 缺发票 / 审批不足）；2）audit.js（CommonJS、零第三方依赖）：读取 expenses.csv 逐行套用 A-E 规则，输出 violations.csv（表头 expense_id,rule,detail；rule 取 over_limit / missing_invoice / approval_insufficient），并在控制台打印违规条数；3）真实运行 node audit.js；4）audit-report.md（≥2000 字节）：总笔数/总金额、违规统计（按类型计数）、违规明细表、处理建议。回复中给出违规总数与按类型分布。`,
+    expect: "expenses.csv(30行) + audit.js 实跑 + violations.csv(≥6) + audit-report.md",
+    dir: `${WS}/v11-expense`,
+    deliverables: [
+      { file: 'expenses.csv', minLines: 31 },
+      { file: 'audit.js', minBytes: 800 },
+      { file: 'violations.csv', minBytes: 20 },
+      { file: 'audit-report.md', minBytes: 2000 },
+    ],
+    exec: (dir) => {
+      const js = path.join(dir, 'audit.js');
+      if (!isFresh(js)) return { ok: false, detail: 'exec=无新鲜 audit.js' };
+      try {
+        execSync('node audit.js', { cwd: dir, timeout: 60000, encoding: 'utf8' });
+      } catch (e) {
+        return { ok: false, detail: `exec=node audit.js 失败 :: ${String(e.message || e).split('\n')[0].slice(0, 120)}` };
+      }
+      const rows = parseCsvFile(path.join(dir, 'violations.csv'));
+      if (!rows.length) return { ok: false, detail: 'exec=violations.csv 缺失或为空' };
+      const header = rows[0].map((s) => s.trim().toLowerCase());
+      const body = rows.slice(1).filter((r) => r.some((c) => c.trim()));
+      if (!header.includes('expense_id') || !header.includes('rule')) {
+        return { ok: false, detail: `exec=violations.csv 表头不合规（${rows[0].join(',')}）` };
+      }
+      if (body.length < 6) return { ok: false, detail: `exec=违规 ${body.length}<6` };
+      const ruleIdx = header.indexOf('rule');
+      const kinds = new Set(body.map((r) => (r[ruleIdx] || '').trim()));
+      if (kinds.size < 2) return { ok: false, detail: `exec=违规类型 ${kinds.size}<2（${[...kinds].join('/')}）` };
+      return { ok: true, detail: `exec=audit.js 实跑通过，violations.csv ${body.length} 条 / ${kinds.size} 类` };
+    },
+    quality: (dir) => {
+      const md = readFileSafe(path.join(dir, 'audit-report.md'));
+      return [
+        ['超限', /超限|上限/.test(md)],
+        ['发票', /发票/.test(md)],
+        ['审批', /审批/.test(md)],
+      ];
+    },
+  },
+  {
+    id: 15,
+    name: "团队周报+工时统计脚本",
+    type: "办公·团队管理",
+    prompt: `你是研发团队负责人，整理本周（截至 2026-11-10）团队周报，全部放 ${WS}/v11-weekly/。团队 5 人：张三、李四、王五、赵六、钱七。产出：1）team-tasks.csv：严格表头 task_id,title,owner,status,plan_hours,actual_hours,due_date,priority，40 行任务数据（owner 取上述 5 人；status 取 完成/进行中/阻塞/未开始；due_date 在 2026-11-10 至 2026-12-15 之间，至少 5 行已逾期且未完成；priority 取 P0/P1/P2）；2）weekly-report.js（CommonJS、零第三方依赖）：读取 team-tasks.csv，计算每人 完成/进行中/阻塞 数量、总体完成率（完成数/总数，0-1 小数）、总计划工时/总实际工时、逾期任务数（due_date < 2026-11-10 且 status != 完成），写 metrics.json，必须含 byOwner、totalPlanHours、totalActualHours、overdueCount、completionRate 五个键；3）真实运行 node weekly-report.js；4）weekly-report.md（≥2000 字节）：本周完成（列 5 项）、风险与阻塞（列 2 项）、下周计划（≥5 项）、需要决策事项（≥2 项）。回复中给出完成率与逾期任务数。`,
+    expect: "team-tasks.csv(40行) + weekly-report.js 实跑 + metrics.json 五键 + weekly-report.md",
+    dir: `${WS}/v11-weekly`,
+    deliverables: [
+      { file: 'team-tasks.csv', minLines: 41 },
+      { file: 'weekly-report.js', minBytes: 800 },
+      { file: 'metrics.json', minBytes: 100 },
+      { file: 'weekly-report.md', minBytes: 2000 },
+    ],
+    exec: (dir) => {
+      const js = path.join(dir, 'weekly-report.js');
+      if (!isFresh(js)) return { ok: false, detail: 'exec=无新鲜 weekly-report.js' };
+      try {
+        execSync('node weekly-report.js', { cwd: dir, timeout: 60000, encoding: 'utf8' });
+      } catch (e) {
+        return { ok: false, detail: `exec=node weekly-report.js 失败 :: ${String(e.message || e).split('\n')[0].slice(0, 120)}` };
+      }
+      try {
+        const m = JSON.parse(readFileSafe(path.join(dir, 'metrics.json')));
+        const need = ['byOwner', 'totalPlanHours', 'totalActualHours', 'overdueCount', 'completionRate'];
+        const miss = need.filter((k) => !(k in m));
+        if (miss.length) return { ok: false, detail: `exec=metrics.json 缺键 ${miss.join('|')}` };
+        return { ok: true, detail: `exec=weekly-report.js 实跑通过，metrics.json 五键齐（completionRate=${m.completionRate}）` };
+      } catch (e) {
+        return { ok: false, detail: `exec=metrics.json 解析失败 :: ${String(e.message || e).split('\n')[0].slice(0, 100)}` };
+      }
+    },
+    quality: (dir) => {
+      const md = readFileSafe(path.join(dir, 'weekly-report.md'));
+      return [
+        ['完成', /完成/.test(md)],
+        ['风险', /风险|阻塞/.test(md)],
+        ['下周', /下周/.test(md)],
+        ['决策', /决策/.test(md)],
+      ];
+    },
+  },
 ];
 
 // P1：统一门 = 结构不变量 + 可执行证据；quality 只报告不 gate
@@ -482,7 +740,7 @@ for (const t of tasks) t.check = (r) => invariantCheck(t, r);
 
 async function main() {
   console.log('='.repeat(80));
-  console.log('EvoClaw v10 复杂任务压测 — 10 任务（新任务轮：9 新 + Task 7 K8s 对照 · P1 不变量门）');
+  console.log('EvoClaw v10 复杂任务压测 — 15 任务（1-10 工程/写作轮 + 11-15 办公任务轮）');
   console.log(`Server: http://127.0.0.1:${PORT}`);
   console.log('='.repeat(80) + '\n');
 
@@ -497,6 +755,12 @@ async function main() {
     `${WS}/v10-batch`,
     `${WS}/v10-pr`,
     `${WS}/v10-release`,
+    // v11 办公任务轮（id 11-15）
+    `${WS}/v11-sales`,
+    `${WS}/v11-meeting`,
+    `${WS}/v11-competitor`,
+    `${WS}/v11-expense`,
+    `${WS}/v11-weekly`,
   ];
   for (const dir of outputDirs) {
     try { fs.rmSync(dir, { recursive: true, force: true }); console.log(`🧹 Cleaned ${dir}`); } catch {}
