@@ -135,8 +135,7 @@ describe("resolveToolPath × 绝对路径真实性优先（2026-11-07 修正）"
   });
 });
 
-describe("file_read × ENOENT 报错指引（workspace 根可见）", () => {
-  let tmp: string;
+describe("file_read × ENOENT 报错指引（workspace 根可见）", () => {  let tmp: string;
   let fsBase: string;
 
   beforeEach(() => {
@@ -175,5 +174,120 @@ describe("file_read × ENOENT 报错指引（workspace 根可见）", () => {
     const r = (await entry.handler({ path: target })) as Record<string, unknown>;
     expect(r.success).not.toBe(false);
     expect(r.path).toBe(target);
+  });
+});
+
+describe("file_write × action 取值归一化（v10 Task 6 事故回归）", () => {
+  // 事故：模型把枚举值写成 "create\n</parameter=overwrite>\ntrue"
+  // （换行 + 伪 XML 尾巴混进取值），旧 dispatch 严格 === 判定 → 整条写路径
+  // 报废，脚本从未落盘，续跑空转到 loop 检测。归一化取首个字母 token。
+  let tmp: string;
+  let fsBase: string;
+
+  interface SpyCalls {
+    calls: string[];
+    fsMgr: Record<string, unknown>;
+  }
+
+  function spyFsMgr(): SpyCalls {
+    const calls: string[] = [];
+    const record = (op: string, p: string) => calls.push(`${op}:${p}`);
+    return {
+      calls,
+      fsMgr: {
+        createFile: async (p: string, c: string) => {
+          record("create", p);
+          return { path: p, size: c.length, created: true };
+        },
+        modifyFile: async (p: string) => {
+          record("modify", p);
+          return { path: p, size: 1 };
+        },
+        readFile: async () => "",
+        deleteFile: async () => undefined,
+        listAll: () => [],
+        // 注意：测试目录在 os.tmpdir() 下，preflight 命中「临时目录豁免」
+        // （沙箱外已授权）→ create/modify 都走 operateAbsolute，mode 参数
+        // 才是真正的动作名。
+        operateAbsolute: async (p: string, c: string, mode: string) => {
+          record(String(mode), p);
+          return { path: p, size: c.length, created: true };
+        },
+        deleteFileAbsolute: async () => undefined,
+      },
+    };
+  }
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-fttools-act-"));
+    fsBase = tmp;
+    fs.mkdirSync(path.join(fsBase, "data", "workspace"), { recursive: true });
+    setActiveSecurityLevel("normal");
+  });
+
+  afterEach(() => {
+    resetActiveSecurityLevel();
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // 忽略清理失败
+    }
+  });
+
+  it("action 混入换行与伪 XML 尾巴（实测取值）→ 仍按 create 落盘", async () => {
+    const spy = spyFsMgr();
+    const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({
+      action: "create\n</parameter=overwrite>\ntrue",
+      path: "v10-script/gps-relativity-script.md",
+      content: "# 脚本\n",
+    })) as Record<string, unknown>;
+    expect(r.success).not.toBe(false);
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0].startsWith("create:")).toBe(true);
+    expect(spy.calls[0]).toContain("gps-relativity-script.md");
+  });
+
+  it("action=MODIFY（大小写混写）→ 走 modify 分支", async () => {
+    const spy = spyFsMgr();
+    const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({
+      action: "MODIFY",
+      path: "note.md",
+      content: "x",
+    })) as Record<string, unknown>;
+    expect(r.success).not.toBe(false);
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0].startsWith("modify:")).toBe(true);
+  });
+
+  it("真正未知的 action → 报错不落盘，错误不含换行污染", async () => {
+    const spy = spyFsMgr();
+    const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({
+      action: "delete",
+      path: "note.md",
+      content: "x",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toContain("未知 file_write action");
+    expect(spy.calls).toHaveLength(0);
+  });
+
+  it("action 缺省 → 默认 create（既有契约不变）", async () => {
+    const spy = spyFsMgr();
+    const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({ path: "note.md", content: "x" })) as Record<string, unknown>;
+    expect(r.success).not.toBe(false);
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0].startsWith("create:")).toBe(true);
   });
 });

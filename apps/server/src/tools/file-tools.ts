@@ -362,10 +362,19 @@ export function registerFileTools(
       },
     },
     async (params: Record<string, unknown>) => {
-      const action = String(params.action || "create");
+      // ★ 2026-11-10（v10 Task 6）：action 取值做「首 token」归一化。
+      // 模型把枚举值写坏时（实测 "create\n</parameter=overwrite>\ntrue"，
+      // 换行与伪 XML 尾巴混进取值），严格 === 判定整条写路径报废 →
+      // 交付物缺失 → 续跑空转到 loop 检测。取首个字母 token 判定意图；
+      // 仍不认识的取值原样（截断）回报，便于定位。
+      const rawAction = String(params.action || "").trim();
+      const action =
+        rawAction === ""
+          ? "create"
+          : (/^[a-z_]+/i.exec(rawAction)?.[0] ?? "").toLowerCase();
       if (action === "modify") return await handleFileWriteModify(params);
       if (action === "create") return await handleFileWriteCreate(params);
-      return { success: false, error: `未知 file_write action: ${action}（仅支持 create / modify）` };
+      return { success: false, error: `未知 file_write action: ${rawAction.slice(0, 40)}（仅支持 create / modify）` };
     }
   );
 
