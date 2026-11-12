@@ -280,6 +280,17 @@
 
 **风险**：交互式 OAuth 需要本地回调/浏览器；先做 API 路由，UI 后置。不要打印 token；错误信息脱敏。
 
+**实施记录（2026-11-13）**
+
+- 实例化与注入：`GatewayServer.initMigrations` 创建 `McpOAuthManager`（dataDir 同根，token 落 `dataDir/mcp-oauth/`）并 `MCPClientManager.setOAuthManager()`；`connectServer` 按 `config.oauth.enabled && config.url` 构造 `{getToken, refreshToken}` provider 传给 transport。
+- transport 认证：`createMcpAuthFetch()` 包装 SDK 的 `fetch` 选项（sse / streamable-http），每个请求合并静态 headers + `Authorization: Bearer <token>`；收到 401 时 `refreshToken()` 一次并用新 token 重放（body 为流/不可重放时放弃重试），刷新失败返回原始 401（fail-closed）。连接握手、SSE 流与后续 POST 均走该 fetch。
+- 跨进程栅栏：`McpOAuthManager.refresh()` 用 `CrossProcessLock`（`dataDir/locks`，键为 serverUrl 的 sha256 前 16 位）包住「锁内重读 → 按需 POST → 原子持久化」；拿不到锁 60s 后抛错（可配置 `refreshLockTimeoutMs`），绝不无锁刷新。锁内发现磁盘 access_token 已轮换则直接采用，不再 POST。
+- 顺带修复 `CrossProcessLock.release()`：增加本次持有 token 比对，避免同进程多实例中 A 的迟到 release 删掉 B 刚获得的锁（ABA）；未持有 token 的 release 变为 no-op。
+- 配置面：`ExternalMCPServerConfig.oauth?: {enabled, scopes?, clientId?}`；新增 `validateMcpOAuthConfig()`（stdio 不支持、url 必填且合法、scopes/clientId 类型），`connectServer` 连接前 fail-fast。计划原写「纳入 `validateMCPServerConfig`」，但该函数只接收 command/args（stdio 命令安全），故 OAuth 形状校验落在 gateway 配置层。
+- 路由：`GET /api/mcp-oauth/:server/status`（只返 hasToken/hasRefreshToken/needsRefresh，不含 token 值）、`POST .../authenticate`（PKCE 或 `{deviceCode:true}`；202 立即返回授权 URL/设备码，流程后台继续，最长等 10s，失败 502）、`POST .../logout`（删除本地 token）。路由需鉴权；stdio/未知 server 404。
+- 未做：CLI 子命令与 WebUI（计划允许后置）；`/api/mcp-external/add` 仅扩展了 oauth 字段的请求体类型。
+- 测试：新增 `packages/gateway/src/mcp-oauth-wiring.test.ts`（12：Bearer 注入/401 一次刷新/刷新失败/不可重放 body/配置校验/两实例并发只 POST 一次/锁超时/损坏 token）、`packages/gateway/src/mcp-oauth-routes.test.ts`（6：status 不泄露 token、logout、authenticate 失败 502、鉴权）、`packages/infrastructure/src/cross-process-lock.test.ts`（1：ABA）；全量 `pnpm test` 7394 passed（349 files）。
+
 ---
 
 ### P6 — MCP sampling 能力 + 限流护栏
@@ -377,6 +388,6 @@
 | P4 | 已完成（Phase 1） | 08c6c86 | 批次 A；Phase 2 staging 可选、默认关闭，未实施 |
 | P2 | 已完成 | ffdfe70 | 批次 B；静态扫描（可选第 4 步）未实施 |
 | P8 | 已完成 | 085da10 | 批次 B |
-| P5 | 未开始 | — | 批次 C1 |
+| P5 | 已完成 | 57e6f84 | 批次 C1；CLI/WebUI 后置 |
 | P6 | 未开始 | — | 批次 C2 |
 | P7 | 未开始 | — | 批次 D |
