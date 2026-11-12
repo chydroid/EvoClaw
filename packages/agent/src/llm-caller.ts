@@ -6540,7 +6540,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             !isPythonScriptExecution &&
             deps.humanApprovalManager.requiresApproval(toolName, args)
           ) {
-            const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName);
+            const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName, args);
 
             if (hitlRejectCount >= 1) {
               asyncLog(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)\n`);
@@ -6552,15 +6552,50 @@ if (deps.contextPruningManager && !prunerNoop) {
               };
             }
 
-            const approvalRequest = {
-              id: `hitl-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`,
-              operation: toolName,
-              params: args,
+            const approvalId = `hitl-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
+            const approvalDescription = `Tool "${toolName}" requires approval (${riskLevel || "medium"} risk)`;
+            // ★ P0 修复：HITL 请求必须登记到 HumanApprovalManager，否则
+            //   /api/approvals/:id/approve|reject 对该 id 一律 404，用户根本
+            //   无法批准/拒绝高危操作。这里只登记状态（不建阻塞式 resolver），
+            //   与「返回 pendingApproval、下一轮重试」的非阻塞模型一致。
+            const registered = deps.humanApprovalManager.registerPendingApproval({
+              id: approvalId,
+              sessionId,
+              toolName,
+              toolArgs: args,
               riskLevel: riskLevel || "medium",
-              description: `Tool "${toolName}" requires approval (${riskLevel || "medium"} risk)`,
+              reason: approvalDescription,
+              createdAt: Date.now(),
+              requestedBy: "agent",
+              status: "pending",
+            });
+            if (!registered) {
+              return {
+                role: "tool",
+                tool_call_id: tc.id,
+                name: toolName,
+                content: JSON.stringify({
+                  success: false,
+                  error: "Too many pending approvals for this session. Resolve (approve/reject) the existing requests before retrying.",
+                  retryable: false,
+                  riskLevel,
+                }),
+              };
+            }
+            // 建立 requestId → session 映射，供拒绝事件清理与审计归属
+            deps.pendingOperations.set(approvalId, {
+              sessionId,
+              message,
+              requestId: approvalId,
+              toolName,
+              toolArgs: args,
+            });
+            pendingPermissions.push({
+              id: approvalId,
+              operation: toolName,
+              description: approvalDescription,
               target: toolName,
-            };
-            pendingPermissions.push(approvalRequest);
+            });
             return {
               role: "tool",
               tool_call_id: tc.id,
@@ -6573,7 +6608,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 pendingApproval: true,
                 requiresPermission: true,
                 retryable: false,
-                requestId: approvalRequest.id,
+                requestId: approvalId,
                 message: "This operation requires your approval. Please approve or reject it.",
               }),
             };

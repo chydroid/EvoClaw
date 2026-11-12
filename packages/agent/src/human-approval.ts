@@ -14,6 +14,7 @@ import * as path from "path";
 import { randomUUID } from "crypto";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import { getActiveSecurityPolicy } from "@evoclaw/security";
+import { stableHash } from "./stable-stringify";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -64,6 +65,12 @@ export interface TrustRule {
   toolName: string;
   /** Optional pattern for argument matching */
   argPattern?: Record<string, string | RegExp>;
+  /**
+   * 精确参数信任：对整个 args 做稳定序列化后取 hash，完全相等才放行。
+   * HITL「批准后重试」用它保证只放行用户看到的那一次调用（配合 5 分钟 TTL），
+   * 避免把同一工具的其他参数调用一并放行。
+   */
+  argsHash?: string;
   /** Who trusted this rule */
   trustedBy: string;
   /** When the rule was created */
@@ -346,6 +353,32 @@ export class HumanApprovalManager {
     });
   }
 
+  /**
+   * 登记一个「非阻塞」待审批请求（llm-caller 的 HITL 路径专用）。
+   *
+   * 与 requestApproval() 的区别：
+   * - 不创建 Promise resolver、不设超时；决策由 /api/approvals/:id/approve|reject
+   *   等路由同步落状态，模型在下一轮重试。
+   * - TTL 由 cleanupTimer 按 approvalTimeout 统一标记 expired。
+   * - 超过 maxPendingPerSession 时拒绝登记（返回 false，fail-closed），
+   *   避免无界增长。
+   */
+  registerPendingApproval(pending: PendingApproval): boolean {
+    if (this.destroyed) return false;
+    const sessionPending = Array.from(this.pendingApprovals.values())
+      .filter(p => p.sessionId === pending.sessionId && p.status === "pending");
+    if (sessionPending.length >= this.config.maxPendingPerSession) {
+      process.stderr.write(
+        `[HumanApproval] Rejected registration ${pending.id}: session "${pending.sessionId}" ` +
+        `already has ${sessionPending.length} pending approvals (max ${this.config.maxPendingPerSession})\n`,
+      );
+      return false;
+    }
+    this.pendingApprovals.set(pending.id, { ...pending, status: "pending" });
+    this.markDirty();
+    return true;
+  }
+
   /** Clear the pending timeout for a given approval id (if any) */
   private clearPendingTimeout(id: string): void {
     const handle = this.pendingTimeouts.get(id);
@@ -369,11 +402,23 @@ export class HumanApprovalManager {
 
     // Add trust rule if requested
     if (trustFuture) {
+      // 永久信任：该工具的后续调用全部免审批（用户显式 opt-in）
       this.addTrustRule({
         toolName: pending.toolName,
         trustedBy: decidedBy,
         createdAt: Date.now(),
         expiresAt: 0, // never expires
+      });
+    } else {
+      // ★ P0 一次性批准语义：非阻塞 HITL 的「批准」必须能让下一轮重试真正放行。
+      // 只信任「同一工具 + 完全相同参数」5 分钟——误放行面最小；否则同一个
+      // 待审批调用会在每次重试时重新弹出，形成孤儿审批循环。
+      this.addTrustRule({
+        toolName: pending.toolName,
+        argsHash: stableHash(pending.toolArgs),
+        trustedBy: decidedBy,
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 5 * 60 * 1000,
       });
     }
 
@@ -454,6 +499,10 @@ export class HumanApprovalManager {
     return this.trustRules.some(rule => {
       if (rule.toolName !== toolName) return false;
       if (rule.expiresAt > 0 && now > rule.expiresAt) return false;
+      // 精确参数信任：稳定序列化后 hash 必须完全相等（HITL 一次性批准）
+      if (rule.argsHash !== undefined) {
+        return rule.argsHash === stableHash(args);
+      }
       if (rule.argPattern) {
         return Object.entries(rule.argPattern).every(([key, pattern]) => {
           const val = String(args[key] ?? "");

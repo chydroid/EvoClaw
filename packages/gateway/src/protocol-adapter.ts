@@ -5045,7 +5045,18 @@ export class ProtocolAdapter {
 
         const result = permMgr.approveRequest(String(requestId), whitelist === true);
         if (!result) {
-          res.status(404).json({ error: "Request not found or already processed" });
+          // ★ P0：HITL 请求（hitl-*）由 HumanApprovalManager 登记，不在
+          // PermissionManager 中；WebUI 聊天审批弹窗统一走本路由，必须回退，
+          // 否则批准高危操作永远 404。
+          const agentExecutor = this.registry.resolveService<{
+            approveOperation(approvalId: string, decidedBy: string, trustFuture?: boolean): boolean;
+          }>("agentModelExecutor");
+          const approved = agentExecutor?.approveOperation(String(requestId), "webui", whitelist === true) ?? false;
+          if (!approved) {
+            res.status(404).json({ error: "Request not found or already processed" });
+            return;
+          }
+          res.json({ success: true, request: { id: String(requestId), operation: "", target: "", status: "approved" } });
           return;
         }
 
@@ -5084,7 +5095,16 @@ export class ProtocolAdapter {
 
         const result = permMgr.denyRequest(String(requestId));
         if (!result) {
-          res.status(404).json({ error: "Request not found or already processed" });
+          // ★ P0：HITL 请求回退到 HumanApprovalManager（内部会发布 permission.denied）
+          const agentExecutor = this.registry.resolveService<{
+            rejectOperation(approvalId: string, decidedBy: string, reason?: string): boolean;
+          }>("agentModelExecutor");
+          const denied = agentExecutor?.rejectOperation(String(requestId), "webui", "Denied from Web UI") ?? false;
+          if (!denied) {
+            res.status(404).json({ error: "Request not found or already processed" });
+            return;
+          }
+          res.json({ success: true, request: { id: String(requestId), operation: "", target: "", status: "denied" } });
           return;
         }
 

@@ -588,13 +588,35 @@ export class AgentModelExecutor {
   /** Approve a pending HITL operation */
   approveOperation(approvalId: string, decidedBy: string, trustFuture?: boolean, modifiedArgs?: Record<string, unknown>): boolean {
     if (!this.humanApprovalManager) return false;
-    return this.humanApprovalManager.approve(approvalId, decidedBy, trustFuture, modifiedArgs);
+    // 先取快照：approve() 会流转状态，但 getApproval 仍保留记录
+    const pending = this.humanApprovalManager.getApproval(approvalId);
+    const ok = this.humanApprovalManager.approve(approvalId, decidedBy, trustFuture, modifiedArgs);
+    if (!ok) return false;
+    // 统一事件出口：onPermissionApproved 会清理 pendingOperations；P3 在此复位熔断
+    this.eventBus.publish("permission.approved", {
+      requestId: approvalId,
+      operation: pending?.toolName ?? "",
+      target: pending?.toolName ?? "",
+      sessionId: pending?.sessionId,
+    }, "agent-model-executor").catch((err) => process.stderr.write("[AgentModelExecutor] permission.approved publish failed: " + err + "\n"));
+    return true;
   }
 
   /** Reject a pending HITL operation */
   rejectOperation(approvalId: string, decidedBy: string, reason?: string): boolean {
     if (!this.humanApprovalManager) return false;
-    return this.humanApprovalManager.reject(approvalId, decidedBy, reason);
+    const pending = this.humanApprovalManager.getApproval(approvalId);
+    const ok = this.humanApprovalManager.reject(approvalId, decidedBy, reason);
+    if (!ok) return false;
+    // 与 PermissionManager/PermissionRelay 的统一契约：拒绝必须发布 permission.denied，
+    // 宿主据此清理 pendingOperations（P3 再据此累计连续拒绝）。
+    this.eventBus.publish("permission.denied", {
+      requestId: approvalId,
+      operation: pending?.toolName ?? "",
+      target: pending?.toolName ?? "",
+      sessionId: pending?.sessionId,
+    }, "agent-model-executor").catch((err) => process.stderr.write("[AgentModelExecutor] permission.denied publish failed: " + err + "\n"));
+    return true;
   }
 
   /** Get pending HITL approvals for a session */
@@ -931,6 +953,19 @@ export class AgentModelExecutor {
       "permission.approved",
       async (event: { data: { requestId: string; operation: string; target: string } }) => {
         await this.onPermissionApproved(event.data.requestId);
+      }
+    );
+    // 拒绝统一收口：无论拒绝来自 /api/permission/deny（PermissionManager）、
+    // /api/permission-relay/:id/deny（PermissionRelay）还是 /api/approvals/:id/reject
+    // （HumanApprovalManager），都从这里清理 requestId → session 映射。
+    // ★ P3 将在此累计连续拒绝计数并触发熔断。
+    this.eventBus.subscribe(
+      "permission.denied",
+      async (event: { data: { requestId?: string; id?: string; sessionId?: string } }) => {
+        const data = event.data ?? {};
+        const requestId = data.requestId ?? data.id;
+        if (!requestId) return;
+        this.pendingOperations.delete(requestId);
       }
     );
   }

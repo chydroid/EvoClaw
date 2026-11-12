@@ -1988,7 +1988,7 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
   // ── Permission handling ──
   const autoApprovePermissions = async (reqs: PermissionRequest[]) => {
     try {
-      await Promise.all(
+      const responses = await Promise.all(
         reqs.map((r) =>
           fetch("/api/permission/approve", {
             method: "POST",
@@ -1997,6 +1997,12 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
           }),
         ),
       );
+      // ★ P0：审批可能已过期/已被处理（404）。不再静默吞掉失败——
+      //   否则下一次消息会带着没被批准的调用继续循环。
+      const failed = responses.filter((res) => !res.ok);
+      if (failed.length > 0) {
+        console.warn(`[Chat] Auto-approve failed for ${failed.length}/${responses.length} requests (HTTP ${failed.map((r) => r.status).join(",")})`);
+      }
     } catch (err) {
       console.warn("[Chat] Auto-approve permissions failed:", err);
     }
@@ -2014,16 +2020,43 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
     try {
       if (action === "approve" || action === "approveAndWhitelist") {
         // Approve all pending permissions
+        let allApproved = true;
+        let expiredCount = 0;
         for (const perm of reqs) {
-          await fetch("/api/permission/approve", {
+          const res = await fetch("/api/permission/approve", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requestId: perm.id, whitelist: action === "approveAndWhitelist" }),
           });
+          if (!res.ok) {
+            allApproved = false;
+            if (res.status === 404) expiredCount++;
+            console.warn(`[Chat] Approve request ${perm.id} failed: HTTP ${res.status}`);
+            continue;
+          }
           // Add to whitelist if requested
           if (action === "approveAndWhitelist") {
             addToWhitelist(perm.operation);
           }
+        }
+        if (!allApproved) {
+          // ★ P0：只要有请求已过期/已处理，就不再盲目重发消息——
+          //   旧逻辑 404 后照样 handleSend，于是模型再次触发同一个孤儿审批，
+          //   形成无限弹窗循环。这里给出明确提示，让用户重新发起请求。
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === targetMessageId
+                ? {
+                    ...m,
+                    content: `${m.content}\n\n---\n${t("chat.permission_expired")}` +
+                      (expiredCount !== reqs.length ? `（${reqs.length - expiredCount}/${reqs.length} 项已批准）` : ""),
+                  }
+                : m,
+            ),
+          );
+          setIsStreaming(false);
+          isStreamingRef.current = false;
+          return;
         }
         // Retry the most recent user message after approval — 复用已有流式逻辑，由 handleSend 自行管理 isStreaming 状态
         const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
@@ -2034,11 +2067,14 @@ export function WebChatPage({ sessionId: initialSessionId, avatars, onSessionCre
       } else {
         // Deny all pending permissions
         for (const perm of reqs) {
-          await fetch("/api/permission/deny", {
+          const res = await fetch("/api/permission/deny", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ requestId: perm.id }),
           });
+          if (!res.ok) {
+            console.warn(`[Chat] Deny request ${perm.id} failed: HTTP ${res.status}`);
+          }
         }
         // Update message to show denial
         setMessages((prev) =>

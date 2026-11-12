@@ -66,6 +66,15 @@
 
 **验收**：高危工具（`file_delete`、`email.send`、`git.push`）的审批请求可在 `/api/approvals/pending` 看到；批准后重试执行，拒绝后不再重复弹出。
 
+**实施记录（2026-11-13）**
+
+- 复核结论与计划一致；两处细节按代码实际调整：
+  1. WebUI 聊天弹窗统一走 `/api/permission/approve|deny`（不是 `/api/approvals/*`），因此这两条路由在 PermissionManager 未命中时**回退**到 `agentModelExecutor.approveOperation|rejectOperation`，保证「任意发出的审批 ID 都能被恰好一个 API 处理」。
+  2. `permission.denied` 事件在 **executor 的 `rejectOperation`** 统一发布（而不是三条路由分别发布），与 PermissionManager/PermissionRelay 已有事件汇合；订阅者按 `requestId ?? id` 兼容两种 payload 形状。`permission.approved` 同理，由 `onPermissionApproved` 清理 `pendingOperations`。
+- 批准语义：`HumanApprovalManager.approve()` 在非 `trustFuture` 时追加 **tool + argsHash（stableHash 全量参数）+ 5 分钟 TTL** 信任规则；`trustFuture` 仍为永久工具级规则。`TrustRule` 新增可选 `argsHash` 字段（向后兼容磁盘上的旧规则）。
+- 登记失败的兜底：超过 `maxPendingPerSession` 时 `registerPendingApproval` 返回 false，llm-caller 返回可读错误而不是再造一个孤儿审批。
+- 测试：`human-approval.test.ts`（8）、`hitl-approval-wiring.test.ts`（5）、`llm-caller-hitl.test.ts`（1）、`gateway/approval-routes.test.ts`（5）。全量 7304 passed。
+
 ---
 
 ### P1 — execute_code 程序化 RPC 加固
@@ -313,7 +322,7 @@
 
 | ID | 状态 | 提交 | 备注 |
 |---|---|---|---|
-| P0 | 未开始 | — | 批次 A，最高优先 |
+| P0 | 已完成 | 待回填 | 批次 A，最高优先 |
 | P1 | 未开始 | — | 批次 A |
 | P3 | 未开始 | — | 依赖 P0 |
 | P4 | 未开始 | — | 批次 A |
