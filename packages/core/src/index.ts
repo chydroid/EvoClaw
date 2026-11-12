@@ -38,7 +38,7 @@ export type {} from "./types/errors";
 export { ServiceRegistry } from "./service-registry";
 export { EventBus } from "./event-bus";
 export { ConfigManager, defaultConfig } from "./config";
-export type { AppConfig, DeepPartial, PersonaConfig } from "./config";
+export type { AppConfig, DeepPartial, PersonaConfig, ConfigStatus } from "./config";
 export { PersonaManager } from "./persona-manager";
 export type { Persona, PersonaStore } from "./persona-manager";
 export { EnvManager } from "./env-manager";

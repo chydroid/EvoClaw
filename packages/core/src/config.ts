@@ -1,8 +1,36 @@
 import { EventEmitter } from "events";
+import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { ConfigWatcher, type SchemaConfigChange } from "./config-schema.js";
+import { ConfigDoctor, type DoctorReport } from "./config-doctor.js";
+import { LastKnownGoodConfig } from "./config-lkg.js";
 import { atomicWriteFileSync } from "./atomic-write";
+
+/**
+ * 配置加载状态（P8 降级标记）。
+ *
+ * 读失败 fail-open（继续用默认值/上一份）但必须「响亮」：状态可查询、
+ * 健康检查可见、且禁止把默认值写回覆盖用户文件。
+ */
+export interface ConfigStatus {
+  /** 是否成功完成过至少一次加载（或确认文件不存在、使用默认值） */
+  loaded: boolean;
+  /** 是否处于降级状态（读失败 / 热重载非法） */
+  degraded: boolean;
+  /** 降级原因（人类可读） */
+  reason?: string;
+  /** 配置来源文件 */
+  sourcePath?: string;
+  /** 文件内容签名（sha256 前 16 位），用于确认当前内存配置对应的磁盘版本 */
+  fileSignature?: string;
+  /** 最近一次读失败错误 */
+  lastError?: string;
+  /** 最近一次成功加载时间（ISO） */
+  lastLoadedAt?: string;
+  /** ConfigDoctor 诊断摘要 */
+  doctor?: Pick<DoctorReport, "healthy" | "errorCount" | "warningCount" | "summary">;
+}
 
 export interface PersonaConfig {
   name: string;
@@ -210,6 +238,8 @@ export class ConfigManager {
   private lastChangeAt: Date | null = null;
   private history: ConfigChange[] = [];
   private maxHistory = 100;
+  /** P8：降级/加载状态（只观测，不改变既有安全等级回落策略） */
+  private status: ConfigStatus = { loaded: false, degraded: false };
 
   constructor(initial?: DeepPartial<AppConfig>) {
     this.config = this.deepMerge(
@@ -229,6 +259,66 @@ export class ConfigManager {
   /** 当前绑定的配置文件路径（loadFromFile/saveToFile 之后才有值） */
   getFilePath(): string | undefined {
     return this.filePath ?? undefined;
+  }
+
+  /** P8：配置加载/降级状态（只读快照） */
+  getStatus(): ConfigStatus {
+    return { ...this.status, doctor: this.status.doctor ? { ...this.status.doctor } : undefined };
+  }
+
+  /** 标记一次成功加载，并快照 LastKnownGood + 跑 ConfigDoctor（best-effort） */
+  private markLoaded(filePath: string, raw: string | null): void {
+    this.status = {
+      loaded: true,
+      degraded: false,
+      sourcePath: filePath,
+      fileSignature: raw === null ? undefined : crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16),
+      lastLoadedAt: new Date().toISOString(),
+    };
+    this.status.doctor = this.runDoctor();
+    this.snapshotLastKnownGood(filePath);
+  }
+
+  /** 标记降级：fail-open（保留当前内存配置），但状态与日志必须响亮 */
+  private markDegraded(reason: string, error?: string): void {
+    this.status = {
+      ...this.status,
+      // 首次加载就失败时 status.sourcePath 还是空的，用当前绑定路径补上，
+      // 否则 saveToFile 的「降级时拒绝写回」判断会漏掉同一文件。
+      sourcePath: this.status.sourcePath ?? this.filePath ?? undefined,
+      degraded: true,
+      reason,
+      lastError: error ?? this.status.lastError,
+    };
+    process.stderr.write(`[Config] DEGRADED: ${reason}${error ? ` (${error})` : ""}\n`);
+  }
+
+  private runDoctor(): ConfigStatus["doctor"] {
+    try {
+      const report = new ConfigDoctor({ configPath: this.filePath ?? undefined })
+        .diagnose(this.config as unknown as Record<string, unknown>);
+      return {
+        healthy: report.healthy,
+        errorCount: report.errorCount,
+        warningCount: report.warningCount,
+        summary: report.summary,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private snapshotLastKnownGood(filePath: string): void {
+    try {
+      const lkg = new LastKnownGoodConfig({
+        // 快照放在配置文件同目录，避免污染进程 cwd
+        snapshotsDir: path.join(path.dirname(filePath), ".lkg-config"),
+        configPath: filePath,
+      });
+      lkg.snapshot(this.config as unknown as Record<string, unknown>, "auto: successful load");
+    } catch {
+      // 快照失败不影响加载
+    }
   }
 
   /**
@@ -355,8 +445,20 @@ export class ConfigManager {
     if (!target) {
       throw new Error("[Config] No file path configured for persistence");
     }
+    // P8：读失败后拒绝写回 —— 否则会把「默认值 + 运行时值」覆盖到用户文件上，
+    // 用户原本的配置将不可恢复。修复文件后由热重载清掉 degraded 再写。
+    if (this.status.degraded && this.status.sourcePath === target) {
+      throw new Error(
+        `Refusing to overwrite config file after a load failure: ${target} ` +
+        `(${this.status.reason ?? "degraded"})`,
+      );
+    }
     await this.withLock(async () => {
-      atomicWriteFileSync(target, JSON.stringify(this.config, null, 2));
+      const raw = JSON.stringify(this.config, null, 2);
+      atomicWriteFileSync(target, raw);
+      // 写入成功等价于一次成功加载：清降级并更新签名
+      this.filePath = target;
+      this.markLoaded(target, raw);
     });
     return target;
   }
@@ -412,14 +514,28 @@ export class ConfigManager {
     await this.withLock(async () => {
       if (!fs.existsSync(filePath)) {
         this.filePath = filePath;
+        // 文件不存在不是错误：使用默认值，但记录来源以便诊断
+        this.markLoaded(filePath, null);
         return;
       }
-      const raw = fs.readFileSync(filePath, "utf-8");
+      let raw: string;
+      try {
+        raw = fs.readFileSync(filePath, "utf-8");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        this.filePath = filePath;
+        this.markDegraded(`failed to read config file ${filePath}`, message);
+        throw new Error(`Failed to read config file ${filePath}: ${message}`);
+      }
       let parsed: Record<string, unknown>;
       try {
         parsed = JSON.parse(raw) as Record<string, unknown>;
       } catch (err) {
-        throw new Error(`Failed to parse config file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        this.filePath = filePath;
+        // fail-open：保留当前配置（默认值），置 degraded，并保持既有 throw 语义
+        this.markDegraded(`failed to parse config file ${filePath}`, message);
+        throw new Error(`Failed to parse config file ${filePath}: ${message}`);
       }
       const oldConfig = this.deepClone(this.config as unknown as Record<string, unknown>);
       this.config = this.deepMerge(
@@ -427,6 +543,7 @@ export class ConfigManager {
         parsed
       ) as unknown as AppConfig;
       this.filePath = filePath;
+      this.markLoaded(filePath, raw);
 
       const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "");
       for (const change of changes) {
@@ -444,7 +561,15 @@ export class ConfigManager {
     this.filePath = filePath;
     this.watcher = watcher ?? new ConfigWatcher();
 
+    // P8：热重载被拒（JSON 损坏 / schema 非法）时保留上一份并置 degraded
+    this.watcher.onInvalid((invalidPath, errors) => {
+      if (invalidPath === filePath) {
+        this.markDegraded(`hot reload rejected for ${invalidPath}`, errors.join("; "));
+      }
+    });
+
     if (!fs.existsSync(filePath)) {
+      this.markDegraded(`hot-reload target does not exist: ${filePath}`);
       process.stderr.write(`[Config] Hot-reload target does not exist: ${filePath}\n`);
       return;
     }
@@ -518,6 +643,17 @@ export class ConfigManager {
       ) as unknown as AppConfig;
       this.filePath = filePath;
 
+      // 成功热重载 → 清除降级标记并刷新状态（含签名/Doctor）
+      this.status = {
+        loaded: true,
+        degraded: false,
+        sourcePath: filePath,
+        fileSignature: crypto.createHash("sha256").update(JSON.stringify(newConfig)).digest("hex").slice(0, 16),
+        lastLoadedAt: new Date().toISOString(),
+      };
+      this.status.doctor = this.runDoctor();
+      this.snapshotLastKnownGood(filePath);
+
       const changes = this.diffLeaves(oldConfig, this.config as unknown as Record<string, unknown>, "");
       for (const change of changes) {
         this.recordAndEmit({ ...change, source: "hot-reload" });
@@ -563,7 +699,9 @@ export class ConfigManager {
   }
 
   private deepMerge(base: Record<string, unknown>, override: Record<string, unknown>): Record<string, unknown> {
-    const result: Record<string, unknown> = { ...base };
+    // 深拷贝 base：override 未覆盖的分支不能与调用方（通常是共享的 defaultConfig）
+    // 共用对象引用，否则一次 set() 会静默改写 defaultConfig，污染后续所有实例。
+    const result = this.deepClone(base) as Record<string, unknown>;
     for (const key of Object.keys(override)) {
       // 防止原型污染：跳过危险键
       if (key === "__proto__" || key === "constructor" || key === "prototype") continue;

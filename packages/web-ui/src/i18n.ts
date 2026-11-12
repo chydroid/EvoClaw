@@ -2332,6 +2332,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     // ─── Config Doctor ────────────────────────────────────
     "config_doctor.title": "配置诊断",
     "config_doctor.subtitle": "自动检测和修复配置问题",
+    "config_doctor.degraded_title": "配置处于降级状态",
+    "config_doctor.degraded_hint": "服务仍在运行，但配置文件读取/热重载失败，当前使用默认值或上一份可用配置。修复文件后会自动恢复；降级期间禁止写回配置文件。",
     "config_doctor.run_diagnosis": "运行诊断",
     "config_doctor.running": "诊断中...",
     "config_doctor.healthy": "配置健康",
@@ -5138,6 +5140,8 @@ const DICT: Record<Lang, Record<string, string>> = {
     // ─── Config Doctor ────────────────────────────────────
     "config_doctor.title": "Config Doctor",
     "config_doctor.subtitle": "Auto-detect and fix configuration issues",
+    "config_doctor.degraded_title": "Configuration is degraded",
+    "config_doctor.degraded_hint": "The server is still running, but reading or hot-reloading the config file failed; defaults or the previous good config are in use. Fix the file to recover automatically; writing back is blocked while degraded.",
     "config_doctor.run_diagnosis": "Run Diagnosis",
     "config_doctor.running": "Diagnosing...",
     "config_doctor.healthy": "Config Healthy",

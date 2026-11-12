@@ -379,6 +379,8 @@ export class ConfigWatcher {
   private watchers: Map<string, fs.FSWatcher> = new Map();
   private callbacks: Array<(filePath: string) => void> = [];
   private changeHandlers: SchemaConfigChangeHandler[] = [];
+  /** P8：非法热重载回调（文件损坏 / schema 校验失败时触发，保留上一份配置） */
+  private invalidHandlers: Array<(filePath: string, errors: string[]) => void> = [];
   private currentConfigs = new Map<string, Record<string, unknown>>();
   private reloadCount = 0;
   private lastReloadAt: Date | null = null;
@@ -423,6 +425,21 @@ export class ConfigWatcher {
     this.changeHandlers.push(handler);
   }
 
+  /** 注册非法热重载回调（P8 配置降级标记） */
+  onInvalid(handler: (filePath: string, errors: string[]) => void): void {
+    this.invalidHandlers.push(handler);
+  }
+
+  private notifyInvalid(filePath: string, errors: string[]): void {
+    for (const handler of this.invalidHandlers) {
+      try {
+        handler(filePath, errors);
+      } catch (err) {
+        process.stderr.write("[ConfigWatcher] Invalid handler error:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+      }
+    }
+  }
+
   removeConfigChangeHandler(handler: SchemaConfigChangeHandler): void {
     const idx = this.changeHandlers.indexOf(handler);
     if (idx >= 0) this.changeHandlers.splice(idx, 1);
@@ -448,7 +465,9 @@ export class ConfigWatcher {
     const oldConfig = this.currentConfigs.get(filePath) ?? {};
     const result = this.loadAndValidate(filePath);
 
-    if (result.valid && this.changeHandlers.length > 0) {
+    if (!result.valid) {
+      this.notifyInvalid(filePath, result.errors);
+    } else if (this.changeHandlers.length > 0) {
       const changes = this.diffConfigs(oldConfig, result.data);
       if (changes.length > 0) {
         this.notifyHandlers(result.data, oldConfig, changes);
@@ -485,6 +504,7 @@ export class ConfigWatcher {
     this.debounceTimers.clear();
     this.callbacks = [];
     this.changeHandlers = [];
+    this.invalidHandlers = [];
     this.currentConfigs.clear();
   }
 
@@ -502,7 +522,10 @@ export class ConfigWatcher {
     const oldConfig = this.currentConfigs.get(filePath) ?? {};
     const result = this.loadAndValidate(filePath);
 
-    if (result.valid && this.changeHandlers.length > 0) {
+    if (!result.valid) {
+      // P8：非法热重载保留上一份配置（currentConfigs 未被覆盖），但必须响亮
+      this.notifyInvalid(filePath, result.errors);
+    } else if (this.changeHandlers.length > 0) {
       const changes = this.diffConfigs(oldConfig, result.data);
       if (changes.length > 0) {
         this.notifyHandlers(result.data, oldConfig, changes);

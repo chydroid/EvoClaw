@@ -7,7 +7,7 @@ import {
   Card, Badge, PageHeader, Loading, ErrorBanner, EmptyState,
   Section, PrimaryButton, SecondaryButton, StatusDot, showToast,
 } from "./shared";
-import { configDoctorApi, type ConfigIssue } from "./api-client";
+import { configDoctorApi, configStatusApi, type ConfigIssue, type ConfigStatusInfo } from "./api-client";
 import { useTranslation } from "./i18n";
 
 const s = {
@@ -209,14 +209,20 @@ export default function ConfigDoctorPage() {
   const [fixingId, setFixingId] = useState<string | null>(null);
   const [fixingAll, setFixingAll] = useState(false);
   const [fixResult, setFixResult] = useState<{ fixed: number; remaining: number } | null>(null);
+  // P8：配置加载/降级状态（读失败 fail-open 但必须响亮）
+  const [configStatus, setConfigStatus] = useState<ConfigStatusInfo | null>(null);
 
   const runDiagnosis = useCallback(async () => {
     setDiagnosing(true);
     setError(null);
     try {
-      const result = await configDoctorApi.diagnose();
+      const [result, status] = await Promise.all([
+        configDoctorApi.diagnose(),
+        configStatusApi.get(),
+      ]);
       setIssues(result.issues);
       setHealthy(result.healthy);
+      setConfigStatus(status);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("config_doctor.diag_fail"));
     } finally {
@@ -292,6 +298,26 @@ export default function ConfigDoctorPage() {
       />
 
       {error && <ErrorBanner message={error} onRetry={runDiagnosis} />}
+
+      {configStatus?.degraded && (
+        <div
+          style={{
+            padding: "12px 16px",
+            borderRadius: "10px",
+            marginBottom: "16px",
+            background: "rgba(245, 158, 11, 0.12)",
+            border: "1px solid rgba(245, 158, 11, 0.45)",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: "4px" }}>
+            ⚠️ {t("config_doctor.degraded_title")}
+          </div>
+          <div style={{ fontSize: "13px", color: "var(--text-muted)" }}>
+            {configStatus.reason ? `${configStatus.reason} — ` : ""}
+            {t("config_doctor.degraded_hint")}
+          </div>
+        </div>
+      )}
 
       <div style={{ ...s.healthBanner, background: hc.bg, border: `1px solid ${hc.border}` }}>
         <div style={{ ...s.healthIcon, background: hc.iconBg, color: hc.iconColor }}>

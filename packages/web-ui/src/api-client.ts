@@ -652,6 +652,20 @@ export const configDoctorApi = {
   fixAll: () => post<{ fixed: number; remaining: number }>("/api/config/doctor/fix-all"),
 };
 
+/** P8 配置降级状态（GET /api/config/status） */
+export interface ConfigStatusInfo {
+  loaded: boolean;
+  degraded: boolean;
+  reason?: string;
+  sourcePath?: string;
+  lastError?: string;
+  lastLoadedAt?: string;
+}
+
+export const configStatusApi = {
+  get: () => getSafe<ConfigStatusInfo | null>("/api/config/status", null),
+};
+
 // ═══════════════════════════════════════════════
 // Reply Reference
 // ═══════════════════════════════════════════════

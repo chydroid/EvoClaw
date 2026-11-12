@@ -71,6 +71,59 @@ describe("GatewayServer", () => {
     }
   });
 
+  // P8：配置降级对健康端点可见，完整状态走 /api/config/status
+  it("should surface config degradation on /health and /api/config/status", async () => {
+    registry.registerService("config", {
+      getStatus: () => ({
+        loaded: true,
+        degraded: true,
+        reason: "failed to parse config file",
+        sourcePath: "/tmp/config.json",
+      }),
+    });
+    gateway.configure({ port: 0, host: "127.0.0.1", enableWS: false, shutdownTimeoutMs: 2000 });
+    await gateway.start();
+
+    try {
+      const address = (gateway as any).server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+
+      const healthRes = await fetch(`http://127.0.0.1:${port}/health`);
+      const healthBody = await healthRes.json();
+      expect(healthBody.status).toBe("degraded");
+      expect(healthBody.config).toEqual({ degraded: true, reason: "failed to parse config file" });
+
+      // /api/config/status 暴露 sourcePath 等细节，必须鉴权
+      const token = (gateway as any).authProvider.generateToken("test-user", ["admin"]);
+      const statusRes = await fetch(`http://127.0.0.1:${port}/api/config/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(statusRes.status).toBe(200);
+      const statusBody = await statusRes.json();
+      expect(statusBody.degraded).toBe(true);
+      expect(statusBody.sourcePath).toBe("/tmp/config.json");
+    } finally {
+      await gateway.stop();
+    }
+  });
+
+  it("should return 503 from /api/config/status when config manager is absent", async () => {
+    gateway.configure({ port: 0, host: "127.0.0.1", enableWS: false, shutdownTimeoutMs: 2000 });
+    await gateway.start();
+
+    try {
+      const address = (gateway as any).server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const token = (gateway as any).authProvider.generateToken("test-user", ["admin"]);
+      const res = await fetch(`http://127.0.0.1:${port}/api/config/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(503);
+    } finally {
+      await gateway.stop();
+    }
+  });
+
   it("P1-1 Bot Mode：/api/config/avatars 支持 botByAgent 与 ?agentId 查询", async () => {
     gateway.configure({ port: 0, host: "127.0.0.1", enableWS: false, shutdownTimeoutMs: 2000 });
     await gateway.start();

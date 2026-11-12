@@ -583,8 +583,17 @@ export class GatewayServer {
       const observability = this.registry.resolveService<Observability>("observability");
       const healthReport = observability?.getHealthReport();
       const aggregated = this.getAggregatedHealth();
+      // P8：配置降级可见（健康端点只暴露 degraded/reason，完整状态走鉴权路由）
+      const configStatus = this.registry.resolveService<{ getStatus?: () => { degraded?: boolean; reason?: string } }>("config")?.getStatus?.();
+      const degraded = configStatus?.degraded === true;
+      // 配置降级不掩盖真正的 unhealthy；其余情况降级优先于 aggregated.status
+      const overallStatus = aggregated.status === "unhealthy"
+        ? "unhealthy"
+        : degraded || unhealthy.length > 0
+          ? "degraded"
+          : aggregated.status;
       res.status(aggregated.status === "unhealthy" ? 503 : 200).json({
-        status: unhealthy.length > 0 ? "degraded" : aggregated.status,
+        status: overallStatus,
         version: (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ ?? process.env.npm_package_version ?? "0.0.0",
         uptime: process.uptime(),
         timestamp: new Date().toISOString(),
@@ -602,6 +611,7 @@ export class GatewayServer {
         },
         subsystems: aggregated.subsystems,
         metrics: healthReport?.metrics,
+        config: { degraded, reason: configStatus?.reason },
       });
     });
 
@@ -744,6 +754,16 @@ export class GatewayServer {
         features: featureFlags?.getAll?.() ?? {},
         avatars: this.avatarConfig,
       });
+    });
+
+    // GET /api/config/status — P8 配置加载/降级状态（完整版，需鉴权）
+    this.app.get("/api/config/status", (_req: Request, res: Response) => {
+      const configManager = this.registry.resolveService<{ getStatus?(): unknown }>("config");
+      if (!configManager?.getStatus) {
+        res.status(503).json({ error: "config manager unavailable" });
+        return;
+      }
+      res.json(configManager.getStatus());
     });
 
     this.app.put("/api/config/avatars", (req: Request, res: Response) => {
