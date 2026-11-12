@@ -357,6 +357,19 @@
 
 **风险**：at-most-once 与 side-effect 重复的取舍；全文 JSON 重写的写放大；DST 行为变化。Phase 1 先落地，Phase 2 视多进程部署需求再上。
 
+**实施记录（2026-11-13，Phase 1）**
+
+- `ScheduledTask` 增加：
+  - `pendingSlot?: {scheduledAt, stampedAt, owner, recovered?}`（ISO 字符串 + PID）
+  - `quota?: {windowMs, limit, windowStart?, used?}` —— **EvoClaw 扩展**，明确不是 Hermes 的 `quota_hold`
+  - `timezone?: string`
+- 派发时序：`runTask` 先过配额门，再写 `pendingSlot` 并 `saveTasksSync()`（`atomicWriteFileSync`，同步落盘），随后执行；`recordResult` 清除窗口，`finally` 兜底清除（异常路径）。「Already running」路径不触碰窗口。
+- 恢复：`loadTasks` 末尾 `recoverPendingSlots()`。owner 存活且 `stampedAt` 在 300s TTL 内 → 不抢占；否则覆盖为本进程认领（`recovered: true`）、`nextRun = now` 并加入 `recoveredTaskIds`，`start()` 为每个恢复任务补跑**一次**。停用任务只清窗口不补跑。`runningTasks` 保证与同刻 cron tick 不双跑。`stop()` 不清除运行中任务的窗口（等待超时后仍保留，供下次恢复）。
+- 配额：`consumeQuota()` 滑动窗口（`windowStart + windowMs` 到期重置 `used`）；超限返回失败结果并发布 `scheduler.task_skipped`，不调用 handler、不累加 failureStreak。手动 `executeTask` 与 cron 共用该门（计划允许的「统一过 quota」选择）。
+- 时区：`cron.schedule` 使用 `task.timezone || EVOCLAW_TIMEZONE || Asia/Shanghai`；老任务无字段时行为不变。
+- Phase 2（SQLite occurrence 账本）**未实施**：Phase 1 仍是单进程 JSON 全文重写，未加跨进程锁；多进程部署需先上 Phase 2（或给 `saveTasks` 包 `CrossProcessLock`）。已在代码注释与本记录标注。
+- 测试：新增 `packages/scheduler/src/schedule-manager-p7.test.ts`（8：崩溃后只补一次/活 owner 不抢占/TTL/停用清理/派发前落盘与完成后清除/配额/窗口滚动/时区持久化）、`packages/scheduler/src/schedule-manager-timezone.test.ts`（1：任务时区优先 + 全局回落）；全量 `pnpm test` 7418 passed（353 files）。
+
 ---
 
 ## 3. 批次与执行顺序
@@ -400,4 +413,4 @@
 | P8 | 已完成 | 085da10 | 批次 B |
 | P5 | 已完成 | 57e6f84 | 批次 C1；CLI/WebUI 后置 |
 | P6 | 已完成 | 0a7c727 | 批次 C2；auxiliary 任务类型未加（直连 callLLMOnce） |
-| P7 | 未开始 | — | 批次 D |
+| P7 | 已完成（Phase 1） | f4770cf | 批次 D；Phase 2 SQLite 未实施 |
