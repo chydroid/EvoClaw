@@ -210,6 +210,15 @@
 
 **风险**：现有扩展可能依赖覆盖语义（需要先搜注册顺序）；默认拒绝会改变行为，可在配置中临时放开，但必须记录告警。
 
+**实施记录（2026-11-13）**
+
+- 运行时护栏：`AgentModelExecutor.registerTool` 增加 `source`（默认 `core`）；新增 `sealCoreToolSet()` / `isCoreToolSetSealed()` / `getToolSource()`。`apps/server/src/index.ts` 在全部内置工具注册完成后（`registerMarkItDownTools()` 之后、插件/扩展加载之前）封存快照。非 core 来源撞名已封存核心工具时默认拒绝并输出告警，`EVOCLAW_ALLOW_CORE_TOOL_OVERRIDE` 或构造参数 `allowCoreToolOverride` 可临时放开；封存前的内置注册天然豁免；非 core 之间同名仍允许覆盖（MCP 重连会重复注册）。
+- 来源接线：extension-loader、claude-code-tools 内置扩展、MCP 客户端注册分别传 `extension` / `extension` / `mcp`。
+- `before_install` 接线：`/api/plugins/install` 在内置工厂与社区 stub 两条注册路径前调用 `pluginManager.runHooks({type:"before_install",...})`；`blocked` 或钩子抛错都返回 403（fail-closed）。无下载/解压/持久化的 stub 语义保持不变。
+- 声明-实际校验：`PluginManifest.providesTools?: string[]`；`PluginContext.registerTool` 是插件注册工具的唯一入口，注册工具名不在声明列表内直接抛错（init 失败、不注册），无声明则告警放行。`getPlugins()` 增加 `tools` 台账；executor 因核心撞名静默拒绝时（`getToolSource` 非 `plugin`）不记入台账。
+- 第 4 步静态扫描按计划**未实施**：仓库无真实 AST 解析器（`skill-scanner.astScanContent` 是逐行正则），引入解析器依赖属于新子系统，待插件分发体系落地再做。
+- 测试：新增 `packages/agent/src/tool-source-guard.test.ts`（6）、`packages/core/src/plugin-system.test.ts`（5）、`packages/gateway/src/plugin-install-routes.test.ts`（4）；全量 `pnpm test` 7375 passed（346 files）。
+
 ---
 
 ### P8 — 配置降级标记（替代 profile / secret scope）
@@ -235,6 +244,16 @@
 **测试**：损坏 `config.json` → 服务启动、`degraded=true`；非法热重载保留上一份并标记；degraded 时写回被拒；健康端点字段。
 
 **风险**：低。不要因为降级状态改变安全等级的既有回落策略（本轮只观测）。
+
+**实施记录（2026-11-13）**
+
+- `ConfigManager` 新增 `ConfigStatus`（`loaded/degraded/reason/sourcePath/fileSignature/lastError/lastLoadedAt/doctor`）与 `getStatus()`。冷读失败（read/parse）保留既有 throw 语义，同时置 degraded 并记录 `sourcePath`；文件不存在按「成功加载默认值」处理（不降级）。成功加载/热重载/`saveToFile` 成功都会刷新签名（sha256 前 16 位）、时间戳、`ConfigDoctor` 摘要，并快照 `LastKnownGoodConfig`（`<config 目录>/.lkg-config`，best-effort）。
+- 写回 fail-closed：`status.degraded && status.sourcePath === target` 时 `saveToFile` 直接拒绝，避免把「默认值 + 运行时值」覆盖到用户文件。
+- 热重载：`ConfigWatcher` 新增 `onInvalid()`，`forceReload`/`handleFileChange` 校验失败时通知；`startWatching` 据此置 degraded 并保留上一份；后续有效重载清除降级。
+- 可观测：`GET /health` 增加 `config: {degraded, reason}`，整体 status 在配置降级时为 `degraded`（但不会掩盖真正的 `unhealthy`）；新增鉴权路由 `GET /api/config/status` 返回完整状态（未注册 config 服务时 503，不加入公开路径以免泄露 sourcePath/doctor 细节）。WebUI `ConfigDoctorPage` 增加降级横幅（中英 i18n）。
+- 顺带修复：`deepMerge` 原来是 `{...base}` 浅拷贝，未覆盖的 section 与共享的 `defaultConfig` 是同一对象，任意实例的 `set()` 会静默污染默认值、波及后续实例。改为深拷贝 base（配置体量小、合并频率低）。
+- 第 5 步 `schemaVersion`/迁移链接线仍列为后续可选项，未实施。
+- 测试：`packages/core/src/config.test.ts` 增 6 条（损坏文件降级且保留配置、降级拒绝写回、成功加载签名/doctor、缺失文件不降级、非法热重载保留上一份、有效热重载清除降级）；`packages/gateway/src/gateway-server.test.ts` 增 2 条（/health 暴露降级、/api/config/status 鉴权与 503）；全量 `pnpm test` 7375 passed（346 files）。
 
 ---
 
@@ -356,8 +375,8 @@
 | P1 | 已完成 | 299b55b | 批次 A |
 | P3 | 已完成 | eeb0cc6 | 依赖 P0 |
 | P4 | 已完成（Phase 1） | 08c6c86 | 批次 A；Phase 2 staging 可选、默认关闭，未实施 |
-| P2 | 未开始 | — | 批次 B |
-| P8 | 未开始 | — | 批次 B |
+| P2 | 已完成 | ffdfe70 | 批次 B；静态扫描（可选第 4 步）未实施 |
+| P8 | 已完成 | 085da10 | 批次 B |
 | P5 | 未开始 | — | 批次 C1 |
 | P6 | 未开始 | — | 批次 C2 |
 | P7 | 未开始 | — | 批次 D |
