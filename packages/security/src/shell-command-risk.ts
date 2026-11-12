@@ -15,7 +15,12 @@
  * 「硬拦」与「需审批」必须分开：注入特征是攻击信号，不该给用户一个
  * "点同意就放行" 的机会；而 `rm -rf /` 是用户可能真的需要的高危操作，
  * 应该让用户知情后决策。
+ *
+ * 另有「硬线地板」（hermes alignment round4）：归一化后命中
+ * command-guard 的无条件阻止模式时，任何安全等级都硬拦，不接受审批。
  */
+
+import { checkHardline, normalizeCommand } from "./command-guard";
 
 export type ShellRiskLevel = "safe" | "caution" | "critical" | "blocked";
 
@@ -25,6 +30,12 @@ export interface ShellRiskAssessment {
   reason?: string;
   /** 命中的规则标识，便于诊断与测试 */
   rule?: string;
+  /**
+   * 硬线地板命中原因（hermes approval_floors 语义）。
+   * 命中时 `decideShellCommand` 在任何安全等级下都返回 block。
+   * 与 `rule` 分开，避免污染既有分级规则 ID 的断言与日志。
+   */
+  hardlineReason?: string;
 }
 
 /**
@@ -89,12 +100,13 @@ const CAUTION_RULES: Array<{ id: string; re: RegExp; reason: string }> = [
  * 仅剥离带引号的 heredoc 定界符（<<'EOF' / <<"EOF"），未引号定界符
  * （<<EOF）仍会被 shell 展开，其中的命令替换应保留检查。
  */
+/** 剥离带引号 heredoc 的正文，只留下 shell 可见的命令文本（正文是数据）。 */
+function stripQuotedHeredocBodies(command: string): string {
+  return command.replace(/<<['"](\w+)['"][\r\n]([\s\S]*?)[\r\n]\1/g, " <<HEREDOC>");
+}
+
 function hasOnlySafeNewlines(command: string): boolean {
-  // 剥离引号 heredoc 内容：<<'EOF' ... EOF / <<"EOF" ... EOF
-  const stripped = command.replace(
-    /<<['"](\w+)['"][\r\n]([\s\S]*?)[\r\n]\1/g,
-    " <<HEREDOC>",
-  );
+  const stripped = stripQuotedHeredocBodies(command);
   // 追踪引号状态：引号内的换行是安全的
   let inSingle = false;
   let inDouble = false;
@@ -125,8 +137,23 @@ export function assessShellCommand(command: string): ShellRiskAssessment {
     return { level: "blocked", reason: "命令为空", rule: "empty_command" };
   }
   const cmd = command;
+  // hermes alignment round4：规则匹配用归一化后的命令，防止 ANSI/null/fullwidth/
+  // 反斜杠/空字符串字面量混淆（此前 command-guard.ts 的 normalizeCommand 零调用点）。
+  // 注入换行判定仍用原文——它依赖引号/heredoc 状态机，归一化会破坏该语义。
+  const normalized = normalizeCommand(cmd);
 
-  // 1. 注入特征优先：攻击信号不接受审批
+  // 硬线地板（hermes approval_floors 语义）：在「归一化 + 剥离引号 heredoc
+  // 正文」后的 shell 可见文本上判定。正文里的 `os.system('rm -rf /')` 是
+  // 传给程序的数据，不能误杀（2026-11-02 既有设计）；而命令前缀本身若含
+  // hardline 仍会被拦。结果作为附加字段并入分级返回，不改写既有 rule/level，
+  // 由 decideShellCommand 在任何安全等级下优先硬拦。
+  const shellVisible = normalizeCommand(stripQuotedHeredocBodies(cmd));
+  const hardline = checkHardline(shellVisible);
+  const hardlineReason = hardline.blocked ? hardline.reason : undefined;
+  const floor = hardlineReason ? { hardlineReason } : {};
+
+  // 1. 注入特征优先：攻击信号不接受审批（原文判定，保留 heredoc 语义；
+  //    反引号/替换规则同时查归一化文本，防反斜杠混淆绕过）
   for (const rule of INJECTION_RULES) {
     if (rule.id === "newline_injection") {
       // ★ 2026-11-02 修复：仅拦截引号/heredoc 之外的换行
@@ -134,25 +161,35 @@ export function assessShellCommand(command: string): ShellRiskAssessment {
       // 引号内多行字符串（python3 -c "行1\n行2"），模型被迫改用
       // file_write+execute_code 绕行，浪费轮次与 token。
       if (!hasOnlySafeNewlines(cmd)) {
-        return { level: "blocked", reason: rule.reason, rule: rule.id };
+        return { level: "blocked", reason: rule.reason, rule: rule.id, ...floor };
       }
-    } else if (rule.re.test(cmd)) {
-      return { level: "blocked", reason: rule.reason, rule: rule.id };
+    } else if (rule.re.test(cmd) || rule.re.test(normalized)) {
+      return { level: "blocked", reason: rule.reason, rule: rule.id, ...floor };
     }
   }
 
-  // 2. 不可逆破坏 → 需人工审批
+  // 2. 不可逆破坏 → 需人工审批（归一化后匹配）
   for (const rule of CRITICAL_RULES) {
-    if (rule.re.test(cmd)) {
-      return { level: "critical", reason: rule.reason, rule: rule.id };
+    if (rule.re.test(normalized)) {
+      return { level: "critical", reason: rule.reason, rule: rule.id, ...floor };
     }
   }
 
-  // 3. 有副作用但可恢复 → 放行并标记
+  // 3. 有副作用但可恢复 → 放行并标记（归一化后匹配）
   for (const rule of CAUTION_RULES) {
-    if (rule.re.test(cmd)) {
-      return { level: "caution", reason: rule.reason, rule: rule.id };
+    if (rule.re.test(normalized)) {
+      return { level: "caution", reason: rule.reason, rule: rule.id, ...floor };
     }
+  }
+
+  // 4. 分级器完全没命中、但硬线地板命中（rm -rf /etc、kill -1 等）：
+  //    至少升为 critical，绝不作为 safe 放行。
+  if (hardlineReason) {
+    return {
+      level: "critical",
+      reason: `硬线阻止：${hardlineReason}`,
+      hardlineReason,
+    };
   }
 
   return { level: "safe" };

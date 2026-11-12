@@ -546,6 +546,8 @@ export function registerShellMediaTools(
       //     模型无法据此调整，只能反复换命令重试。
       // 现在统一由 assessShellCommand() + decideShellCommand() 裁决：
       // 规则更全（整盘/根目录/注入/关机/磁盘写入…），消息带规则名、原因与当前安全等级。
+      // hermes round4：assessShellCommand 还会在归一化命令上叠加 checkHardline
+      // 硬线地板（任何安全等级都硬拦，见 security-level.ts decideShellCommand）。
 
       // ── 沙箱模式：经 SandboxManager 的 process 会话执行（P3-5 去旁路 2026-10-15）──
       // 旧实现旁路 manager 直连 new LocalSandboxBackend()：会话不复用、策略不一致、

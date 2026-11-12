@@ -3448,7 +3448,7 @@ export class AgentModelExecutor {
             apiKey: main.apiKey ?? undefined,
             baseUrl: main.baseURL ?? undefined,
           },
-          this.buildAuxChatFn(),
+          this.buildAuxChatFn(sessionId),
         );
         return { answer: aux.content, tokensUsed: aux.usage?.totalTokens ?? 0 };
       },
@@ -3479,7 +3479,7 @@ export class AgentModelExecutor {
    * → openai（OpenAI 兼容 POST + runtime baseURL）。runtime.model 为空（env 回退供应商）
    * 时借用主模型；两者皆缺则抛错（callAuxLLM 对非 402 错误直接 rethrow，fail-fast）。
    */
-  private buildAuxChatFn(): AuxChatFn {
+  private buildAuxChatFn(sessionId: string, channel?: string): AuxChatFn {
     const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
     return async (runtime, req) => {
       const model = runtime.model ?? main?.model ?? "";
@@ -3508,14 +3508,27 @@ export class AgentModelExecutor {
         undefined,
         this.getLLMCallerDeps(),
       );
+      const promptTokens = result?.promptTokens ?? 0;
+      const totalTokens = result?.tokensUsed ?? 0;
+      // hermes alignment round4：callLLMOnce 本身不记账（主循环在 llm-caller 层
+      // 记账），辅助侧问通道必须在此单一收口点补记，既不丢失也不重复计入主 turn。
+      this.recordTokenUsage(
+        sessionId,
+        providerConfig.provider,
+        model,
+        promptTokens,
+        Math.max(0, totalTokens - promptTokens),
+        result?.responseMs ?? 0,
+        channel,
+      );
       return {
         content: result?.message?.content ?? "",
         model,
         provider: runtime.provider,
         usage: {
-          promptTokens: result?.promptTokens ?? 0,
-          completionTokens: 0,
-          totalTokens: result?.tokensUsed ?? 0,
+          promptTokens,
+          completionTokens: Math.max(0, totalTokens - promptTokens),
+          totalTokens,
         },
         runtime,
       };
@@ -3579,6 +3592,17 @@ export class AgentModelExecutor {
       );
       tokens = result?.tokensUsed ?? 0;
       reviewText = result?.message?.content ?? "";
+      // hermes alignment round4：/review fork 独立 LLM 调用同样补记成本，
+      // 不并入主 turn 的 tokensUsed（slash 命令只用于展示，不触发 llm-caller 记账）。
+      const promptTokens = result?.promptTokens ?? 0;
+      this.recordTokenUsage(
+        sessionId,
+        providerConfig.provider,
+        providerConfig.model,
+        promptTokens,
+        Math.max(0, tokens - promptTokens),
+        result?.responseMs ?? 0,
+      );
       return reviewText ? [{ role: "assistant", content: reviewText }] : [];
     };
     const actions = await runBackgroundReview({

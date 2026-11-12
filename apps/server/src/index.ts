@@ -2852,8 +2852,34 @@ export class EvoClawServer {
             signal: controller.signal,
           });
           if (response.ok) {
-            const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+            const data = await response.json() as {
+              choices?: Array<{ message?: { content?: string } }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
             const content = data.choices?.[0]?.message?.content;
+            // hermes alignment round4：视觉 VLM 是绕过 callLLMOnce 的独立
+            // HTTP 调用，此前连 usage 都不解析、成本完全丢失。在成功响应
+            // 的单一收口点补记；失败/无 usage 时静默跳过（best-effort）。
+            try {
+              const tracker = this.registry.resolveService<{
+                record(usage: Record<string, unknown>): unknown;
+              }>("tokenUsageTracker");
+              const inputTokens = Math.max(0, Number(data.usage?.prompt_tokens) || 0);
+              const outputTokens = Math.max(0, Number(data.usage?.completion_tokens) || 0);
+              if (tracker && (inputTokens > 0 || outputTokens > 0)) {
+                const sessionId = String(this.delegateEngine.getCurrentContext()?.sessionId ?? "vision");
+                tracker.record({
+                  sessionId,
+                  provider: "openai-vision",
+                  model,
+                  inputTokens,
+                  outputTokens,
+                  channel: "vision",
+                });
+              }
+            } catch (err) {
+              process.stderr.write(`[VisionChatFn] usage record failed: ${String(err)}\n`);
+            }
             if (!content) {
               throw new Error("Vision API returned empty content");
             }

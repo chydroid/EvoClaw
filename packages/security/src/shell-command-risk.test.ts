@@ -152,6 +152,43 @@ describe("assessShellCommand — caution（放行但标记）", () => {
   });
 });
 
+describe("hermes alignment round4 — 归一化 + 硬线地板", () => {
+  it("★ 混淆后的破坏性命令仍命中分级器（旧实现对原文匹配会绕过）", () => {
+    for (const cmd of [
+      "r\\m -rf /",                 // 反斜杠转义
+      "ｒｍ -rf /",                  // fullwidth NFKC
+      "r''m -rf /",                 // 空字符串字面量
+      "\x1b[31mrm\x1b[0m -rf /",   // ANSI
+      "rm\x00 -rf /",               // null 字节
+    ]) {
+      const a = assessShellCommand(cmd);
+      expect(a.level, `归一化后应判为 critical: ${JSON.stringify(cmd)}`).toBe("critical");
+      expect(a.hardlineReason).toBeTruthy();
+    }
+  });
+
+  it("★ 分级器规则外的硬线命令不再降级为 safe/caution", () => {
+    for (const cmd of ["rm -rf /etc", "rm -rf /*", "kill -1", "sudo reboot"]) {
+      const a = assessShellCommand(cmd);
+      expect(a.hardlineReason, `${cmd} 应命中硬线地板`).toBeTruthy();
+      expect(a.level).not.toBe("safe");
+    }
+  });
+
+  it("普通命令不产生硬线原因（不误伤自动化）", () => {
+    for (const cmd of ["ls -la", "pnpm build", "git status", "rm -rf dist", "echo reboot"]) {
+      expect(assessShellCommand(cmd).hardlineReason, cmd).toBeUndefined();
+    }
+  });
+
+  it("带引号 heredoc 里的硬线文本是数据，不触发地板（2026-11-02 语义）", () => {
+    const cmd = "python3 <<'EOF'\nimport os\nos.system('rm -rf /')\nEOF";
+    const a = assessShellCommand(cmd);
+    expect(a.hardlineReason).toBeUndefined();
+    expect(a.level).not.toBe("blocked");
+  });
+});
+
 describe("优先级：注入 > critical > caution > safe", () => {
   it("同时含注入与危险动作时按注入硬拦", () => {
     // 换行 + rm -rf / ：绝不能因为"含 critical"就降级为可审批

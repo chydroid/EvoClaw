@@ -42,6 +42,87 @@ interface FallbackEntry {
 /** fallback Map 最大条目数，防止无界内存增长。 */
 const FALLBACK_MAX_ENTRIES = 10000;
 
+// ── FTS5 查询构造（hermes alignment round4）──────────────────
+//
+// 旧实现把整条查询包成一个短语：`"machine learning"`。自然语言检索
+// （"quick dog"、"项目进度 季度目标"）因此几乎总是零结果；CJK 更严重——
+// unicode61 把连续中文切成整段 token，短语/前缀都命中不了。
+// 对齐 hermes `hermes_state_search.py:_quote_fts_tokens`：每个 token 单独
+// 引号化（中和 FTS5 语法字符）+ 裸词前缀通配；含 CJK 且 MATCH 无结果时
+// 退化为 LIKE 子串匹配。
+
+interface QueryToken {
+  text: string;
+  /** 用户显式用引号括起的短语（保持精确短语，不加前缀通配） */
+  quoted: boolean;
+}
+
+/** 保留显式 AND/OR/NOT 操作符，其余 token 全部字面化（NEAR 需函数语法，不保留） */
+const FTS_OPERATORS = new Set(["AND", "OR", "NOT"]);
+
+function tokenizeQuery(query: string): QueryToken[] {
+  const tokens: QueryToken[] = [];
+  for (const m of query.matchAll(/"([^"]+)"|(\S+)/g)) {
+    const text = (m[1] ?? m[2] ?? "").trim();
+    if (text) tokens.push({ text, quoted: m[1] !== undefined });
+  }
+  return tokens;
+}
+
+/** 纯标点 token 不含可检索内容，丢弃以免生成无效 FTS5 语法（如 `")"*`） */
+function isLiteralTerm(text: string): boolean {
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
+/** 是否含 CJK 字符（中文/日文假名/韩文） */
+export function hasCjkText(text: string): boolean {
+  return /[㐀-鿿぀-ヿ가-힯]/.test(text);
+}
+
+/** 构造安全的 FTS5 MATCH 表达式；空查询返回 ""（调用方按无结果处理） */
+export function buildFtsMatchQuery(query: string): string {
+  const parts: Array<{ kind: "term" | "op"; value: string }> = [];
+  for (const { text, quoted } of tokenizeQuery(query)) {
+    // 只有未加引号的裸操作符才当操作符；其余全部字面化
+    if (!quoted && FTS_OPERATORS.has(text.toUpperCase())) {
+      parts.push({ kind: "op", value: text.toUpperCase() });
+      continue;
+    }
+    if (!isLiteralTerm(text)) continue;
+    const escaped = text.replace(/"/g, '""');
+    parts.push({ kind: "term", value: quoted ? `"${escaped}"` : `"${escaped}"*` });
+  }
+  // 只保留位于两个 term 之间的操作符；首尾/连续操作符会让 MATCH 抛语法错误
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (parts[i].kind === "op") {
+      if (parts[i - 1]?.kind === "term" && parts[i + 1]?.kind === "term") {
+        out.push(parts[i].value);
+      }
+    } else {
+      out.push(parts[i].value);
+    }
+  }
+  return out.join(" ");
+}
+
+/** LIKE 回退用的模式串：转义 LIKE 自身的 %/_，每个 term 一个 %term% */
+function buildLikePatterns(query: string): string[] {
+  return tokenizeQuery(query)
+    .filter((t) => isLiteralTerm(t.text) && !(t.quoted === false && FTS_OPERATORS.has(t.text.toUpperCase())))
+    .map((t) => `%${t.text.replace(/[\\%_]/g, "\\$&")}%`);
+}
+
+interface FtsRow {
+  rowid: number;
+  id: string;
+  content: string;
+  session_id: string;
+  type: string;
+  created_at: string;
+  rank: number;
+}
+
 export class FTS5SearchEngine {
   private db: SqliteDatabase | null = null;
   private fallback: Map<string, FallbackEntry> = new Map();
@@ -178,63 +259,77 @@ export class FTS5SearchEngine {
     });
   }
 
+  /** 构造 session/type/timeRange 过滤条件（MATCH / LIKE 两条路径共用） */
+  private filterClauses(options: FTS5SearchOptions): { sql: string[]; params: unknown[] } {
+    const sql: string[] = [];
+    const params: unknown[] = [];
+    if (options.sessionId) {
+      sql.push("session_id = ?");
+      params.push(options.sessionId);
+    }
+    if (options.type) {
+      sql.push("type = ?");
+      params.push(options.type);
+    }
+    if (options.timeRange) {
+      sql.push("created_at >= ?", "created_at <= ?");
+      params.push(options.timeRange.from.toISOString(), options.timeRange.to.toISOString());
+    }
+    return { sql, params };
+  }
+
   search(options: FTS5SearchOptions): FTS5SearchResult[] {
     if (this.useFallback || !this.db) {
       return this.fallbackSearch(options);
     }
     const limit = options.limit ?? 10;
     const offset = options.offset ?? 0;
-    const conditions: string[] = ["memory_fts MATCH ?"];
-    // FTS5 安全转义：用双引号包裹强制短语匹配，内部双引号转义为两个双引号
-    // 防止 * " OR ) 等特殊字符被解释为 FTS5 查询语法而非字面文本
-    const safeQuery = `"${options.query.replace(/"/g, '""')}"`;
-    const params: unknown[] = [safeQuery];
-    if (options.sessionId) {
-      conditions.push("session_id = ?");
-      params.push(options.sessionId);
-    }
-    if (options.type) {
-      conditions.push("type = ?");
-      params.push(options.type);
-    }
-    if (options.timeRange) {
-      conditions.push("created_at >= ?");
-      conditions.push("created_at <= ?");
-      params.push(options.timeRange.from.toISOString());
-      params.push(options.timeRange.to.toISOString());
-    }
-    const whereClause = conditions.join(" AND ");
-    const sql = `SELECT rowid, id, content, session_id, type, created_at, bm25(memory_fts) as rank FROM memory_fts WHERE ${whereClause} ORDER BY rank LIMIT ? OFFSET ?`;
-    params.push(limit, offset);
+    const filters = this.filterClauses(options);
+    const matchQuery = buildFtsMatchQuery(options.query);
+    if (!matchQuery) return [];
+
+    let rows: FtsRow[] = [];
     try {
-      const stmt = this.db.prepare(sql);
-      const rows = stmt.all(...params) as Array<{
-        rowid: number;
-        id: string;
-        content: string;
-        session_id: string;
-        type: string;
-        created_at: string;
-        rank: number;
-      }>;
-      return rows.map((row) => ({
-        rowid: row.rowid,
-        content: row.content,
-        rank: row.rank,
-        snippet: this.generateSnippet(row.content, options.query),
-        metadata: {
-          id: row.id,
-          sessionId: row.session_id,
-          type: row.type,
-          createdAt: row.created_at,
-        },
-      }));
+      // 主路径：逐 token 引号化 + 前缀，支持多词自然语言查询与非精确短语
+      rows = this.db.prepare(
+        `SELECT rowid, id, content, session_id, type, created_at, bm25(memory_fts) as rank ` +
+        `FROM memory_fts WHERE memory_fts MATCH ? AND ${["1=1", ...filters.sql].join(" AND ")} ` +
+        `ORDER BY rank LIMIT ? OFFSET ?`,
+      ).all(matchQuery, ...filters.params, limit, offset) as FtsRow[];
+
+      // CJK 回退：unicode61 把连续中文切成一个整段 token，MATCH 常静默零结果。
+      // 用 LIKE 子串匹配（带同样的过滤/分页），不引入新依赖、无需数据迁移。
+      if (rows.length === 0 && hasCjkText(options.query)) {
+        const patterns = buildLikePatterns(options.query);
+        if (patterns.length > 0) {
+          const likeClauses = patterns.map(() => "content LIKE ? ESCAPE '\\'");
+          const likeParams: unknown[] = patterns;
+          rows = this.db.prepare(
+            `SELECT rowid, id, content, session_id, type, created_at, 0.0 as rank ` +
+            `FROM memory_fts WHERE ${likeClauses.join(" AND ")} AND ${["1=1", ...filters.sql].join(" AND ")} ` +
+            `ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+          ).all(...likeParams, ...filters.params, limit, offset) as FtsRow[];
+        }
+      }
     } catch (err) {
       // FTS5 查询失败时重新抛出，让调用方决定降级策略。
       // 旧实现回退到 this.fallback Map，但正常模式下 fallback 为空，返回空数组会掩盖真实错误。
       process.stderr.write('[FTS5Search] query failed: ' + err + '\n');
       throw err;
     }
+
+    return rows.map((row) => ({
+      rowid: row.rowid,
+      content: row.content,
+      rank: row.rank,
+      snippet: this.generateSnippet(row.content, options.query),
+      metadata: {
+        id: row.id,
+        sessionId: row.session_id,
+        type: row.type,
+        createdAt: row.created_at,
+      },
+    }));
   }
 
   deleteEntry(id: string): void {
@@ -304,6 +399,7 @@ export class FTS5SearchEngine {
     const offset = options.offset ?? 0;
     const lowerQuery = options.query.toLowerCase();
     const terms = lowerQuery.replace(/"/g, "").split(/\s+/).filter((t) => t.length > 0);
+    if (terms.length === 0) return []; // 空查询不返回全部条目（与 MATCH 路径对齐）
     const results: FTS5SearchResult[] = [];
     let rowid = 0;
     for (const [, entry] of this.fallback) {
@@ -318,19 +414,15 @@ export class FTS5SearchEngine {
         if (t < options.timeRange.from.getTime() || t > options.timeRange.to.getTime()) continue;
       }
       const lowerContent = entry.content.toLowerCase();
-      let match = false;
-      for (const term of terms) {
-        if (lowerContent.includes(term)) {
-          match = true;
-          break;
-        }
-      }
-      if (!match) continue;
+      // 与 SQLite 路径对齐：逐 token 与语义（每个 term 都要命中），
+      // 避免 MATCH 与 fallback Map 两条后端行为分叉。
+      const matchedTerms = terms.filter((t) => lowerContent.includes(t)).length;
+      if (matchedTerms !== terms.length) continue;
       rowid++;
       results.push({
         rowid,
         content: entry.content,
-        rank: -terms.filter((t) => lowerContent.includes(t)).length,
+        rank: -matchedTerms,
         snippet: this.generateSnippet(entry.content, options.query),
         metadata: {
           id: entry.id,

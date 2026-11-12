@@ -172,6 +172,11 @@ export function decideShellCommand(
   policy: SecurityPolicy,
   assessment: ShellRiskAssessment,
 ): "allow" | "approve" | "block" {
+  // 不变式 0：硬线地板（hermes approval_floors 语义）优先于任何档位配置。
+  // checkHardline 在归一化/去混淆后的命令上判定，覆盖分级器规则表之外的
+  // 灾难性命令（rm -rf /etc、kill -1、fork bomb、sudo reboot 等）。
+  // 即使 risky 档 / 审批关闭也不能放宽；命中后不进入审批通道。
+  if (assessment.hardlineReason) return "block";
   // 不变式 1：命令注入永远硬拦，任何等级都不放宽
   if (assessment.level === "blocked") return "block";
   // 显式不可逆操作（格式化磁盘、删根目录、关机等）在 risky 档同样硬拦

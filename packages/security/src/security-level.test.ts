@@ -136,6 +136,47 @@ describe("decideShellCommand", () => {
     expect(decideShellCommand(RISKY, assessShellCommand("git push --force"))).toBe("allow");
   });
 
+  it("★ 硬线地板：分级器外的灾难命令在任何档位都硬拦（hermes approval_floors）", () => {
+    // 这些命令此前不命中分级器 CRITICAL_RULES，在 risky 档会被判 safe/caution 放行；
+    // round4 把 checkHardline（归一化后）叠加进 assessShellCommand，
+    // decideShellCommand 再优先硬拦。
+    for (const cmd of [
+      "rm -rf /etc",           // 系统目录（分级器只覆盖 / 与 ~）
+      "rm -rf /*",             // 通配根
+      "kill -1",               // 杀死所有进程
+      ":(){ :|:& };:",        // fork bomb（已覆盖，验证不回归）
+      "sudo reboot",           // 包装命令后的硬线
+    ]) {
+      const a = assessShellCommand(cmd);
+      expect(a.hardlineReason, `${cmd} 应命中硬线地板`).toBeTruthy();
+      for (const p of [STRICT, NORMAL, RISKY]) {
+        expect(decideShellCommand(p, a), `${p.level} 档必须硬拦 ${cmd}`).toBe("block");
+      }
+    }
+  });
+
+  it("★ 混淆命令仍被硬拦（归一化后判定，防 ANSI/fullwidth/反斜杠绕过）", () => {
+    const obfuscated = [
+      "r\\m -rf /",                       // 反斜杠
+      "ｒｍ -rf /",                      // fullwidth
+      "r''m -rf /",                     // 空字符串字面量
+      "\x1b[31mrm\x1b[0m -rf /",        // ANSI
+      "rm\x00 -rf /",                    // null 字节
+    ];
+    for (const cmd of obfuscated) {
+      const a = assessShellCommand(cmd);
+      expect(a.hardlineReason, `归一化后应命中硬线地板: ${JSON.stringify(cmd)}`).toBeTruthy();
+      expect(decideShellCommand(RISKY, a)).toBe("block");
+    }
+  });
+
+  it("带引号 heredoc 的正文是数据，不触发硬线地板（2026-11-02 语义不回归）", () => {
+    const cmd = "python3 <<'EOF'\nimport os\nos.system('rm -rf /')\nEOF";
+    const a = assessShellCommand(cmd);
+    expect(a.hardlineReason).toBeUndefined();
+    expect(decideShellCommand(RISKY, a)).not.toBe("block");
+  });
+
   it("三档对普通只读命令都放行", () => {
     const safe = assessShellCommand("ls -la");
     expect(safe.level).toBe("safe");

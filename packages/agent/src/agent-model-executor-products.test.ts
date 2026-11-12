@@ -93,6 +93,36 @@ describe("executor slash 命令产品化接线（/btw /plan /review）", () => {
     expect(mockTryCallLLM).not.toHaveBeenCalled();
   });
 
+  // ── hermes alignment round4：辅助调用成本记账（不丢、不重复）──────
+  it("★ /btw 侧问通道：recordTokenUsage 收到 prompt/output 拆分后的 usage", async () => {
+    const record = vi.fn();
+    executor.setTokenUsageTracker({ record } as never);
+    const r = await (executor as any).handleSlashCommand("/btw 缓存上限改善了吗", "s1", Date.now());
+    expect(r.tokensUsed).toBe(25); // slash 返回值语义不变
+    expect(record).toHaveBeenCalledTimes(1);
+    const usage = record.mock.calls[0][0];
+    expect(usage.sessionId).toBe("s1");
+    expect(usage.model).toBe("claude-opus-4");
+    expect(usage.inputTokens).toBe(15);
+    expect(usage.outputTokens).toBe(10); // 25 - 15，且不为负
+  });
+
+  it("★ /review fork：独立 LLM 调用同样记账，且仍不消耗 tryCallLLM 主 turn", async () => {
+    const record = vi.fn();
+    executor.setTokenUsageTracker({ record } as never);
+    const r = await (executor as any).handleSlashCommand("/review", "s1", Date.now());
+    expect(r.reply).toContain("后台评审 fork 已执行");
+    expect(mockTryCallLLM).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(record.mock.calls[0][0].sessionId).toBe("s1");
+    expect(record.mock.calls[0][0].outputTokens).toBe(10);
+  });
+
+  it("tokenUsageTracker 未注入时辅助通道静默跳过，不抛错", async () => {
+    const r = await (executor as any).handleSlashCommand("/btw 成本记账会崩吗", "s1", Date.now());
+    expect(r.reply).toContain("SIDE");
+  });
+
   it("/btw 未带问题：用法提示，不触发 side 通道", async () => {
     const r = await (executor as any).handleSlashCommand("/btw", "s1", Date.now());
     expect(r.reply).toContain("请在命令后附带侧问内容");

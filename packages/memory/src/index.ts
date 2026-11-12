@@ -16,7 +16,7 @@ export { MemoryWeaver } from "./memory-weaver";
 export { DialecticUserModeler, extractClaims } from "./dialectic-user-model";
 export type { DialecticClaim, SynthesizedBelief, DialecticModelFile, ClaimStatus, ClaimStance, ExtractedClaim } from "./dialectic-user-model";
 export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";
-export { FTS5SearchEngine } from "./fts5-search";
+export { FTS5SearchEngine, buildFtsMatchQuery, hasCjkText } from "./fts5-search";
 export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";
 export { SessionSearch } from "./session-search";
 export type { SessionSearchResult, SessionInfoProvider, SessionInfoLike, SessionTurnLike } from "./session-search";
