@@ -23,6 +23,7 @@ import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { normalizeToolActionArg } from "./tool-arg-normalization";
+import { runWithToolCallContext } from "./tool-call-context";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
 import { estimateTokensCached, estimateMessagesTokensCached } from "./token-estimate-cache";
@@ -4260,6 +4261,10 @@ export async function tryCallLLM(
   // 等工具任务被误判为创造性 → 工具全禁 → 模型无法执行。未传时回退到 message。
   const rawMessage = rawUserMessage ?? message;
 
+  // P1：单轮运行标识。工具处理器通过 AsyncLocalStorage 读取（不进模型可见参数），
+  // execute_code programmatic 的 RPC token / 审计记录据此归属到 session+run。
+  const toolRunId = crypto.randomUUID();
+
   // Wire end-to-end cancellation signal into deps so callLLMOnce picks it up.
   // 创建 deps 浅拷贝再设置 abortSignal，避免修改调用方共享的 deps 对象。
   if (abortSignal && !deps.abortSignal) {
@@ -6710,7 +6715,10 @@ if (deps.contextPruningManager && !prunerNoop) {
                   // 将 AbortSignal 注入 args，让支持取消的 handler 可以响应
                   const argsWithSignal = { ...args, _signal: toolAbortController.signal };
                   try {
-                    const toolPromise = toolEntry.handler(argsWithSignal);
+                    const toolPromise = runWithToolCallContext(
+                      { sessionId, runId: toolRunId },
+                      () => toolEntry.handler(argsWithSignal),
+                    );
                     toolPromise.catch(() => {}); // 防止超时后 unhandledRejection
                     return await Promise.race([
                       toolPromise,

@@ -2,7 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as crypto from "crypto";
 import { spawn, spawnSync } from "child_process";
-import type { AgentModelExecutor } from "@evoclaw/agent";
+import { getCurrentToolCallContext, type AgentModelExecutor } from "@evoclaw/agent";
 import { getWorkspaceDir } from "@evoclaw/core";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
@@ -984,13 +984,17 @@ export function registerShellMediaTools(
    * Programmatic Tool Calling：把多步工具流水线折叠为单次推理调用。
    *
    * 设计（对标 Hermes 的 run_in_sandbox 产品化方向）：
-   * - 模型写一段脚本（默认 Node.js ESM），脚本内可直接 import 并 await 调用
-   *   EvoClaw 已注册的任意工具（读文件、写文件、搜索、记忆等），一次推理
-   *   完成原先需要 N 轮 LLM 往返的多步流水线
+   * - 模型写一段脚本（默认 Node.js ESM），脚本内可调用 allowlist 内的工具
+   *   （读文件、写文件、搜索、补丁、记忆等），一次推理完成原先需要 N 轮
+   *   LLM 往返的多步流水线
    * - 代码在 LocalSandboxBackend（软沙箱）中执行：继承宿主 Node 环境可跑 ESM，
    *   但受 workspace 路径校验与 120s 超时约束；Docker 后端可用时可切硬隔离
-   * - 审计：执行记录（脚本 hash + 调用统计 + 耗时）写 data/logs/programmatic-calls.jsonl，
-   *   走 atomicWriteFile 约定；工具名黑名单不可被脚本调用（shell/网络/审批类）
+   * - 审计：执行记录（脚本 hash + 调用统计 + 耗时 + session/run 归属）写
+   *   data/logs/programmatic-calls.jsonl，走 atomicWriteFile 约定
+   * - 安全（P1，对标 Hermes code_execution_rpc.py）：硬 allowlist ∩ 启用工具、
+   *   per-run RPC token（常量时间校验）、总调用预算、子进程 env 清洗；
+   *   原黑名单保留作纵深防御。注意 programmatic 仍是**软沙箱**：脚本可自行
+   *   import node:child_process / fetch，env 清洗只防密钥被动泄漏。
    * - service-gated：依赖 registry 中的 sandboxManager 与 executor 服务，缺任一
    *   返回明确错误而非静默失败
    */
@@ -1034,12 +1038,83 @@ export function registerShellMediaTools(
     PROGRAMMATIC_FORBIDDEN_RULES.filter((r) => r.action === undefined).map((r) => r.tool)
   );
 
+  /**
+   * 程序化脚本的硬 allowlist（Hermes `SANDBOX_ALLOWED_TOOLS` 语义，P1）。
+   *
+   * 主门是「白名单」，黑名单仅作纵深防御：
+   * - 只收录搜索/读取/写入/列表/补丁类低危工具；
+   * - shell / 浏览器 / 邮件 / 调度 / 审批 / 委派 / 生成类一律不放；
+   * - 运行时再与 executor.isToolEnabled() 取交集（checkFn=false 的工具不暴露）；
+   * - 不实现 Hermes「交集为空则回退全量」的 fail-open —— 这里失败即关闭。
+   */
+  const PROGRAMMATIC_ALLOWED_TOOLS: ReadonlySet<string> = new Set([
+    // 搜索 / 读取 / 列表
+    "code_search",
+    "file_list",
+    "file_read",
+    "session_search",
+    "skill_list",
+    "skill_view",
+    "todo_list",
+    "web_fetch",
+    "web_search",
+    // 写入 / 补丁（workspace 路径约束仍在 file 工具内部生效）
+    "apply_patch",
+    "file_write",
+    // 记忆（P4 起 patch/remove 已走唯一匹配闸门）
+    "memory",
+  ]);
+
+  /**
+   * 子进程环境变量白名单（P1 env 清洗）。
+   *
+   * 只传解释器运行必需项 + RPC token；.env 里的 provider key / 令牌不继承。
+   * 注意这是「软沙箱」：脚本本身仍可 import node:child_process / fetch，
+   * 清洗的目标是避免密钥**被动泄漏**，不是对脚本做系统级隔离。
+   */
+  const PROGRAMMATIC_ENV_ALLOW: readonly string[] = [
+    "PATH", "HOME", "LANG", "TMPDIR", "TEMP", "TMP", "SHELL", "PWD",
+    "SystemRoot", "SYSTEMROOT", "WINDIR", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+    "PATHEXT", "COMSPEC", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+  ];
+
+  /** 构建程序化脚本子进程环境：白名单字段 + LC_* + per-run RPC token */
+  const buildProgrammaticEnv = (rpcToken: string): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (PROGRAMMATIC_ENV_ALLOW.includes(key) || key.startsWith("LC_")) env[key] = value;
+    }
+    env.EVOCLAW_RPC_TOKEN = rpcToken;
+    return env;
+  };
+
+  /** 总调用预算：默认 50（Hermes DEFAULT_MAX_TOOL_CALLS），env 可调 */
+  const resolveMaxToolCalls = (): number => {
+    const raw = parseInt(String(process.env.EVOCLAW_PROGRAMMATIC_MAX_TOOL_CALLS ?? ""), 10);
+    return Number.isFinite(raw) && raw >= 0 ? raw : 50;
+  };
+
   /** 判断一次程序化工具调用是否被禁用（action 缺省表示该工具整体禁用） */
   const isProgrammaticForbidden = (toolName: string, action?: unknown): boolean => {
     const act = typeof action === "string" ? action : undefined;
     return PROGRAMMATIC_FORBIDDEN_RULES.some(
       (r) => r.tool === toolName && (r.action === undefined || r.action === act)
     );
+  };
+
+  /** allowlist ∩ 已注册且 checkFn 通过 ∩ !整体禁用 */
+  const isProgrammaticToolAllowed = (toolName: string): boolean => {
+    if (!PROGRAMMATIC_ALLOWED_TOOLS.has(toolName)) return false;
+    if (PROGRAMMATIC_FORBIDDEN_TOOLS.has(toolName)) return false;
+    const maybeCheck = (executor as { isToolEnabled?: (name: string) => boolean }).isToolEnabled;
+    if (typeof maybeCheck !== "function") return true;
+    try {
+      return maybeCheck.call(executor, toolName);
+    } catch {
+      // checkFn 异常按不可用处理（fail-closed）
+      return false;
+    }
   };
 
   /** 某工具下被禁用的 action 列表（供文档标注） */
@@ -1064,12 +1139,16 @@ export function registerShellMediaTools(
     }
   };
 
-  /** 从 executor 当前注册的 ToolDefinition[] 构建注入脚本的 API 文档 */
+  /**
+   * 从 executor 当前注册的 ToolDefinition[] 构建注入脚本的 API 文档。
+   * 文档与脚本侧 ALLOWED / 宿主侧派发共用 `isProgrammaticToolAllowed`，
+   * 保证「广告 = 可调用」同源（Hermes `_sandbox_tools_for` 语义）。
+   */
   const buildProgrammaticApiDoc = (): string => {
     try {
       const defs = executor.getRegisteredTools();
       return defs
-        .filter((d) => !PROGRAMMATIC_FORBIDDEN_TOOLS.has(d.name))
+        .filter((d) => isProgrammaticToolAllowed(d.name))
         .map((d) => {
           const blocked = forbiddenActionsOf(d.name);
           const desc = d.description ? `: ${d.description.slice(0, 120)}` : "";
@@ -1120,6 +1199,10 @@ export function registerShellMediaTools(
       "const ALLOWED = new Set(" + JSON.stringify(toolNames) + ");",
       "const FORBIDDEN = new Set(" + JSON.stringify(forbidden) + ");",
       "const FORBIDDEN_ACTIONS = " + JSON.stringify(forbiddenActions) + ";",
+      // per-run RPC token：宿主校验后才派发。捕获后立即从 env 删除，
+      // 避免用户脚本 / 其子进程直接读取，也避免泄漏进捕获的 stdout。
+      "const RPC_TOKEN = process.env.EVOCLAW_RPC_TOKEN || '';",
+      "try { delete process.env.EVOCLAW_RPC_TOKEN; } catch {}",
       "const pending = new Map();",
       "let callSeq = 0;",
       // stdin 保持可读（宿主经此回传结果）；脚本结束后需主动关闭所有 handle，
@@ -1144,10 +1227,10 @@ export function registerShellMediaTools(
       "    if (FORBIDDEN.has(String(name))) throw new Error('tool is forbidden in programmatic scripts: ' + name);",
       "    const blockedActions = FORBIDDEN_ACTIONS[String(name)];",
       "    if (blockedActions && blockedActions.indexOf((params && params.action) || '') >= 0) throw new Error('action is forbidden in programmatic scripts: ' + name + '.' + ((params && params.action) || ''));",
-      "    if (!ALLOWED.has(String(name))) throw new Error('unknown tool: ' + name);",
+      "    if (!ALLOWED.has(String(name))) throw new Error('Tool \"' + name + '\" is not available in execute_code. Available: ' + Array.from(ALLOWED).sort().join(', '));",
       "    const id = ++callSeq;",
       "    const p = new Promise((resolve, reject) => pending.set(id, { resolve, reject }));",
-      "    process.stdout.write(JSON.stringify({ __evoclaw_call: { id, name, params: params || {} } }) + '\\n');",
+      "    process.stdout.write(JSON.stringify({ __evoclaw_call: { id, name, params: params || {}, token: RPC_TOKEN } }) + '\\n');",
       "    return await p;",
       "  },",
       "  list: () => Array.from(ALLOWED),",
@@ -1170,8 +1253,11 @@ export function registerShellMediaTools(
         "untrusted/user-provided code, supports Python and Node.js; returns a clear error if Docker is " +
         "unavailable. (2) programmatic=true — runs a Node.js ESM script in a local soft sandbox with an " +
         "injected `tools` API: call multiple registered tools from within one script and combine results " +
-        "(folds a multi-step tool pipeline into a single LLM turn). Forbidden operations (shell_exec, " +
-        "email send, git push/commit, DLQ retry, webhooks, approvals) are rejected; audit log written to " +
+        "(folds a multi-step tool pipeline into a single LLM turn). Only a low-risk allowlist is callable " +
+        "(file read/write/list, code/session/web search, web_fetch, apply_patch, memory, todo/skill view); " +
+        "shell_exec, browser, email send, git push/commit, DLQ retry, webhooks and approvals are rejected. " +
+        "Each run gets a per-run RPC token, a total tool-call budget (default 50) and a cleansed child env " +
+        "(provider keys are not inherited). Audit log written to " +
         "data/logs/programmatic-calls.jsonl. Output longer than ~48K chars is head/tail truncated with the full text spilled to a file (full_output_path in the result) — read it via file_read instead of re-running the code. " +
         "(3) persistent=true — Python-only: session-persistent interpreter kernel (pooled per owner+cwd, one resident process; Hermes " +
         "code_kernel concept): variables and imports survive across calls, so hot-fix loops and re-imports of heavy modules cost only once " +
@@ -1216,8 +1302,9 @@ export function registerShellMediaTools(
           description:
             "When true, runs a Node.js ESM script with an injected `tools` API so one call can drive a multi-step " +
             "tool pipeline (call several tools in sequence/parallel and combine results). Only 'node' language is " +
-            "supported. Forbidden operations (shell_exec, email send, git push/commit, DLQ retry, webhooks, " +
-            "approvals) are rejected. " +
+            "supported. Only a low-risk allowlist is callable; forbidden operations (shell_exec, email send, " +
+            "git push/commit, DLQ retry, webhooks, approvals) are rejected, and the run has a total tool-call " +
+            "budget (default 50). Use tools.list() to see the available tools. " +
             "Prefer this over many separate tool calls for read-heavy pipelines.",
           required: false,
         },
@@ -1246,6 +1333,20 @@ export function registerShellMediaTools(
         const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "120"), 10) || 120, 1), 120);
         const workspaceDir = getWorkspaceDir();
         const startedAt = Date.now();
+        // P1：per-run RPC token（防其他本地进程注入协议行）+ 总调用预算 + run 身份
+        const rpcToken = crypto.randomBytes(32).toString("base64url");
+        const maxToolCalls = resolveMaxToolCalls();
+        const callContext = getCurrentToolCallContext();
+        const programmaticAllowedNames = (() => {
+          try {
+            return executor.getRegisteredTools()
+              .map((d) => d.name)
+              .filter((name) => isProgrammaticToolAllowed(name))
+              .sort();
+          } catch {
+            return [];
+          }
+        })();
 
         // 组装脚本：注入 tools API（白名单）+ 脚本体
         const scriptSource = buildProgrammaticScript(code, {
@@ -1265,7 +1366,8 @@ export function registerShellMediaTools(
             cwd: workspaceForExec,
             // stdin 双工：宿主经 child.stdin 向脚本回传工具结果（__EVOCRAW_RESULT 协议行）
             stdio: ["pipe", "pipe", "pipe"],
-            env: process.env,
+            // P1：env 清洗 —— 只传运行必需项 + RPC token，不继承 .env 密钥
+            env: buildProgrammaticEnv(rpcToken),
             windowsHide: true,
           });
         } catch (err: unknown) {
@@ -1280,26 +1382,32 @@ export function registerShellMediaTools(
         const queue: Array<{ id: number; name: string; params: Record<string, unknown> }> = [];
         const MAX_PENDING = 64;
         let rejectedCalls = 0;
+        // 只对「通过 token + allowlist + 预算检查并真正派发」的调用计数（Hermes 语义）
+        let dispatchedCalls = 0;
+        let budgetExhausted = false;
         const calledTools: string[] = [];
 
         // 结果回传：经 child.stdin 发协议行（脚本侧 wrapper 监听 stdin 解析）。
-        // 已终结调用数（ok/fail）达到已入队调用总数后 end() stdin ——
-        // 否则宿主未关闭的 stdin pipe 会让脚本进程永不退出（top-level await 挂起）。
-        // FORBIDDEN/超限调用由脚本侧 wrapper 直接 throw（不进宿主队列），不计入 pending，
-        // 因此宿主只需按队列内调用数收尾。
-        // 宿主侧「已终结」语义：脚本发出的调用数 == 已回传结果数 → stdin 可关闭。
-        // 超限/未知工具由脚本侧 wrapper 直接 throw（宿主不可见），只有成功入队的调用
-        // 会计数，因此该等式等价于「脚本已不会再有新请求」。
-        let totalCalls = 0;
-        let repliedCount = 0;
+        //
+        // 注意：这里**不能**按「已回传数 == 已收到调用数」提前 end() stdin。
+        // 顺序 await 的脚本每收到一个结果才会发下一个调用，首次回传时等式即成立，
+        // 提前 end() 会让后续结果全部 write-after-end 丢弃 → 脚本 Promise 悬挂或
+        // 进程静默退出、调用预算永远打不满（P1 测试实证）。
+        // 进程退出由脚本侧负责：wrapper 在用户代码 settle 后 closeStdin()（destroy
+        // stdin），宿主侧超时看门狗兜底；child 退出后宿主写入 EPIPE 由 try/catch 吞掉。
         const reply = (id: number, ok: boolean, value: unknown): void => {
-          repliedCount++;
           try {
             child.stdin?.write(`__EVOCRAW_RESULT:${JSON.stringify({ id, ok, value })}\n`);
           } catch { /* child 已退出则忽略 */ }
-          if (totalCalls > 0 && repliedCount >= totalCalls) {
-            try { child.stdin?.end(); } catch { /* ignore */ }
-          }
+        };
+
+        // token 常量时间校验：长度不同直接拒绝（timingSafeEqual 要求等长）。
+        // 空 token fail-closed；token 只防本地其他进程伪造协议行，不是脚本隔离。
+        const expectedTokenBuf = Buffer.from(rpcToken, "utf8");
+        const isValidProgrammaticToken = (candidate: unknown): boolean => {
+          if (typeof candidate !== "string" || candidate.length === 0) return false;
+          const actual = Buffer.from(candidate, "utf8");
+          return actual.length === expectedTokenBuf.length && crypto.timingSafeEqual(actual, expectedTokenBuf);
         };
 
         const runNext = (): void => {
@@ -1311,9 +1419,12 @@ export function registerShellMediaTools(
               try {
                 const requested =
                   call.params && typeof call.params.action === "string" ? call.params.action : undefined;
-                if (PROGRAMMATIC_FORBIDDEN_TOOLS.has(call.name)) {
-                  // 整工具禁用（shell_exec / execute_code / 审批类）
-                  value = { success: false, error: `tool is forbidden in programmatic scripts: ${call.name}` };
+                if (!isProgrammaticToolAllowed(call.name)) {
+                  // 主门：硬 allowlist（未注册 / checkFn=false / 未列入白名单）
+                  value = {
+                    success: false,
+                    error: `Tool "${call.name}" is not available in execute_code. Available: ${programmaticAllowedNames.join(", ") || "(none)"}`,
+                  };
                   rejectedCalls++;
                 } else if (isProgrammaticForbidden(call.name, requested)) {
                   // action 级禁用：合并后的工具一个名字覆盖多个 action，只禁其中的越权
@@ -1321,9 +1432,18 @@ export function registerShellMediaTools(
                   // 误扩成「禁整个 email」，脚本侧读收件箱等功能回归。
                   value = { success: false, error: `action is forbidden in programmatic scripts: ${call.name}.${requested}` };
                   rejectedCalls++;
+                } else if (dispatchedCalls >= maxToolCalls) {
+                  // 总预算：拒绝的调用不消耗预算；超限后脚本仍能拿到错误并自行收尾
+                  budgetExhausted = true;
+                  value = {
+                    success: false,
+                    error: `Tool call limit reached (${maxToolCalls}). No more tool calls allowed in this execution.`,
+                  };
+                  rejectedCalls++;
                 } else {
                   // 宿主侧执行：executeToolByName 跳过人工审批门禁（契约见 agent-model-executor），
-                  // 安全边界由工具白名单 + workspace 路径约束承担
+                  // 安全边界由 allowlist + workspace 路径约束承担
+                  dispatchedCalls++;
                   value = await executor.executeToolByName(call.name, call.params);
                 }
               } catch (err: unknown) {
@@ -1354,13 +1474,18 @@ export function registerShellMediaTools(
             if (capturedStdout.length < MAX_CAPTURE) capturedStdout += line + "\n";
             return;
           }
-          let msg: { __evoclaw_call?: { id: number; name: string; params?: Record<string, unknown> }; __evoclaw_log?: unknown[] };
+          let msg: { __evoclaw_call?: { id: number; name: string; params?: Record<string, unknown>; token?: unknown }; __evoclaw_log?: unknown[] };
           try { msg = JSON.parse(trimmed); } catch {
             if (capturedStdout.length < MAX_CAPTURE) capturedStdout += line + "\n";
             return;
           }
           if (msg.__evoclaw_call) {
-            totalCalls++;
+            // 第一道门：来源认证。未带/带错 token 的协议行一律不派发。
+            if (!isValidProgrammaticToken(msg.__evoclaw_call.token)) {
+              reply(msg.__evoclaw_call.id, false, { success: false, error: "Unauthorized programmatic RPC request" });
+              rejectedCalls++;
+              return;
+            }
             // 上限约束的是「积压队列深度」而非累计调用数：pendingCount 是生命周期
             // 累计值（只 ++ 从不 --），用它做上限会把「并发 ≤4 的 70 次顺序调用」
             // 误判为超限；队列长度才是真正的背压量（FORBIDDEN 调用不入队、不计数）。
@@ -1421,6 +1546,12 @@ export function registerShellMediaTools(
           timedOut,
           codeHash: crypto.createHash("sha256").update(code).digest("hex").slice(0, 16),
           codeBytes: code.length,
+          // run 身份：与 per-run token 绑定（记录 token 哈希而非 token 本身）
+          sessionId: callContext?.sessionId ?? "unknown",
+          runId: callContext?.runId ?? "unknown",
+          rpcRunTag: crypto.createHash("sha256").update(rpcToken).digest("hex").slice(0, 12),
+          maxToolCalls,
+          dispatchedCalls,
           toolCalls: calledTools.length,
           rejectedCalls,
           calledTools: calledTools.slice(0, 20),
@@ -1441,7 +1572,10 @@ export function registerShellMediaTools(
           sandbox: "local-programmatic",
           programmatic: true,
           toolCalls: calledTools.length,
+          dispatchedCalls,
           rejectedCalls,
+          maxToolCalls,
+          budgetExhausted,
         };
       }
 

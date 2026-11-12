@@ -1810,6 +1810,18 @@ export class AgentModelExecutor {
     return Array.from(this.registeredTools.values()).map((t) => t.definition);
   }
 
+  /**
+   * 工具当前是否可用：注册存在且 checkFn 通过（异常按不可用处理）。
+   * 供 execute_code programmatic 的硬 allowlist 与「本会话启用工具」取交集
+   * （Hermes `code_execution_tool._sandbox_tools_for` 语义）。
+   */
+  isToolEnabled(name: string): boolean {
+    const entry = this.registeredTools.get(name);
+    if (!entry) return false;
+    if (!entry.checkFn) return true;
+    return this.evaluateCheckFn(entry.checkFn);
+  }
+
   /** Backward-compatible static delegates for extracted text-processor functions */
   static stripWebNoise(input: string): string {
     return stripWebNoiseImpl(input);

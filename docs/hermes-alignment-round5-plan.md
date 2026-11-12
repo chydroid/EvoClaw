@@ -106,6 +106,17 @@
 
 **风险**：收紧 allowlist 可能破坏既有脚本；先按当前黑名单反推「肯定安全」集合，并提供配置扩展，但默认不开。所有拒绝都要给出可读原因与 `tools.list()`。
 
+**实施记录（2026-11-13）**
+
+- **硬 allowlist**：`shell-media-tools.ts` 新增 `PROGRAMMATIC_ALLOWED_TOOLS`（`file_read/file_write/file_list/apply_patch/code_search/session_search/web_search/web_fetch/memory/todo_list/skill_list/skill_view`）。运行时 = allowlist ∩ `executor.isToolEnabled()`（新增公开方法，评估 checkFn，异常按不可用）∩ !黑名单。文档、脚本侧 `ALLOWED`、宿主派发共用同一判定，拒绝时返回 `Tool "x" is not available in execute_code. Available: ...`。**未**实现 Hermes「交集为空回退全量」的 fail-open：这里空集即无工具。
+- **per-run token**：`crypto.randomBytes(32).toString("base64url")`，经子进程 env `EVOCLAW_RPC_TOKEN` 传入；脚本 wrapper 捕获后立即 `delete process.env.EVOCLAW_RPC_TOKEN`（用户脚本与其子进程读不到），每条 `__evoclaw_call` 带 token；宿主用 `crypto.timingSafeEqual` 常量时间校验（长度不同/空值直接拒绝，fail-closed），未授权协议行回 `Unauthorized programmatic RPC request` 且不派发。
+- **总预算**：`EVOCLAW_PROGRAMMATIC_MAX_TOOL_CALLS`（默认 50，0 合法）→ 只对**真正派发**的调用计数；超限返回 `Tool call limit reached (N)...`，拒绝调用不消耗预算。结果新增 `dispatchedCalls/maxToolCalls/budgetExhausted`。
+- **env 清洗**：子进程只继承 `PATH/HOME/LANG/LC_*/TMPDIR/TEMP/TMP/SHELL/PWD` 与 Windows 必需项（`SystemRoot/PATHEXT/COMSPEC/APPDATA...`）+ RPC token；`.env` 里的 provider key 不再继承。文档明确 programmatic 仍是**软沙箱**（脚本可自行 `import child_process`/`fetch`，清洗只防密钥被动泄漏）。
+- **run 身份**：新增 `packages/agent/src/tool-call-context.ts`（AsyncLocalStorage），llm-caller 在工具派发点包 `runWithToolCallContext({sessionId, runId})`，单轮 `runId = crypto.randomUUID()`；嵌套 `executeToolByName` 自动继承。审计新增 `sessionId/runId/rpcRunTag`（token 的 sha256 前 12 位，不落明文）。
+- **顺带修复（测试实证的既有缺陷）**：原宿主在「已回传数 == 已收到调用数」时提前 `child.stdin.end()`。顺序 `await` 的脚本首次回传后等式即成立，后续结果 write-after-end 丢失、脚本静默退出，导致多步脚本结果不可靠且预算永远打不满。改为不主动 end：脚本 wrapper 结束时会 `closeStdin()`，宿主超时看门狗兜底。
+- 黑名单保留作纵深防御；`execute_code` 工具描述同步改写（allowlist、token、预算、env 清洗）。
+- 测试：`apps/server/tests/programmatic-tools.test.ts` 新增 7 条（allowlist、checkFn=false、token 缺失/错误、正确 token、预算、env 清洗、审计 run 归属）；全量 `pnpm test` 7352 passed（342 files）。
+
 ---
 
 ### P3 — 审批连续拒绝熔断
@@ -342,7 +353,7 @@
 | ID | 状态 | 提交 | 备注 |
 |---|---|---|---|
 | P0 | 已完成 | a7bf8ae | 批次 A，最高优先 |
-| P1 | 未开始 | — | 批次 A |
+| P1 | 已完成 | 待回填 | 批次 A |
 | P3 | 已完成 | eeb0cc6 | 依赖 P0 |
 | P4 | 已完成（Phase 1） | 08c6c86 | 批次 A；Phase 2 staging 可选、默认关闭，未实施 |
 | P2 | 未开始 | — | 批次 B |

@@ -9,6 +9,8 @@ export type { SqliteDatabaseLike as AgentSqliteDatabaseLike } from "./sqlite-che
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
 export { destroyHttpAgents } from "./llm-caller";
+export { runWithToolCallContext, getCurrentToolCallContext } from "./tool-call-context";
+export type { ToolRuntimeContext } from "./tool-call-context";
 // v0.36: 可持久化超长任务引擎（断点续跑，超时不再失败）
 export { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "./durable-task-runner";
 export type { DurableTask, DurableTaskStatus, ResumeDriver, DeliverFn } from "./durable-task-runner";
