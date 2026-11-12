@@ -316,6 +316,16 @@
 
 **风险**：这是新的信任边界（远端服务器可指定 prompt/model）；默认关闭 + 显式 opt-in 是硬要求。协议版本字段缺失（`mcp-protocol-handler.ts:97-125` 不返回 `protocolVersion`）可顺手补齐。
 
+**实施记录（2026-11-13）**
+
+- 新增 `packages/gateway/src/mcp-sampling.ts`：`createSamplingHandler(serverName, config, llm)`，每 server 独立状态。护栏与 Hermes 对齐：滑动窗口 60s 限流（默认 10/min）、模型 allowlist（`config.model` 覆盖 > server hints）、`max_tokens` 客户端硬上限（默认 4096）、30s 超时（先以 `RequestTimeout` 结束 race 再 abort，避免超时被误包装成 InternalError）、连续 tool-use 轮次上限（默认 5，0 禁止，文本响应重置计数）、`exposeClientTools` 默认 false（带 tools 的请求直接拒绝且不声明子能力）、空响应/LLM 异常都抛 `McpError`，错误信息脱敏（Bearer / sk- 形态）。工具响应返回 `tool_use` 内容数组 + `stopReason: "toolUse"`，文本响应返回单 content（兼容 `CreateMessageResultSchema`）。
+- transport：仅当 `config.sampling.enabled === true` 且调用方注入了 LLM 回调时，`Client` 才声明 sampling 能力（`{sampling:{}}`，`exposeClientTools` 时为 `{sampling:{tools:{}}}`）并 `setRequestHandler(CreateMessageRequestSchema, ...)`；否则能力保持 `{}`（server 收到 MethodNotFound）。
+- 注入链：`MCPClientManager.setSamplingLlm()` ← `GatewayServer.initializeExternalMCPServers` 向已注册的 `agentModelExecutor` 取 `createMcpSamplingLlm()`（方法缺失则不启用，并输出告警）。`connectServer` 仅在有 LLM 回调时把 sampling 配置传给 transport。
+- `AgentModelExecutor.createMcpSamplingLlm()`：单次 `callLLMOnce`（可携带 server tools，toolChoice auto）；**不**读写主会话 history/systemPrompt，避免远端请求污染会话与 prompt 缓存；usage 在固定 sessionId `"mcp-sampling"` 下调用 `recordTokenUsage` 单点记账。
+- 与计划第 4 步的差异：未给 `auxiliary-client.ts` 增加 `mcp_sampling` 任务类型。实现需要 tools 透传，而 `callAuxLLM`/`AuxChatFn` 只返回文本；改为直接走 `callLLMOnce` 并保留单点记账。`auxiliary.<task>` 覆盖对 sampling 暂不生效（记录为后续可选）。
+- 计划提到的 `mcp-protocol-handler.ts` 协议版本字段不在本轮范围（未实施）。
+- 测试：新增 `packages/gateway/src/mcp-sampling.test.ts`（13：限流/白名单/clamp/超时/空响应/tools 默认关闭/轮次上限/文本转换/并发/脱敏）、`packages/gateway/src/mcp-sampling-integration.test.ts`（2：真实 stdio MCP server 端到端 sampling 成功；默认关闭时 MethodNotFound）；全量 `pnpm test` 7409 passed（351 files）。
+
 ---
 
 ### P7 — cron 持久化 pending_slot + occurrence 账本
@@ -389,5 +399,5 @@
 | P2 | 已完成 | ffdfe70 | 批次 B；静态扫描（可选第 4 步）未实施 |
 | P8 | 已完成 | 085da10 | 批次 B |
 | P5 | 已完成 | 57e6f84 | 批次 C1；CLI/WebUI 后置 |
-| P6 | 未开始 | — | 批次 C2 |
+| P6 | 已完成 | 0a7c727 | 批次 C2；auxiliary 任务类型未加（直连 callLLMOnce） |
 | P7 | 未开始 | — | 批次 D |
