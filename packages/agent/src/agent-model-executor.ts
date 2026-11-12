@@ -3639,6 +3639,96 @@ export class AgentModelExecutor {
   }
 
   /**
+   * P6：为 MCP sampling 构造 LLM 回调。
+   *
+   * 远端 MCP server 通过 sampling/createMessage 请求本客户端代调 LLM。这里只做
+   * **单次** callLLMOnce（可携带 server 提供的 tools），不读取也不写入主会话
+   * history / system prompt，避免远端请求污染会话上下文与 prompt 缓存。
+   * token 记账在固定 sessionId "mcp-sampling" 下，保持单点收口。
+   */
+  createMcpSamplingLlm(): (req: {
+    model?: string;
+    systemPrompt?: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+    maxTokens: number;
+    temperature?: number;
+    stopSequences?: string[];
+    tools?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
+    signal?: AbortSignal;
+  }) => Promise<{
+    model: string;
+    text?: string;
+    toolCalls?: Array<{ id: string; name: string; arguments: string | Record<string, unknown> }>;
+    usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
+  }> {
+    return async (req) => {
+      const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
+      if (!main) throw new Error("MCP sampling 不可用：无已启用模型");
+      const model = req.model ?? main.model;
+      if (!model) throw new Error("MCP sampling 不可用：无可用模型名");
+
+      const providerConfig: ProviderConfig = {
+        ...main,
+        model,
+        maxTokens: req.maxTokens,
+        temperature: req.temperature ?? 0,
+        timeout: 30_000,
+      };
+      const messages: Array<{ role: string; content: string }> = req.systemPrompt
+        ? [{ role: "system", content: req.systemPrompt }, ...req.messages]
+        : [...req.messages];
+      const tools = (req.tools ?? []).map((t) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description ?? "",
+          parameters: t.inputSchema ?? { type: "object", properties: {} },
+        },
+      }));
+
+      const deps = req.signal
+        ? { ...this.getLLMCallerDeps(), abortSignal: req.signal }
+        : this.getLLMCallerDeps();
+      const result = await callLLMOnceFn(
+        providerConfig,
+        messages,
+        tools,
+        tools.length > 0 ? "auto" : "none",
+        undefined,
+        deps,
+      );
+      if (!result) throw new Error("MCP sampling LLM 返回空结果");
+
+      const promptTokens = result.promptTokens ?? 0;
+      const totalTokens = result.tokensUsed ?? 0;
+      this.recordTokenUsage(
+        "mcp-sampling",
+        providerConfig.provider,
+        model,
+        promptTokens,
+        Math.max(0, totalTokens - promptTokens),
+        result.responseMs ?? 0,
+      );
+
+      const toolCalls = result.message?.tool_calls?.map((tc) => ({
+        id: tc.id,
+        name: tc.function.name,
+        arguments: tc.function.arguments,
+      }));
+      return {
+        model,
+        text: result.message?.content ?? "",
+        ...(toolCalls && toolCalls.length > 0 ? { toolCalls } : {}),
+        usage: {
+          promptTokens,
+          completionTokens: Math.max(0, totalTokens - promptTokens),
+          totalTokens,
+        },
+      };
+    };
+  }
+
+  /**
    * 构建 AuxChatFn（side-task 单次调用实现）。
    * 把 callAuxLLM 回退链解析出的 runtime 映射为 ProviderConfig 并调用 callLLMOnce。
    * 传输映射：anthropic → anthropic；openrouter/zai/kimi/minimax/custom_endpoint/unknown

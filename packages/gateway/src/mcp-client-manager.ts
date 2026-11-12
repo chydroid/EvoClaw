@@ -33,6 +33,7 @@ import {
   type McpOAuthTokenProvider,
 } from "./mcp-client-transport.js";
 import type { McpOAuthManager } from "./mcp-oauth-manager.js";
+import type { SamplingLlm, SamplingMetrics } from "./mcp-sampling.js";
 import { MCPGateway } from "./mcp-gateway.js";
 import { MCPTool } from "@evoclaw/core";
 import { atomicWriteFileSync } from "./atomic-write";
@@ -130,6 +131,18 @@ export class MCPClientManager {
 
   getOAuthManager(): McpOAuthManager | null {
     return this.oauthManager;
+  }
+
+  /** Sampling LLM 回调（P6；由 gateway 在 executor 就绪后注入） */
+  private samplingLlm: SamplingLlm | null = null;
+
+  setSamplingLlm(llm: SamplingLlm): void {
+    this.samplingLlm = llm;
+  }
+
+  /** 某 server 的 sampling 指标（P6；未启用返回 null） */
+  getSamplingMetrics(name: string): SamplingMetrics | null {
+    return this.servers.get(name)?.transport.getSamplingMetrics() ?? null;
   }
 
   constructor(dataDir: string) {
@@ -303,8 +316,24 @@ export class MCPClientManager {
       this.servers.delete(name);
     }
 
-    // 创建并连接（P5：HTTP 传输注入 OAuth token provider）
-    const transport = new MCPClientTransport(name, config, this.buildOAuthProvider(config));
+    // 创建并连接（P5 OAuth token provider / P6 sampling handler）
+    let sampling: { config: NonNullable<ExternalMCPServerConfig["sampling"]>; llm: SamplingLlm } | undefined;
+    if (config.sampling?.enabled) {
+      if (this.samplingLlm) {
+        sampling = { config: config.sampling, llm: this.samplingLlm };
+      } else {
+        // fail-closed：配置要 sampling 但应用没注入 LLM 回调 → 不声明能力
+        process.stderr.write(
+          `[MCPClientManager] Server "${name}" requests sampling but no LLM callback is wired; sampling stays disabled\n`,
+        );
+      }
+    }
+    const transport = new MCPClientTransport(
+      name,
+      config,
+      this.buildOAuthProvider(config),
+      sampling,
+    );
     await transport.connect();
 
     // 发现工具

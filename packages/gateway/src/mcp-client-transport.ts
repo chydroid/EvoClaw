@@ -15,6 +15,14 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { CreateMessageRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import {
+  createSamplingHandler,
+  type McpSamplingConfig,
+  type SamplingLlm,
+  type SamplingMetrics,
+  type SamplingParamsLike,
+} from "./mcp-sampling.js";
 
 /** 外部 MCP server 配置（与 IDE 的 mcpServers 配置格式一致） */
 export interface ExternalMCPServerConfig {
@@ -59,6 +67,11 @@ export interface ExternalMCPServerConfig {
     scopes?: string[];
     clientId?: string;
   };
+  /**
+   * Sampling（P6）：允许远端 server 请求本客户端调用 LLM。默认关闭。
+   * 只有 `enabled === true` 时才声明 sampling 能力并注册 handler。
+   */
+  sampling?: McpSamplingConfig;
 }
 
 /**
@@ -182,12 +195,26 @@ export class MCPClientTransport {
   private readonly config: ExternalMCPServerConfig;
   /** OAuth token provider（P5；stdio / 未启用时为 undefined） */
   private readonly oauth: McpOAuthTokenProvider | undefined;
+  /** Sampling setup（P6；未启用时为 undefined） */
+  private readonly sampling: { config: McpSamplingConfig; llm: SamplingLlm } | undefined;
+  private samplingHandler: ReturnType<typeof createSamplingHandler> | null = null;
 
-  constructor(name: string, config: ExternalMCPServerConfig, oauth?: McpOAuthTokenProvider) {
+  constructor(
+    name: string,
+    config: ExternalMCPServerConfig,
+    oauth?: McpOAuthTokenProvider,
+    sampling?: { config: McpSamplingConfig; llm: SamplingLlm },
+  ) {
     this.name = name;
     this.config = config;
     this.type = config.type;
     this.oauth = oauth;
+    this.sampling = sampling;
+  }
+
+  /** Sampling 指标（P6；未启用返回 null） */
+  getSamplingMetrics(): SamplingMetrics | null {
+    return this.samplingHandler?.getMetrics() ?? null;
   }
 
   /** 连接到外部 MCP server */
@@ -239,11 +266,28 @@ export class MCPClientTransport {
       throw new Error(`Unknown MCP transport type: ${(this.config as { type: string }).type}`);
     }
 
+    // P6：sampling 默认关闭；只有显式启用才声明能力并注册 handler。
+    const samplingEnabled = this.sampling?.config.enabled === true;
+    if (samplingEnabled) {
+      this.samplingHandler = createSamplingHandler(this.name, this.sampling!.config, this.sampling!.llm);
+    }
+    const capabilities = samplingEnabled
+      ? { sampling: this.sampling!.config.exposeClientTools ? { tools: {} } : {} }
+      : {};
+
     // 创建 Client 并发起 initialize 握手
     this.client = new Client(
       { name: "evoclaw-mcp-client", version: "1.0.0" },
-      { capabilities: {} },
+      { capabilities },
     );
+
+    if (this.samplingHandler) {
+      const handler = this.samplingHandler;
+      this.client.setRequestHandler(CreateMessageRequestSchema, async (request) => {
+        const result = await handler.handler(request.params as unknown as SamplingParamsLike);
+        return result as never;
+      });
+    }
 
     this.client.onerror = (err: Error) => {
       process.stderr.write(`[MCPClient:${this.name}] Error: ${err.message}\n`);

@@ -164,6 +164,13 @@ export class GatewayServer {
       invalidateCheckFnCache?: () => void;
     }>("agentModelExecutor");
     this.mcpClientManager.setDependencies(this.mcpGateway, agentExecutor);
+    // P6：sampling LLM 回调（executor 就绪后解析；缺失时 sampling 保持关闭）
+    const samplingFactory = (agentExecutor as {
+      createMcpSamplingLlm?: () => Parameters<MCPClientManager["setSamplingLlm"]>[0];
+    } | null)?.createMcpSamplingLlm;
+    if (agentExecutor && typeof samplingFactory === "function") {
+      this.mcpClientManager.setSamplingLlm(samplingFactory.call(agentExecutor));
+    }
     // 投毒门：注入 MCPToolPoisoningScanner（P1-4 注册门前置安全门）
     const scanner = this.registry.resolveService<MCPToolPoisoningScanner>("mcpPoisoningScanner");
     if (scanner) {
