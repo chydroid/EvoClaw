@@ -23,7 +23,36 @@ export interface ScheduledTask {
   lastError?: string;
   createdAt: Date;
   updatedAt: Date;
+  /**
+   * P7：派发前写入的「已认领窗口」。进程崩溃后重启时据此只补跑一次；
+   * owner 存活且未过期时其他进程不得接手。
+   */
+  pendingSlot?: {
+    /** 该次运行对应的计划触发时间（ISO） */
+    scheduledAt: string;
+    /** 认领时间（ISO） */
+    stampedAt: string;
+    /** 认领进程 PID */
+    owner: number;
+    /** true 表示这是重启后的恢复认领（只恢复一次） */
+    recovered?: boolean;
+  };
+  /**
+   * P7：每任务运行配额（EvoClaw 扩展，非 Hermes quota_hold）。
+   * windowMs 窗口内最多 limit 次；未配置 = 不限制。
+   */
+  quota?: {
+    windowMs: number;
+    limit: number;
+    windowStart?: string;
+    used?: number;
+  };
+  /** P7：每任务时区（IANA）；未配置时回落全局 EVOCLAW_TIMEZONE */
+  timezone?: string;
 }
+
+/** P7：pendingSlot 超过该时长即视为过期（owner 可能假活/停滞） */
+const PENDING_SLOT_TTL_MS = 300_000;
 
 export interface TaskRunResult {
   taskId: string;
@@ -51,6 +80,8 @@ export class ScheduleManager {
   private dataDir: string;
   private started = false;
   private failureNudgeThreshold: number;
+  /** P7：loadTasks 恢复的待补跑任务（start() 时执行一次） */
+  private recoveredTaskIds = new Set<string>();
 
   constructor(
     private registry: ServiceRegistry,
@@ -85,6 +116,10 @@ export class ScheduleManager {
     maxRetries?: number;
     retryDelayMs?: number;
     enabled?: boolean;
+    /** P7：任务时区（IANA），缺省回落全局 */
+    timezone?: string;
+    /** P7：每任务运行配额 */
+    quota?: ScheduledTask["quota"];
   }): ScheduledTask {
     if (!cron.validate(options.cronExpression)) {
       throw new Error(`Invalid cron expression: ${options.cronExpression}`);
@@ -109,6 +144,8 @@ export class ScheduleManager {
       nextRun: nextDate,
       createdAt: new Date(),
       updatedAt: new Date(),
+      ...(options.timezone ? { timezone: options.timezone } : {}),
+      ...(options.quota ? { quota: options.quota } : {}),
     };
 
     this.tasks.set(id, task);
@@ -129,7 +166,7 @@ export class ScheduleManager {
 
   updateTask(
     taskId: string,
-    updates: Partial<Pick<ScheduledTask, "name" | "cronExpression" | "description" | "handlerType" | "handlerConfig" | "enabled" | "maxRetries" | "retryDelayMs">>
+    updates: Partial<Pick<ScheduledTask, "name" | "cronExpression" | "description" | "handlerType" | "handlerConfig" | "enabled" | "maxRetries" | "retryDelayMs" | "timezone" | "quota">>
   ): ScheduledTask | null {
     const task = this.tasks.get(taskId);
     if (!task) return null;
@@ -237,6 +274,16 @@ export class ScheduleManager {
       }
     }
 
+    // P7：崩溃/停机恢复 —— 每个 pendingSlot 只补跑一次。
+    // runningTasks 守卫保证与刚触发的 cron tick 不会双跑。
+    const recovered = [...this.recoveredTaskIds];
+    this.recoveredTaskIds.clear();
+    for (const taskId of recovered) {
+      const task = this.tasks.get(taskId);
+      if (!task || !task.enabled) continue;
+      void this.runTask(task);
+    }
+
     this.eventBus.publish(
       "scheduler.started",
       { activeTaskCount: [...this.tasks.values()].filter((t) => t.enabled).length },
@@ -275,7 +322,8 @@ export class ScheduleManager {
         await this.runTask(task);
       }, {
         scheduled: true,
-        timezone: process.env.EVOCLAW_TIMEZONE || "Asia/Shanghai",
+        // P7：任务级时区优先；老任务无该字段时保持原全局行为，避免静默平移
+        timezone: task.timezone || process.env.EVOCLAW_TIMEZONE || "Asia/Shanghai",
       });
 
       this.cronJobs.set(task.id, job);
@@ -303,12 +351,45 @@ export class ScheduleManager {
       process.stderr.write(`[ScheduleManager] Task "${task.name}" (${task.id}) already running, skipping this tick\n`);
       return { taskId: task.id, runAt: new Date(), success: false, duration: 0, error: "Already running" };
     }
+
+    // P7：配额门（手动 executeTask 同样经过此门；配置见 ScheduledTask.quota）
+    if (!this.consumeQuota(task)) {
+      const result: TaskRunResult = {
+        taskId: task.id,
+        runAt: new Date(),
+        success: false,
+        duration: 0,
+        error: "Quota exceeded",
+      };
+      this.eventBus.publish(
+        "scheduler.task_skipped",
+        { taskId: task.id, name: task.name, reason: "quota", quota: task.quota },
+        "schedule-manager",
+      );
+      process.stderr.write(`[ScheduleManager] Task "${task.name}" skipped: quota exceeded\n`);
+      return result;
+    }
+
     this.runningTasks.add(task.id);
+
+    // P7：派发前持久认领窗口（at-most-once）。同步落盘，崩溃后可据此恢复一次。
+    const scheduledAt = (task.nextRun ?? new Date()).toISOString();
+    task.pendingSlot = {
+      scheduledAt,
+      stampedAt: new Date().toISOString(),
+      owner: process.pid,
+    };
+    this.saveTasksSync();
 
     try {
       return await this.runTaskInner(task);
     } finally {
       this.runningTasks.delete(task.id);
+      // 正常路径 recordResult 已清除；异常路径在此兜底，避免窗口永久悬挂
+      if (task.pendingSlot?.owner === process.pid) {
+        task.pendingSlot = undefined;
+        this.saveTasksSync();
+      }
     }
   }
 
@@ -396,7 +477,30 @@ export class ScheduleManager {
     return result;
   }
 
+  /**
+   * P7：消费一次配额。窗口滚动时重置计数。
+   * @returns true = 允许运行；false = 配额耗尽（本窗口不再运行）
+   */
+  private consumeQuota(task: ScheduledTask): boolean {
+    const quota = task.quota;
+    if (!quota || quota.limit <= 0) return true;
+    const now = Date.now();
+    const windowStart = quota.windowStart ? Date.parse(quota.windowStart) : NaN;
+    if (!Number.isFinite(windowStart) || now - windowStart >= quota.windowMs) {
+      quota.windowStart = new Date(now).toISOString();
+      quota.used = 0;
+    }
+    if ((quota.used ?? 0) >= quota.limit) {
+      this.saveTasksSync();
+      return false;
+    }
+    quota.used = (quota.used ?? 0) + 1;
+    return true;
+  }
+
   private recordResult(task: ScheduledTask, result: TaskRunResult): void {
+    // P7：运行结束（成功/失败）即释放认领窗口
+    task.pendingSlot = undefined;
     task.runCount++;
     task.lastRun = result.runAt;
     task.nextRun = this.calculateNextRun(task.cronExpression);
@@ -475,12 +579,62 @@ export class ScheduleManager {
           });
         }
       }
+      this.recoverPendingSlots();
     } catch (err) {
       process.stderr.write("[ScheduleManager] Failed to load tasks:" + " " + err + "\n");
     }
   }
 
+  /**
+   * P7 恢复：pendingSlot 的 owner 仍存活且未超过 TTL → 不动（另一个进程正在跑）；
+   * 否则本进程认领一次，start() 时补跑。停用的任务只清窗口、不补跑。
+   */
+  private recoverPendingSlots(): void {
+    const now = Date.now();
+    let changed = false;
+    for (const task of this.tasks.values()) {
+      const slot = task.pendingSlot;
+      if (!slot) continue;
+
+      const stampedAt = Date.parse(slot.stampedAt);
+      const fresh = Number.isFinite(stampedAt) && now - stampedAt < PENDING_SLOT_TTL_MS;
+      if (isPidAlive(slot.owner) && fresh) {
+        // 活着的 owner 正在执行（或刚认领），不抢
+        continue;
+      }
+
+      if (!task.enabled) {
+        task.pendingSlot = undefined;
+        changed = true;
+        continue;
+      }
+
+      // 只恢复一次：覆盖为当前进程的认领窗口 + 标记 recovered
+      task.pendingSlot = {
+        scheduledAt: slot.scheduledAt,
+        stampedAt: new Date(now).toISOString(),
+        owner: process.pid,
+        recovered: true,
+      };
+      task.nextRun = new Date(now);
+      this.recoveredTaskIds.add(task.id);
+      changed = true;
+      process.stderr.write(
+        `[ScheduleManager] Recovering missed slot for task "${task.name}" (${task.id}) ` +
+        `scheduled at ${slot.scheduledAt} (owner ${slot.owner})\n`,
+      );
+    }
+    if (changed) {
+      this.saveTasksSync();
+    }
+  }
+
   private async saveTasks(): Promise<void> {
+    this.saveTasksSync();
+  }
+
+  /** 同步落盘（P7：派发前认领窗口必须在下一次 tick 前写入磁盘） */
+  private saveTasksSync(): void {
     try {
       const filePath = path.join(this.dataDir, "tasks.json");
       const data = [...this.tasks.values()];
@@ -488,5 +642,16 @@ export class ScheduleManager {
     } catch (err) {
       process.stderr.write("[ScheduleManager] Failed to save tasks:" + " " + err + "\n");
     }
+  }
+}
+
+/** PID 存活检测：EPERM 视为存活（与 CrossProcessLock 语义一致） */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
