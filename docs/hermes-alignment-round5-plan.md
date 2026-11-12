@@ -126,6 +126,15 @@
 
 **风险**：P0 未修则高危拒绝根本到不了计数器——所以 P0 必须先行。UX 上需要让用户知道「审批被暂停、如何恢复」。
 
+**实施记录（2026-11-13）**
+
+- 新增 `packages/agent/src/approval-denial-breaker.ts`：`Map<sessionId,{consecutive,lastDeniedAt,trippedAt,lastRequestId}>`，阈值默认 3（`EVOCLAW_APPROVAL_DENIAL_THRESHOLD`，`<=0` 关闭）、空闲 TTL 30 分钟（`EVOCLAW_APPROVAL_DENIAL_IDLE_MS`）、上限 256（LRU）。`lastRequestId` 对「决策回调 + 事件」的重复投递去重。
+- 计数/复位单点：`HumanApprovalManager` 新增 `setDecisionObserver`，executor 在 `setHumanApprovalManager` 里把 approve/modified → 清零、rejected → 计数。这样 `/approve`、`/reject`、HTTP 审批、渠道审批全部覆盖，不依赖具体路由。
+- 事件汇聚：`permission.denied` 订阅按 `requestId ?? id` 兼容 PermissionManager/PermissionRelay 两种 payload，清理 `pendingOperations` 并计数；`permission.approved` 先解析 session（映射删除前）再清零。
+- 熔断动作：HITL 预检与工具级 `requiresPermission` 分支先查 breaker。工具级命中时先 `permissionManager.denyRequest(requestId)` 关闭已创建的请求，再把 tool-result 换成 `{success:false,blockedByBreaker:true,error:"CIRCUIT BREAKER: ..."}`；不新增 `pendingPermissions`。
+- 观测：`GET /api/approvals/breaker`、`POST /api/approvals/breaker/reset`（`{sessionId?}`）；ApprovalCenterPage 待审批页展示阈值/会话计数/熔断标记与重置按钮。
+- 测试：`approval-denial-breaker.test.ts`（10）、wiring 新增 3、llm-caller-hitl 新增 2。全量 7319 passed。
+
 ---
 
 ### P4 — 记忆写入闸门
@@ -324,7 +333,7 @@
 |---|---|---|---|
 | P0 | 已完成 | 待回填 | 批次 A，最高优先 |
 | P1 | 未开始 | — | 批次 A |
-| P3 | 未开始 | — | 依赖 P0 |
+| P3 | 已完成 | 待回填 | 依赖 P0 |
 | P4 | 未开始 | — | 批次 A |
 | P2 | 未开始 | — | 批次 B |
 | P8 | 未开始 | — | 批次 B |

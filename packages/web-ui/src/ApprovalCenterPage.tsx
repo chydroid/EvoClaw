@@ -60,6 +60,18 @@ interface TimeoutConfig {
   escalationTimeout: number;
 }
 
+interface BreakerSession {
+  sessionId: string;
+  consecutive: number;
+  lastDeniedAt: number;
+  trippedAt?: number;
+}
+
+interface BreakerSnapshot {
+  config: { threshold: number; idleTtlMs: number; maxSessions: number };
+  sessions: BreakerSession[];
+}
+
 const RISK_VARIANT: Record<string, BadgeVariant> = {
   critical: "error", high: "warning", medium: "default", low: "default",
 };
@@ -84,6 +96,7 @@ export default function ApprovalCenterPage() {
   const [loading, setLoading] = useState(true);
 
   const [pending, setPending] = useState<PendingRequest[]>([]);
+  const [breaker, setBreaker] = useState<BreakerSnapshot | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [reactions, setReactions] = useState<ReactionEntry[]>([]);
   const [config, setConfig] = useState<TimeoutConfig>({
@@ -105,15 +118,17 @@ export default function ApprovalCenterPage() {
   const loadData = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      const [pendingRes, configRes, reactionRes, historyRes] = await Promise.all([
+      const [pendingRes, configRes, reactionRes, historyRes, breakerRes] = await Promise.all([
         fetch(`${API}/api/approvals/pending`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/approval-timeout/config`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/reaction-approvals`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
         fetch(`${API}/api/approvals/history`, { signal }).then(r => r.json()).catch((err) => { console.error("[API] request failed:", err); return null; }),
+        fetch(`${API}/api/approvals/breaker`, { signal }).then(r => r.ok ? r.json() : null).catch((err) => { console.error("[API] request failed:", err); return null; }),
       ]);
 
       const pendList: PendingRequest[] = (pendingRes?.pending || pendingRes?.requests || pendingRes || []) as any[];
       setPending(pendList);
+      setBreaker(breakerRes?.config ? breakerRes as BreakerSnapshot : null);
 
       if (configRes) {
         setConfig({
@@ -189,6 +204,21 @@ export default function ApprovalCenterPage() {
     setConfirmAction(null);
   };
 
+  const handleResetBreaker = async (sessionId?: string) => {
+    try {
+      const res = await fetch(`${API}/api/approvals/breaker/reset`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sessionId ? { sessionId } : {}),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      showToast(t("approval.breaker.resetSuccess"), "success");
+      loadData();
+    } catch (e: any) {
+      showToast(e.message || t("approval.breaker.reset"), "error");
+    }
+  };
+
   const handleSaveConfig = async () => {
     try {
       const res = await fetch(`${API}/api/approval-timeout/config`, {
@@ -238,6 +268,33 @@ export default function ApprovalCenterPage() {
       {/* ── Pending Tab ── */}
       {tab === "pending" && (
         <div>
+          {/* P3：连续拒绝熔断观测与重置 */}
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 8 }}>
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>⛔ {t("approval.breaker.title")}</div>
+                <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("approval.breaker.desc")}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Badge variant="default">{t("approval.breaker.threshold")}: {breaker?.config.threshold ?? "—"}</Badge>
+                <SecondaryButton small onClick={() => handleResetBreaker()}>{t("approval.breaker.resetAll")}</SecondaryButton>
+              </div>
+            </div>
+            {!breaker || breaker.sessions.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("approval.breaker.empty")}</div>
+            ) : (
+              breaker.sessions.map(s => (
+                <div key={s.sessionId} style={{ display: "flex", alignItems: "center", gap: 12, padding: "6px 0", borderTop: "1px solid var(--border)" }}>
+                  <code style={{ fontSize: 11, color: "var(--accent)", flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{s.sessionId}</code>
+                  <span style={{ fontSize: 12 }}>{t("approval.breaker.consecutive")}: {s.consecutive}</span>
+                  <Badge variant={s.trippedAt ? "error" : "default"}>
+                    {s.trippedAt ? t("approval.breaker.tripped") : t("approval.breaker.normal")}
+                  </Badge>
+                  <SecondaryButton small onClick={() => handleResetBreaker(s.sessionId)}>{t("approval.breaker.reset")}</SecondaryButton>
+                </div>
+              ))
+            )}
+          </Card>
           {pending.length === 0 ? (
             <EmptyState title={t("approval.empty.pending")} />
           ) : (

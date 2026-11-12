@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AgentModelExecutor } from "./agent-model-executor";
 import { HumanApprovalManager, type PendingApproval } from "./human-approval";
+import { ApprovalDenialBreaker } from "./approval-denial-breaker";
 import { ServiceRegistry, EventBus } from "@evoclaw/core";
 import { setActiveSecurityLevel } from "@evoclaw/security";
 
@@ -87,5 +88,39 @@ describe("AgentModelExecutor — HITL 审批接线（P0）", () => {
   it("不存在的 id：approve/reject 均返回 false（路由据此返回 404）", () => {
     expect(executor.approveOperation("hitl-missing", "tester")).toBe(false);
     expect(executor.rejectOperation("hitl-missing", "tester")).toBe(false);
+  });
+
+  // ── P3：熔断接线 ─────────────────────────────────────────────
+
+  it("permission.denied 事件累计，permission.approved 清零", async () => {
+    executor.setDenialBreaker(new ApprovalDenialBreaker({ threshold: 2 }));
+    executor.getDenialBreaker();
+    await eventBus.publish("permission.denied", { requestId: "d1", sessionId: "sess-1" }, "permission-manager");
+    await eventBus.publish("permission.denied", { requestId: "d2", sessionId: "sess-1" }, "permission-manager");
+    expect(executor.getDenialBreaker().isTripped("sess-1")).toBe(true);
+
+    await eventBus.publish("permission.approved", { requestId: "a1", sessionId: "sess-1" }, "permission-manager");
+    expect(executor.getDenialBreaker().isTripped("sess-1")).toBe(false);
+  });
+
+  it("rejectOperation → 观察者计数；approveOperation → 清零", async () => {
+    executor.setDenialBreaker(new ApprovalDenialBreaker({ threshold: 1 }));
+    const pending = seedPending("hitl-reject-breaker");
+    expect(executor.rejectOperation(pending.id, "tester", "no")).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(executor.getDenialBreaker().isTripped("sess-1")).toBe(true);
+
+    const pending2 = seedPending("hitl-approve-breaker");
+    expect(executor.approveOperation(pending2.id, "tester")).toBe(true);
+    expect(executor.getDenialBreaker().isTripped("sess-1")).toBe(false);
+  });
+
+  it("recordApprovalDenial 通过 pendingOperations 解析 sessionId", () => {
+    executor.setDenialBreaker(new ApprovalDenialBreaker({ threshold: 2 }));
+    seedPending("req-session-map");
+    executor.recordApprovalDenial("req-session-map");
+    executor.recordApprovalDenial("req-session-map", "sess-1");
+    expect(executor.getDenialBreaker().getState("sess-1")?.consecutive).toBe(1); // 同一 requestId 去重
+    expect(executor.getApprovalBreakerSnapshot().sessions).toHaveLength(1);
   });
 });

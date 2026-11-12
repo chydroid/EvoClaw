@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import * as http from "node:http";
 import { tryCallLLM, type LLMCallerDeps } from "./llm-caller";
 import { HumanApprovalManager } from "./human-approval";
+import { ApprovalDenialBreaker } from "./approval-denial-breaker";
 import { setActiveSecurityLevel } from "@evoclaw/security";
 
 /**
@@ -22,7 +23,11 @@ describe("llm-caller — HITL 审批登记（P0）", () => {
     setActiveSecurityLevel("normal");
   });
 
-  function makeDeps(port: number, sessionId: string): { deps: LLMCallerDeps; provider: LLMCallerDeps["providers"][number]; handlerCalls: { v: number } } {
+  function makeDeps(
+    port: number,
+    sessionId: string,
+    extra: { breaker?: ApprovalDenialBreaker; permissionManager?: unknown; extraTools?: Array<[string, { definition: Record<string, unknown>; handler: () => Promise<unknown> }]> } = {},
+  ): { deps: LLMCallerDeps; provider: LLMCallerDeps["providers"][number]; handlerCalls: { v: number } } {
     seq++;
     const provider = {
       id: `hitl-p1-${seq}`, name: `hitl-p1-${seq}`, provider: "openai", model: "m",
@@ -30,7 +35,9 @@ describe("llm-caller — HITL 审批登记（P0）", () => {
     } as unknown as LLMCallerDeps["providers"][number];
     const handlerCalls = { v: 0 };
     const deps = {
-      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      registry: {
+        resolveService: (name: string) => (name === "permissionManager" ? extra.permissionManager ?? null : null),
+      } as unknown as LLMCallerDeps["registry"],
       conversationHistory: new Map(),
       pendingOperations: new Map(),
       toolResultCache: new Map(),
@@ -42,6 +49,7 @@ describe("llm-caller — HITL 审批登记（P0）", () => {
             handler: async () => { handlerCalls.v++; return { success: true }; },
           },
         ],
+        ...(extra.extraTools ?? []),
       ]),
       buildSkillsPromptForRun: async () => "",
       recordProviderSuccess: () => {},
@@ -61,6 +69,8 @@ describe("llm-caller — HITL 审批登记（P0）", () => {
       memoryHub: null,
       providers: [provider],
       humanApprovalManager: manager,
+      approvalDenialBreaker: extra.breaker,
+      resetApprovalDenials: (sid: string) => extra.breaker?.recordApproval(sid),
     } as unknown as LLMCallerDeps;
     return { deps, provider, handlerCalls };
   }
@@ -123,5 +133,122 @@ describe("llm-caller — HITL 审批登记（P0）", () => {
     // 批准后，同一参数重试放行
     expect(manager.approve(pending[0].id, "tester")).toBe(true);
     expect(manager.requiresApproval("file_delete", { path: "/tmp/a.txt" })).toBe(false);
+  });
+
+  // ── P3：连续拒绝熔断 ─────────────────────────────────────────────
+
+  function llmServer(onFirst: () => unknown): { server: http.Server; bodies: string[] } {
+    const bodies: string[] = [];
+    let calls = 0;
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => { raw += d; });
+      req.on("end", () => {
+        bodies.push(raw);
+        calls++;
+        res.setHeader("Content-Type", "application/json");
+        const payload = calls === 1
+          ? onFirst()
+          : { choices: [{ message: { role: "assistant", content: "Stopped by breaker." }, finish_reason: "stop" }], usage: { total_tokens: 2, prompt_tokens: 1 } };
+        res.end(JSON.stringify(payload));
+      });
+    });
+    return { server, bodies };
+  }
+
+  it("已熔断：HITL 分支返回 blockedByBreaker，不再登记新审批", async () => {
+    const sessionId = `hitl-breaker-${seq}-${Date.now()}`;
+    const { server, bodies } = llmServer(() => ({
+      choices: [{
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "tc1", type: "function", function: { name: "file_delete", arguments: JSON.stringify({ path: "/tmp/a.txt" }) } }],
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { total_tokens: 4, prompt_tokens: 2 },
+    }));
+    await new Promise<void>((r) => server.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    const breaker = new ApprovalDenialBreaker({ threshold: 1 });
+    breaker.recordDenial(sessionId, "prior-denial");
+    const { deps, provider, handlerCalls } = makeDeps(port, sessionId, { breaker });
+
+    const res = await tryCallLLM(deps, {
+      message: "delete /tmp/a.txt",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider],
+      startTime: Date.now(),
+      sessionId,
+      pendingPermissions: [],
+    });
+    server.close();
+
+    expect(handlerCalls.v).toBe(0);
+    expect(manager.getPendingApprovals(sessionId)).toHaveLength(0);
+    expect(res!.permissionRequests).toHaveLength(0);
+    const all = bodies.join("\n");
+    expect(all).toContain("CIRCUIT BREAKER");
+    expect(all).toContain("blockedByBreaker");
+  });
+
+  it("已熔断：工具级 requiresPermission 被拒绝并关闭 PermissionManager 请求", async () => {
+    const sessionId = `perm-breaker-${seq}-${Date.now()}`;
+    const denyRequest = vi.fn();
+    const { server, bodies } = llmServer(() => ({
+      choices: [{
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{ id: "tc1", type: "function", function: { name: "perm_tool", arguments: "{}" } }],
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { total_tokens: 4, prompt_tokens: 2 },
+    }));
+    await new Promise<void>((r) => server.listen(0, r));
+    const port = (server.address() as { port: number }).port;
+
+    const breaker = new ApprovalDenialBreaker({ threshold: 1 });
+    breaker.recordDenial(sessionId, "prior-denial");
+    const { deps, provider } = makeDeps(port, sessionId, {
+      breaker,
+      permissionManager: { denyRequest },
+      extraTools: [[
+        "perm_tool",
+        {
+          definition: { name: "perm_tool", description: "needs approval", parameters: {} },
+          handler: async () => ({
+            success: false,
+            requiresPermission: true,
+            requestId: "req-perm-1",
+            operation: "perm_tool",
+            description: "needs approval",
+            target: "perm_tool",
+          }),
+        },
+      ]],
+    });
+
+    const res = await tryCallLLM(deps, {
+      message: "do the thing",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider],
+      startTime: Date.now(),
+      sessionId,
+      pendingPermissions: [],
+    });
+    server.close();
+
+    expect(denyRequest).toHaveBeenCalledWith("req-perm-1");
+    expect(res!.permissionRequests).toHaveLength(0);
+    expect(deps.pendingOperations.has("req-perm-1")).toBe(false);
+    const all = bodies.join("\n");
+    expect(all).toContain("CIRCUIT BREAKER");
+    expect(all).toContain("blockedByBreaker");
   });
 });

@@ -1570,6 +1570,36 @@ export class GatewayServer {
       res.json({ pending, count: pending.length });
     });
 
+    // GET /api/approvals/breaker — 审批连续拒绝熔断状态（P3）
+    // 只读观测：会话级连续拒绝计数 + 是否已熔断 + 阈值配置。
+    this.app.get("/api/approvals/breaker", (_req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        getApprovalBreakerSnapshot(): {
+          config: { threshold: number; idleTtlMs: number; maxSessions: number };
+          sessions: Array<{ sessionId: string; consecutive: number; lastDeniedAt: number; trippedAt?: number }>;
+        };
+      }>("agentModelExecutor");
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+      res.json(agentExecutor.getApprovalBreakerSnapshot());
+    });
+
+    // POST /api/approvals/breaker/reset — 重置熔断（全部或指定 sessionId）
+    this.app.post("/api/approvals/breaker/reset", (req: Request, res: Response) => {
+      const agentExecutor = this.registry.resolveService<{
+        resetApprovalDenials(sessionId?: string): number;
+      }>("agentModelExecutor");
+      if (!agentExecutor) {
+        res.status(503).json({ error: "Agent executor not available" });
+        return;
+      }
+      const body = (req.body || {}) as { sessionId?: unknown };
+      const sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : undefined;
+      res.json({ success: true, reset: agentExecutor.resetApprovalDenials(sessionId), sessionId: sessionId ?? null });
+    });
+
     // POST /api/approvals/:id/approve — approve an operation
     this.app.post("/api/approvals/:id/approve", (req: Request, res: Response) => {
       try {

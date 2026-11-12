@@ -1054,6 +1054,10 @@ export interface LLMCallerDeps {
   executionCheckpointStore?: ExecutionCheckpointStore;
   // Human-in-the-Loop approval manager (optional — enables approval workflow)
   humanApprovalManager?: HumanApprovalManager;
+  // P3 审批连续拒绝熔断（会话级；threshold<=0 时关闭）
+  approvalDenialBreaker?: import("./approval-denial-breaker").ApprovalDenialBreaker;
+  // 用户 chat 明确同意后清零熔断计数
+  resetApprovalDenials?: (sessionId: string) => void;
   // Eval runner (optional — enables evaluation system)
   evalRunner?: import("./evals").EvalRunner;
   // Planning & Reflection integration (optional — enables Plan→Reflect→Replan)
@@ -4298,8 +4302,6 @@ export async function tryCallLLM(
   let anyToolExecuted = false;
   let toolCallCount = 0;
   const createdFiles: Array<{ path: string; size: number; downloadUrl: string }> = [];
-  // Track HITL rejections per session to avoid repeated 30s timeouts
-  let hitlRejectCount = 0;
 
   // ── Execution checkpoint: start tracking ──
   const checkpointStore = deps.executionCheckpointStore;
@@ -4355,8 +4357,8 @@ export async function tryCallLLM(
     } else {
       asyncLog(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
       deps.pendingApprovalCommands.delete(sessionId);
-      // Reset HITL reject count so the command can go through
-      hitlRejectCount = 0;
+      // P3：用户明确同意 → 清零该会话连续拒绝计数
+      deps.resetApprovalDenials?.(sessionId);
       // Add the pending command's tool to trust rules temporarily
       if (deps.humanApprovalManager) {
         deps.humanApprovalManager.addTrustRule({
@@ -6542,13 +6544,22 @@ if (deps.contextPruningManager && !prunerNoop) {
           ) {
             const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName, args);
 
-            if (hitlRejectCount >= 1) {
-              asyncLog(`[AgentModelExecutor] HITL: Fast-rejecting tool "${toolName}" (${hitlRejectCount} prior rejections in session)\n`);
+            // ★ P3 熔断：连续拒绝达到阈值后不再生成新的审批请求（避免无限弹窗），
+            //   只把原因写进 tool-result，不动系统提示/历史。
+            if (deps.approvalDenialBreaker?.isTripped(sessionId)) {
+              const breakerState = deps.approvalDenialBreaker.getState(sessionId);
+              asyncLog(`[AgentModelExecutor] HITL: breaker tripped for session "${sessionId}" (${breakerState?.consecutive ?? 0} consecutive denials)\n`);
               return {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({ error: "Operation requires approval but was auto-rejected due to a previous rejection in this session. Please explicitly confirm if you want to proceed.", riskLevel }),
+                content: JSON.stringify({
+                  success: false,
+                  blockedByBreaker: true,
+                  retryable: false,
+                  riskLevel,
+                  error: `CIRCUIT BREAKER: ${breakerState?.consecutive ?? 0} consecutive approval denials in this session. Do not retry this operation; ask the user to reset the approval breaker if they want to continue.`,
+                }),
               };
             }
 
@@ -6847,14 +6858,36 @@ if (deps.contextPruningManager && !prunerNoop) {
               if (rawResult && typeof rawResult === "object" && (rawResult as Record<string, unknown>).requiresPermission) {
                 const r = rawResult as Record<string, unknown>;
                 const requestId = (r.requestId as string) || (r.id as string) || "";
-                pendingPermissions.push({
-                  id: requestId,
-                  operation: (r.operation as string) || toolName,
-                  description: (r.description as string) || "需要权限确认",
-                  target: (r.target as string) || tc.function.name,
-                });
-                if (requestId) {
-                  deps.pendingOperations.set(requestId, { sessionId, message, requestId, toolName, toolArgs: args });
+                if (deps.approvalDenialBreaker?.isTripped(sessionId)) {
+                  // ★ P3 熔断：工具已经创建了 PermissionManager 请求（且可能已发布
+                  //   permission.requested），先显式关闭它，再把 tool-result 换成
+                  //   breaker 提示；不再向前端暴露新的审批请求。
+                  if (requestId) {
+                    try {
+                      const permMgr = deps.registry?.resolveService<{ denyRequest?(id: string): unknown }>("permissionManager");
+                      permMgr?.denyRequest?.(requestId);
+                    } catch (err) {
+                      process.stderr.write(`[AgentModelExecutor] breaker: failed to close pending request ${requestId}: ${err}\n`);
+                    }
+                  }
+                  const breakerState = deps.approvalDenialBreaker.getState(sessionId);
+                  toolResult = JSON.stringify({
+                    success: false,
+                    blockedByBreaker: true,
+                    retryable: false,
+                    requestId: requestId || undefined,
+                    error: `CIRCUIT BREAKER: ${breakerState?.consecutive ?? 0} consecutive approval denials in this session. Do not retry this operation; ask the user to reset the approval breaker if they want to continue.`,
+                  });
+                } else {
+                  pendingPermissions.push({
+                    id: requestId,
+                    operation: (r.operation as string) || toolName,
+                    description: (r.description as string) || "需要权限确认",
+                    target: (r.target as string) || tc.function.name,
+                  });
+                  if (requestId) {
+                    deps.pendingOperations.set(requestId, { sessionId, message, requestId, toolName, toolArgs: args });
+                  }
                 }
               }
               // ── 识别「执行了但返回失败」的工具 ──

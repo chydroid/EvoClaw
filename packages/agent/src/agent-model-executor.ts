@@ -45,6 +45,7 @@ import { generateBriefUnderstanding as generateBriefUnderstandingFn, type BriefU
 import { registerSequentialThinkingTool as registerSequentialThinkingToolFn, type ThinkingHistoryMap } from "./sequential-thinking-tool";
 import { execute as dagExecute, executeSkillDirectly as dagExecuteSkillDirectly, generateReasoning as dagGenerateReasoning, extractToolParams as dagExtractToolParams, generateDefaultOutput as dagGenerateDefaultOutput, extractKeywords as dagExtractKeywords, type DAGExecutionDeps } from "./dag-execution";
 import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type TrustRule, type RiskLevel } from "./human-approval";
+import { ApprovalDenialBreaker, resolveDenialBreakerConfig, type DenialBreakerState } from "./approval-denial-breaker";
 import { SemanticQuickReply } from "./semantic-quick-reply";
 import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
 import { IterationBudget, DEFAULT_CHILD_BUDGET, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
@@ -212,6 +213,9 @@ export class AgentModelExecutor {
 
   /** Human-in-the-Loop approval manager for high-risk tool operations */
   private humanApprovalManager: HumanApprovalManager | null = null;
+
+  /** 审批连续拒绝熔断器（P3）：会话级计数，批准清零，阈值默认 3 */
+  private denialBreaker: ApprovalDenialBreaker = new ApprovalDenialBreaker(resolveDenialBreakerConfig());
 
   /** Semantic quick-reply classifier using local Transformers embedding */
   private semanticQuickReply = new SemanticQuickReply();
@@ -566,7 +570,55 @@ export class AgentModelExecutor {
   /** Set human approval manager */
   setHumanApprovalManager(manager: HumanApprovalManager): void {
     this.humanApprovalManager = manager;
+    // P3：审批决策 → 熔断器。覆盖所有决策来源（HTTP 路由、/approve、/reject、
+    // 渠道审批），不只 executor 自己的 approveOperation/rejectOperation。
+    manager.setDecisionObserver((decision) => {
+      if (decision.decision === "rejected") {
+        this.denialBreaker.recordDenial(decision.sessionId, decision.id);
+      } else {
+        this.denialBreaker.recordApproval(decision.sessionId);
+      }
+    });
     process.stdout.write(`[AgentModelExecutor] Human approval manager integrated\n`);
+  }
+
+  /** Get the approval denial breaker (observability / tests) */
+  getDenialBreaker(): ApprovalDenialBreaker {
+    return this.denialBreaker;
+  }
+
+  /** Replace the breaker (tests / custom thresholds) */
+  setDenialBreaker(breaker: ApprovalDenialBreaker): void {
+    this.denialBreaker = breaker;
+  }
+
+  /**
+   * 记录一次审批拒绝（requestId 优先；找不到映射时把入参当 sessionId）。
+   * 三个 deny 路由最终都汇聚到这里（事件订阅或直接调用）。
+   */
+  recordApprovalDenial(requestIdOrSessionId: string, sessionId?: string): DenialBreakerState {
+    const resolvedSessionId =
+      sessionId ??
+      this.pendingOperations.get(requestIdOrSessionId)?.sessionId ??
+      this.humanApprovalManager?.getApproval(requestIdOrSessionId)?.sessionId ??
+      requestIdOrSessionId;
+    return this.denialBreaker.recordDenial(resolvedSessionId, requestIdOrSessionId);
+  }
+
+  /** 会话被批准/用户明确同意 → 清零；不传 sessionId 清全部 */
+  resetApprovalDenials(sessionId?: string): number {
+    return this.denialBreaker.reset(sessionId);
+  }
+
+  /** 熔断器快照（GET /api/approvals/breaker） */
+  getApprovalBreakerSnapshot(): {
+    config: { threshold: number; idleTtlMs: number; maxSessions: number };
+    sessions: Array<DenialBreakerState & { sessionId: string }>;
+  } {
+    return {
+      config: { ...this.denialBreaker.getConfig() },
+      sessions: this.denialBreaker.snapshot(),
+    };
   }
 
   /** Set eval runner */
@@ -951,21 +1003,34 @@ export class AgentModelExecutor {
   private setupEventListeners(): void {
     this.eventBus.subscribe(
       "permission.approved",
-      async (event: { data: { requestId: string; operation: string; target: string } }) => {
-        await this.onPermissionApproved(event.data.requestId);
+      async (event: { data: { requestId?: string; id?: string; sessionId?: string; operation?: string; target?: string } }) => {
+        const data = event.data ?? {};
+        const requestId = data.requestId ?? data.id;
+        if (!requestId) return;
+        // 批准即清零：先解析会话（onPermissionApproved 会删掉映射）
+        const sessionId =
+          data.sessionId ??
+          this.pendingOperations.get(requestId)?.sessionId ??
+          this.humanApprovalManager?.getApproval(requestId)?.sessionId;
+        await this.onPermissionApproved(requestId);
+        if (sessionId) this.denialBreaker.recordApproval(sessionId);
       }
     );
     // 拒绝统一收口：无论拒绝来自 /api/permission/deny（PermissionManager）、
     // /api/permission-relay/:id/deny（PermissionRelay）还是 /api/approvals/:id/reject
-    // （HumanApprovalManager），都从这里清理 requestId → session 映射。
-    // ★ P3 将在此累计连续拒绝计数并触发熔断。
+    // （HumanApprovalManager），都从这里清理 requestId → session 映射并累计拒绝。
     this.eventBus.subscribe(
       "permission.denied",
       async (event: { data: { requestId?: string; id?: string; sessionId?: string } }) => {
         const data = event.data ?? {};
         const requestId = data.requestId ?? data.id;
         if (!requestId) return;
+        const sessionId =
+          data.sessionId ??
+          this.pendingOperations.get(requestId)?.sessionId ??
+          this.humanApprovalManager?.getApproval(requestId)?.sessionId;
         this.pendingOperations.delete(requestId);
+        if (sessionId) this.denialBreaker.recordDenial(sessionId, requestId);
       }
     );
   }
@@ -1138,6 +1203,9 @@ export class AgentModelExecutor {
       // 不再拼进 stableSystemPrompt / CE frozen 段。
       executionCheckpointStore: this.executionCheckpointStore,
       humanApprovalManager: this.humanApprovalManager ?? undefined,
+      // P3：审批连续拒绝熔断（HITL 预检 + 工具级 requiresPermission 分支）
+      approvalDenialBreaker: this.denialBreaker,
+      resetApprovalDenials: (sid: string) => { this.denialBreaker.recordApproval(sid); },
       recordToolTrace: (sessionId: string, toolName: string, params: Record<string, unknown>, result: unknown, success: boolean, duration: number, error?: string) => this.recordToolTrace(sessionId, toolName, params, result, success, duration, error),
       checkAndReflect: (sessionId: string) => this.checkAndReflect(sessionId),
       updatePlanStep: (sessionId: string, stepId: string, update: { status: string; result?: string; error?: string }) => this.updatePlanStep(sessionId, stepId, update),
@@ -2274,6 +2342,8 @@ export class AgentModelExecutor {
       } else {
         asyncLog(`[AgentModelExecutor] User approved pending command: ${pendingCmd.command}\n`);
         this.pendingApprovalCommands.delete(sessionId);
+        // P3：用户明确同意 → 清零该会话连续拒绝计数
+        this.denialBreaker.recordApproval(sessionId);
         // Add temporary trust rule
         if (this.humanApprovalManager) {
           this.humanApprovalManager.addTrustRule({

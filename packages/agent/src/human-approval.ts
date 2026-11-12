@@ -46,6 +46,14 @@ export interface PendingApproval {
   trustFutureOperations?: boolean;
 }
 
+/** 审批决策（approve/reject 完成后回调，供熔断器等接线） */
+export interface ApprovalDecision {
+  id: string;
+  sessionId: string;
+  toolName: string;
+  decision: "approved" | "rejected" | "modified";
+}
+
 /** Configuration for the approval system */
 export interface ApprovalConfig {
   /** Tools that require approval by risk level */
@@ -213,6 +221,8 @@ export class HumanApprovalManager {
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   /** Track active timeout handles so they can be cleared on destroy */
   private pendingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  /** 审批决策观察者（executor 用它驱动拒绝熔断计数/复位） */
+  private decisionObserver: ((decision: ApprovalDecision) => void) | null = null;
   /** 防抖持久化定时器 */
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private dirty = false;
@@ -379,6 +389,25 @@ export class HumanApprovalManager {
     return true;
   }
 
+  /** 注册决策观察者（单例；后注册覆盖前者） */
+  setDecisionObserver(observer: ((decision: ApprovalDecision) => void) | null): void {
+    this.decisionObserver = observer;
+  }
+
+  private notifyDecision(pending: PendingApproval, decision: ApprovalDecision["decision"]): void {
+    if (!this.decisionObserver) return;
+    try {
+      this.decisionObserver({
+        id: pending.id,
+        sessionId: pending.sessionId,
+        toolName: pending.toolName,
+        decision,
+      });
+    } catch (err) {
+      process.stderr.write("[HumanApproval] decision observer failed: " + err + "\n");
+    }
+  }
+
   /** Clear the pending timeout for a given approval id (if any) */
   private clearPendingTimeout(id: string): void {
     const handle = this.pendingTimeouts.get(id);
@@ -435,6 +464,7 @@ export class HumanApprovalManager {
       }
     }
 
+    this.notifyDecision(pending, modifiedArgs ? "modified" : "approved");
     this.markDirty();
     return true;
   }
@@ -459,6 +489,7 @@ export class HumanApprovalManager {
       resolver.resolve("rejected");
     }
 
+    this.notifyDecision(pending, "rejected");
     this.markDirty();
     return true;
   }
