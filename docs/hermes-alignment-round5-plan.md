@@ -163,6 +163,16 @@
 
 **风险**：对「随便传一段子串」的旧调用方是契约收紧，但此前行为本身是数据损坏；错误信息给出候选即可让模型自我纠正。Phase 2 涉及 API/UI，默认关闭，单独提交。
 
+**实施记录（2026-11-13）**
+
+- 新增 `packages/memory/src/memory-match.ts`：`findUniqueMemoryMatch`（整条精确 → 子串 → 歧义候选 → `not_found` + 最近条目）、`findNearestMemory`（bigram 相似度，扫描上限 500）、`countOccurrences`；经 `packages/memory/src/index.ts` 导出。
+- patch 重写：`id` 直接定位（不存在明确报错）；无 id 走唯一匹配；`old_string` 在条目内出现次数必须为 1；`old_string === new_string` 视为 no-op 拒绝。跨 `await` 后 TS 会重置 `let` 窄化，故显式守卫后固定为 `const targetEntry`。
+- 原地更新：新增 `MemoryHub.updateMemoryContent(id, content)` —— 保留 id/type/metadata/ttl/createdAt，FTS5 `indexEntry` 幂等覆盖（DELETE+INSERT），向量索引 best-effort；不再走 `forgetMemory + remember` 新建 id 的老路径。
+- remove 重写：传 id 先 `longTerm.get` 校验存在；传 old_string 走唯一匹配；歧义返回候选；`not_found` 附最近条目，不再对不存在的 id 假成功。
+- 契约收紧：patch/remove 参数说明标注「必须唯一命中」；`id`/`old_string` 均 `required: false`，避免校验器把参数误判为必填。
+- Phase 2（staging）按计划保持可选/默认关闭，本轮**未实施**：需要新增配置项 + API/UI 闭环，且不改变默认行为，单独立项更合适。
+- 测试：新增 `packages/memory/src/memory-match.test.ts`（9）、`apps/server/tests/memory-tools.test.ts`（14），`packages/memory/src/memory-hub.test.ts` 增 3 条（id/ttl 保留、FTS5 覆盖旧内容、未知 id 返回 null）；全量 `pnpm test` 7345 passed（342 files）。
+
 ---
 
 ### P2 — 插件准入护栏
@@ -331,10 +341,10 @@
 
 | ID | 状态 | 提交 | 备注 |
 |---|---|---|---|
-| P0 | 已完成 | 待回填 | 批次 A，最高优先 |
+| P0 | 已完成 | a7bf8ae | 批次 A，最高优先 |
 | P1 | 未开始 | — | 批次 A |
-| P3 | 已完成 | 待回填 | 依赖 P0 |
-| P4 | 未开始 | — | 批次 A |
+| P3 | 已完成 | eeb0cc6 | 依赖 P0 |
+| P4 | 已完成（Phase 1） | a9e1813 | 批次 A；Phase 2 staging 可选、默认关闭，未实施 |
 | P2 | 未开始 | — | 批次 B |
 | P8 | 未开始 | — | 批次 B |
 | P5 | 未开始 | — | 批次 C1 |

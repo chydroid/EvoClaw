@@ -120,3 +120,73 @@ describe("MemoryHub — Cron 运行间学习（rememberCronRun / recallCronRuns�
     expect(empty).toEqual([]);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// P4 记忆写入闸门（2026-11-13）：updateMemoryContent 原地更新
+// ═══════════════════════════════════════════════════════════
+
+describe("MemoryHub — updateMemoryContent（P4 原地更新）", () => {
+  let registry: ServiceRegistry;
+  let eventBus: EventBus;
+
+  beforeEach(() => {
+    registry = new ServiceRegistry();
+    eventBus = new EventBus();
+  });
+
+  const entryInput = (content: string) => ({
+    type: "knowledge" as const,
+    content,
+    metadata: {
+      source: "agent",
+      sessionId: "s-1",
+      userId: "u-1",
+      tags: ["p4"],
+      importance: 0.6,
+      associations: [],
+      entities: [],
+    },
+    ttl: 3_600_000,
+    embedding: null,
+  });
+
+  it("保留 id/type/ttl/createdAt，仅替换 content", async () => {
+    const hub = new MemoryHub(registry, eventBus, { useTransformers: false });
+    const stored = await hub.remember(entryInput("原始内容：登录页已完成"));
+    const updated = await hub.updateMemoryContent(stored.id, "更新内容：登录页已验收");
+
+    expect(updated).not.toBeNull();
+    expect(updated!.id).toBe(stored.id);
+    expect(updated!.type).toBe(stored.type);
+    expect(updated!.ttl).toBe(stored.ttl);
+    expect(updated!.createdAt).toEqual(stored.createdAt);
+    expect(updated!.content).toBe("更新内容：登录页已验收");
+
+    const reloaded = await hub.getLongTerm().get(stored.id);
+    expect(reloaded?.content).toBe("更新内容：登录页已验收");
+    // 本地长期存储是共享 data 目录，不能断言全库只有 1 条；只断言本次 id 未重复
+    // （LongTermMemory 接口不暴露 getAll，这里按具体实现窄化）
+    const store = hub.getLongTerm() as unknown as {
+      getAll(): Promise<Array<{ id: string }>>;
+    };
+    const sameId = (await store.getAll()).filter((e) => e.id === stored.id);
+    expect(sameId).toHaveLength(1);
+  });
+
+  it("FTS5 索引幂等覆盖：新内容可搜到，旧内容搜不到", async () => {
+    const hub = new MemoryHub(registry, eventBus, { useTransformers: false });
+    const stored = await hub.remember(entryInput("季度目标：完成支付网关"));
+    await hub.updateMemoryContent(stored.id, "季度目标：完成风控网关");
+
+    const hitNew = hub.getFTS5().search({ query: "风控网关", limit: 10 });
+    expect(hitNew.map((r) => r.metadata.id)).toContain(stored.id);
+
+    const hitOld = hub.getFTS5().search({ query: "支付网关", limit: 10 });
+    expect(hitOld.map((r) => r.metadata.id)).not.toContain(stored.id);
+  });
+
+  it("不存在的 id 返回 null（不抛错、不新建条目）", async () => {
+    const hub = new MemoryHub(registry, eventBus, { useTransformers: false });
+    expect(await hub.updateMemoryContent("missing-id", "x")).toBeNull();
+  });
+});

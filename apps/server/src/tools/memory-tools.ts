@@ -1,13 +1,14 @@
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { MemoryEntry } from "@evoclaw/core";
+import { findUniqueMemoryMatch, countOccurrences } from "@evoclaw/memory";
 
 /**
  * Memory Tools — 记忆系统复合工具
  *
  * 对标 Hermes `tools/memory_tool.py`：
  *   - action=add:    写入新记忆条目（remember）
- *   - action=patch:  查找包含 old_string 的条目并替换为 new_string（update）
- *   - action=remove: 按 id 或内容子串查找并删除（delete + forgetMemory）
+ *   - action=patch:  唯一匹配 old_string 后原地替换为 new_string（保留 id/ttl）
+ *   - action=remove: 按 id 或唯一内容匹配删除（歧义返回候选，不静默命中第一条）
  *   - action=search: 语义搜索历史记忆
  *   - action=stats:  显示记忆概览
  *
@@ -120,43 +121,76 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
   };
 
   // ── action=patch：查找并替换记忆内容 ─────────────────────────
-  // 对标 Hermes memory_tool.py _STORE_ACTIONS["patch"]（old_string/new_string）
+  // 对标 Hermes memory_tool_store.py 的唯一匹配 + 原地更新语义：
+  //   - id 优先；否则整条精确匹配 > 子串匹配，歧义必须报候选；
+  //   - old_string 在目标条目内必须恰好出现一次；
+  //   - 原地更新（MemoryHub.updateMemoryContent），不新建 id、不丢 ttl。
   const handlePatch = async (params: Record<string, unknown>) => {
+    const id = String(params.id || "").trim();
     const oldString = String(params.old_string || "");
     const newString = String(params.new_string || "");
     if (!oldString) return { success: false, error: "old_string is required (action=patch)" };
     if (!newString) return { success: false, error: "new_string is required (action=patch)" };
+    if (oldString === newString) {
+      return { success: false, error: "new_string equals old_string (no-op patch rejected)" };
+    }
 
     const { memoryHub, longTerm } = getMemoryServices(executor);
     if (!memoryHub || !longTerm) return { success: false, error: "Memory service not available" };
 
     try {
-      // 在所有记忆中查找包含 old_string 的条目
-      const all = await longTerm.getAll();
-      const match = all.find((e: MemoryEntry) => e.content.includes(oldString));
-      if (!match) {
-        return { success: false, error: `No memory entry found containing the specified old_string` };
+      let target: MemoryEntry | undefined;
+      if (id) {
+        const found = await longTerm.get(id);
+        if (!found) {
+          return { success: false, error: `No memory entry with id "${id}"`, id };
+        }
+        target = found;
+      } else {
+        const all = (await longTerm.getAll()) as MemoryEntry[];
+        const outcome = findUniqueMemoryMatch(all, oldString);
+        if (outcome.status === "not_found") {
+          return {
+            success: false,
+            error: "No memory entry found containing the specified old_string",
+            nearest: outcome.nearest,
+          };
+        }
+        if (outcome.status === "ambiguous") {
+          return {
+            success: false,
+            error: `old_string matches ${outcome.candidates.length} memory entries; pass id or a more specific old_string`,
+            candidates: outcome.candidates,
+          };
+        }
+        target = outcome.entry;
+      }
+      // 显式守卫：后续 await 会重置 TS 对 let 变量的窄化
+      if (!target) return { success: false, error: "No memory entry resolved for patch" };
+      const targetEntry: MemoryEntry = target;
+
+      const occurrences = countOccurrences(targetEntry.content, oldString);
+      if (occurrences === 0) {
+        return { success: false, error: `old_string not found in memory entry "${targetEntry.id}"`, id: targetEntry.id };
+      }
+      if (occurrences > 1) {
+        return {
+          success: false,
+          error: `old_string appears ${occurrences} times in memory entry "${targetEntry.id}"; make it unique before patching`,
+          id: targetEntry.id,
+        };
       }
 
-      const updatedContent = match.content.replace(oldString, newString);
-      await longTerm.update(match.id, { content: updatedContent });
-      // 更新 FTS5 / 向量索引
-      memoryHub.forgetMemory(match.id);
-      try {
-        await memoryHub.remember({
-          type: match.type,
-          content: updatedContent,
-          metadata: match.metadata,
-          ttl: match.ttl,
-        });
-      } catch {
-        // remember 可能失败（embedding 超时等），但 update 已生效
+      const updatedContent = targetEntry.content.replace(oldString, newString);
+      const updated = await memoryHub.updateMemoryContent(targetEntry.id, updatedContent);
+      if (!updated) {
+        return { success: false, error: `Memory entry "${targetEntry.id}" disappeared before update`, id: targetEntry.id };
       }
 
       return {
         success: true,
-        message: `Memory entry patched (id: ${match.id})`,
-        id: match.id,
+        message: `Memory entry patched (id: ${targetEntry.id})`,
+        id: targetEntry.id,
         content: updatedContent.slice(0, 200),
       };
     } catch (err: any) {
@@ -165,7 +199,8 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
   };
 
   // ── action=remove：删除记忆条目 ──────────────────────────────
-  // 对标 Hermes memory_tool.py _STORE_ACTIONS["remove"]
+  // 对标 Hermes memory_tool_store.py：删除必须命中唯一目标，不存在返回 not_found，
+  // 不再对不存在的 id 静默成功。
   const handleRemove = async (params: Record<string, unknown>) => {
     const id = String(params.id || "").trim();
     const oldString = String(params.old_string || "").trim();
@@ -178,14 +213,29 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
 
     try {
       let targetId = id;
-      if (!targetId && oldString) {
-        // 按内容子串查找
-        const all = await longTerm.getAll();
-        const match = all.find((e: MemoryEntry) => e.content.includes(oldString));
-        if (!match) {
-          return { success: false, error: `No memory entry found containing the specified old_string` };
+      if (targetId) {
+        const existing = await longTerm.get(targetId);
+        if (!existing) {
+          return { success: false, error: `No memory entry with id "${targetId}"`, id: targetId };
         }
-        targetId = match.id;
+      } else {
+        const all = (await longTerm.getAll()) as MemoryEntry[];
+        const outcome = findUniqueMemoryMatch(all, oldString);
+        if (outcome.status === "not_found") {
+          return {
+            success: false,
+            error: "No memory entry found containing the specified old_string",
+            nearest: outcome.nearest,
+          };
+        }
+        if (outcome.status === "ambiguous") {
+          return {
+            success: false,
+            error: `old_string matches ${outcome.candidates.length} memory entries; pass id or a more specific old_string`,
+            candidates: outcome.candidates,
+          };
+        }
+        targetId = outcome.entry.id;
       }
 
       await longTerm.delete(targetId);
@@ -208,8 +258,8 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
       description:
         "Memory system operations. " +
         "action=add: store a new memory entry (content, type, tags, importance); " +
-        "action=patch: find an entry containing old_string and replace with new_string; " +
-        "action=remove: delete an entry by id or content substring; " +
+        "action=patch: replace old_string with new_string in the entry that uniquely matches (pass id to disambiguate; old_string must occur exactly once); " +
+        "action=remove: delete an entry by id or by a unique content match (ambiguous matches return candidates); " +
         "action=search: search conversation history and memory semantically; " +
         "action=stats: get memory system statistics.",
       parameters: {
@@ -224,14 +274,14 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
         type: { type: "string", description: "Memory type: conversation/experience/knowledge/feedback/system（action=add 使用，默认 conversation）", required: false },
         tags: { type: "string", description: "Comma-separated tags（action=add 使用）", required: false },
         importance: { type: "string", description: "Importance score 0.0-1.0（action=add 使用，默认 0.5）", required: false },
-        // action=patch 参数
-        old_string: { type: "string", description: "Text to find in existing memory（action=patch / action=remove 使用）", required: false },
+        // action=patch / action=remove 定位参数
+        old_string: { type: "string", description: "Text to find in existing memory（action=patch / action=remove 使用；必须唯一命中）", required: false },
         new_string: { type: "string", description: "Replacement text（action=patch 使用）", required: false },
         // action=search 参数
         query: { type: "string", description: "Search query (natural language)（action=search 使用）", required: false },
         limit: { type: "string", description: "Max results (default: 10)（action=search 使用）", required: false },
         // action=remove 参数
-        id: { type: "string", description: "Memory entry id to delete（action=remove 使用）", required: false },
+        id: { type: "string", description: "Memory entry id（action=patch / action=remove 使用，用于精确指定目标）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

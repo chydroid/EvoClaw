@@ -321,6 +321,31 @@ export class MemoryHub {
     return this.longTerm;
   }
 
+  /**
+   * 原地更新记忆内容（P4 记忆写入闸门）。
+   *
+   * 与「forget + remember」不同：**保留原 id、type、metadata、ttl、createdAt**，
+   * 只替换 content 并同步 FTS5 与向量索引，避免 patch 后出现重复条目、
+   * 响应 id 与真实条目不一致的问题。条目不存在时返回 null。
+   */
+  async updateMemoryContent(id: string, content: string): Promise<MemoryEntry | null> {
+    const existing = await this.longTerm.get(id);
+    if (!existing) return null;
+    await this.longTerm.update(id, { content });
+    const updated: MemoryEntry = { ...existing, content, accessedAt: new Date() };
+    // FTS5 indexEntry 是幂等的（DELETE+INSERT），可直接覆盖
+    this.fts5.indexEntry(id, content, {
+      sessionId: existing.metadata.sessionId,
+      type: existing.type,
+      createdAt: existing.createdAt,
+    });
+    // 向量索引 best-effort：embedding 失败不影响 FTS5 与长期记忆本体
+    if (this.vectorStore && this.embeddingProvider) {
+      void this.indexMemoryVector(updated).catch(() => { /* best-effort */ });
+    }
+    return updated;
+  }
+
   getKnowledgeGraph(): KnowledgeGraph {
     return this.graph;
   }

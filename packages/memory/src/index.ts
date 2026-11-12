@@ -18,6 +18,8 @@ export type { DialecticClaim, SynthesizedBelief, DialecticModelFile, ClaimStatus
 export type { MemoryFragment, MemoryCluster, ConsolidatedMemory, Timeline, MemoryWeaverConfig } from "./memory-weaver";
 export { FTS5SearchEngine, buildFtsMatchQuery, hasCjkText } from "./fts5-search";
 export type { FTS5SearchResult, FTS5SearchOptions } from "./fts5-search";
+export { findUniqueMemoryMatch, findNearestMemory, countOccurrences, memorySimilarity } from "./memory-match";
+export type { MemoryMatchTarget, MemoryMatchCandidate, MemoryMatchOutcome } from "./memory-match";
 export { SessionSearch } from "./session-search";
 export type { SessionSearchResult, SessionInfoProvider, SessionInfoLike, SessionTurnLike } from "./session-search";
 export { MemoryCurator } from "./memory-curator";
