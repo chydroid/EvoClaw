@@ -27,7 +27,7 @@ import {
   findSkillMd as findSkillMdFn,
   type SkillInstallerDeps,
 } from "./skill-installer";
-import { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, DEFAULT_PERSONA, DEFAULT_MODEL_CONFIG, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
+import { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, DEFAULT_PERSONA, DEFAULT_MODEL_CONFIG, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig, type ToolSource } from "./types";
 import { taskStatusTracker } from "./task-status-tracker";
 import { TaskCheckpoint, taskCheckpointManager } from "./task-checkpoint-manager";
 import { ExecutionCheckpointStore } from "./execution-checkpoint";
@@ -59,7 +59,7 @@ import { resolveContextWindow } from "./model-context-window";
 import { normalizeToolActionArg } from "./tool-arg-normalization";
 
 // Re-export types and singletons from extracted modules for backward compatibility
-export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig } from "./types";
+export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, TaskStatus, AgentProgressEvent, AgentProgressCallback, AutoSplitConfig, ToolSource } from "./types";
 export { DEFAULT_PERSONA, DEFAULT_MODEL_CONFIG } from "./types";
 export { taskStatusTracker } from "./task-status-tracker";
 export type { TaskCheckpoint } from "./task-checkpoint-manager";
@@ -85,7 +85,13 @@ export class AgentModelExecutor {
     handler: (params: Record<string, unknown>) => Promise<unknown>;
     checkFn?: () => boolean;
     dynamicSchemaOverrides?: () => Partial<ToolDefinition>;
+    /** 注册来源（P2 插件准入护栏）：非 core 来源默认不得覆盖已封存的核心工具 */
+    source: ToolSource;
   }>();
+  /** 核心工具名快照；null = 尚未封存（内置注册阶段，扩展/插件撞名天然豁免） */
+  private coreToolSnapshot: ReadonlySet<string> | null = null;
+  /** 是否允许非核心来源覆盖核心工具（默认 false，env 可开） */
+  private readonly allowCoreToolOverride: boolean;
   private conversationHistory = new Map<string, Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }>>();
   // ★ 200（原 20）：缓存命中改造。旧值 20 使会话在第 11 轮起每轮 splice 最老
   // 消息、前缀原点漂移。200 条 user/assistant 对 ≈ 远超 100k tokens 压缩阈值，
@@ -797,9 +803,12 @@ export class AgentModelExecutor {
     private eventBus: EventBus,
     config?: Partial<ModelConfig>,
     persona?: Partial<PersonaConfig>,
-    private runtimeOptions: { storeDir?: string } = {}
+    private runtimeOptions: { storeDir?: string; allowCoreToolOverride?: boolean } = {}
   ) {
     this.config = { ...DEFAULT_MODEL_CONFIG, ...config };
+    // P2：默认拒绝非核心来源覆盖核心工具；显式配置或 env 可临时放开
+    this.allowCoreToolOverride = runtimeOptions.allowCoreToolOverride
+      ?? /^(1|true|yes)$/i.test(String(process.env.EVOCLAW_ALLOW_CORE_TOOL_OVERRIDE ?? ""));
     this.persona = { ...DEFAULT_PERSONA, ...persona };
     this.sessionDataDir = path.resolve(process.cwd(), "data", "sessions");
     this.workspacePath = path.resolve(process.cwd(), "data", "workspace");
@@ -975,6 +984,7 @@ export class AgentModelExecutor {
     registerSequentialThinkingToolFn(this, this.sequentialThinkingHistory);
 
     this.registeredTools.set("execute_tool_chain", {
+      source: "core",
       definition: {
         name: "execute_tool_chain",
         description: "Execute a predefined tool chain by name. Use this when the task matches a known workflow pattern.",
@@ -1353,21 +1363,60 @@ export class AgentModelExecutor {
     });
   }
 
+  /**
+   * 注册工具。
+   *
+   * P2 插件准入护栏：核心工具注册完成后调用 `sealCoreToolSet()` 快照工具名。
+   * 之后非 `core` 来源（plugin/extension/mcp）撞名核心工具默认拒绝，避免
+   * 插件静默替换 `execute_code`/`shell_exec`/`file_write` 等。封存前的注册
+   * （内置工具、内置插件）天然豁免；非核心之间同名仍允许覆盖（MCP 重连会
+   * 重复注册同一批工具），仅告警。
+   */
   registerTool(
     name: string,
     definition: ToolDefinition,
     handler: (params: Record<string, unknown>) => Promise<unknown>,
     checkFn?: () => boolean,
     dynamicSchemaOverrides?: () => Partial<ToolDefinition>,
+    source: ToolSource = "core",
   ): void {
-    // 重复注册检测：防止插件或 MCP 工具意外覆盖已注册的同名工具，
-    // 导致原有 handler 被静默替换。覆盖时输出警告以辅助排查。
-    if (this.registeredTools.has(name)) {
-      asyncErr( `[AgentModelExecutor] Warning: tool "${name}" is already registered and will be overwritten.\n`, );
+    const existing = this.registeredTools.get(name);
+    if (existing) {
+      const overridesSealedCore = source !== "core" && this.coreToolSnapshot?.has(name) === true;
+      if (overridesSealedCore && !this.allowCoreToolOverride) {
+        asyncErr(
+          `[AgentModelExecutor] Refused ${source} tool "${name}": overriding a core tool is disabled ` +
+          `(set EVOCLAW_ALLOW_CORE_TOOL_OVERRIDE=1 only if you trust the source).\n`,
+        );
+        return;
+      }
+      asyncErr(
+        `[AgentModelExecutor] Warning: tool "${name}" is already registered and will be overwritten by ${source}.\n`,
+      );
     }
-    this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides });
+    this.registeredTools.set(name, { definition, handler, checkFn, dynamicSchemaOverrides, source });
     // P0-1：工具表变更使 deps 缓存失效（deps 内闭包在下次重建时读取最新状态）
     this._llmDepsCache = undefined;
+  }
+
+  /**
+   * 封存核心工具集：快照当前已注册工具名（P2）。
+   * 服务器应在全部内置工具注册完成后、加载插件/扩展/MCP 之前调用。
+   * @returns 快照中的工具数量
+   */
+  sealCoreToolSet(): number {
+    this.coreToolSnapshot = new Set(this.registeredTools.keys());
+    return this.coreToolSnapshot.size;
+  }
+
+  /** 核心工具集是否已封存（测试/诊断用） */
+  isCoreToolSetSealed(): boolean {
+    return this.coreToolSnapshot !== null;
+  }
+
+  /** 工具注册来源（诊断用；未注册返回 undefined） */
+  getToolSource(name: string): ToolSource | undefined {
+    return this.registeredTools.get(name)?.source;
   }
 
   /**

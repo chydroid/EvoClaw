@@ -39,7 +39,7 @@ export { buildAgentSystemPrompt, buildCompactSkillsPrompt } from "./system-promp
 export { classifyLLMError, isContextOverflowError, isRateLimitError, isContentPolicyError, isSslCertError, isModelNotFoundError, isUpstreamRateLimitError, estimateTokensFromText, estimateMessagesTokens, formatClassifiedErrorForUser, LLMErrorType } from "./error-classifier";
 export type { ClassifiedError, ClassifyOptions, UserFriendlyError } from "./error-classifier";
 export type { DAGBuilderConfig, BuildContext } from "./dynamic-dag-builder";
-export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition } from "./types";
+export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition, ToolSource } from "./types";
 export type { SubTask, TaskPlan, ProjectTemplate } from "./task-planner";
 export type { PromptMode, SystemPromptParams } from "./system-prompt";
 export type { CompactionSummary, CompactionConfig } from "./compaction-manager";

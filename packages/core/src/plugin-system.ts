@@ -358,6 +358,11 @@ export interface PluginManifest {
   author?: string;
   homepage?: string;
   minVersion?: string;
+  /**
+   * 插件声明会注册的工具名（P2 插件准入护栏）。
+   * 未声明时注册工具仅告警；已声明但注册未列出的工具会被拒绝。
+   */
+  providesTools?: string[];
 }
 
 export interface PluginHookRegistration {
@@ -390,6 +395,16 @@ export interface PluginContext {
   emitEvent(type: string, data: unknown): void;
   /** Plugin data directory */
   dataDir: string;
+  /**
+   * 注册一个工具（P2 插件准入护栏）。由 PluginManager 注入：
+   * - 来源标记为 plugin，核心工具封存后撞名会被 AgentModelExecutor 拒绝；
+   * - 与 manifest.providesTools 比对：未声明的工具名拒绝注册（无声明时告警）。
+   */
+  registerTool?: (
+    name: string,
+    definition: { name: string; description: string; parameters: Record<string, unknown> },
+    handler: (params: Record<string, unknown>) => Promise<unknown>,
+  ) => void;
 }
 
 // ─── Plugin Manager ───────────────────────────────────────────────────────────
@@ -406,6 +421,8 @@ interface LoadedPlugin {
   error?: string;
   /** 注册时间（供 /api/plugins 展示真实安装时间） */
   registeredAt: Date;
+  /** 插件实际注册的工具名（P2 声明-实际校验） */
+  toolNames: string[];
 }
 
 export class PluginManager {
@@ -436,7 +453,7 @@ export class PluginManager {
     }
 
     // 初始化期间设为 "initializing"，runHooks 会跳过非 active 插件，避免暴露未就绪的 hooks
-    const loaded: LoadedPlugin = { plugin, status: "initializing", registeredAt: new Date() };
+    const loaded: LoadedPlugin = { plugin, status: "initializing", registeredAt: new Date(), toolNames: [] };
     this.plugins.set(name, loaded);
 
     // Register hooks
@@ -467,6 +484,42 @@ export class PluginManager {
             this.eventBus?.publish(type, data, "plugin");
           },
           dataDir: this.pluginDataDir,
+          // P2 声明-实际校验：插件注册工具的唯一入口
+          registerTool: (toolName, definition, handler) => {
+            const declared = plugin.manifest.providesTools;
+            if (Array.isArray(declared) && !declared.includes(toolName)) {
+              throw new Error(
+                `Plugin "${name}" attempted to register undeclared tool "${toolName}" ` +
+                `(declared: ${declared.length > 0 ? declared.join(", ") : "none"})`,
+              );
+            }
+            if (!Array.isArray(declared)) {
+              process.stderr.write(
+                `[PluginManager] Plugin "${name}" registers tool "${toolName}" without manifest.providesTools declaration\n`,
+              );
+            }
+            const executor = this.registry?.resolveService<{
+              registerTool: (
+                n: string,
+                d: { name: string; description: string; parameters: Record<string, unknown> },
+                h: (params: Record<string, unknown>) => Promise<unknown>,
+                checkFn?: () => boolean,
+                dynamicSchemaOverrides?: () => Partial<{ name: string; description: string; parameters: Record<string, unknown> }>,
+                source?: "core" | "plugin" | "extension" | "mcp",
+              ) => void;
+              /** 冲突拒绝时 registerTool 只告警不抛错，用它判断是否真的登记成功 */
+              getToolSource?: (n: string) => "core" | "plugin" | "extension" | "mcp" | undefined;
+            }>("agentModelExecutor");
+            if (!executor) {
+              throw new Error("agentModelExecutor service is not registered; cannot register plugin tool");
+            }
+            executor.registerTool(toolName, definition, handler, undefined, undefined, "plugin");
+            // 撞名被封存核心工具时 executor 会静默拒绝；只有来源确为 plugin 才记入台账
+            const actualSource = executor.getToolSource?.(toolName);
+            if (actualSource === undefined || actualSource === "plugin") {
+              loaded.toolNames.push(toolName);
+            }
+          },
         };
         await plugin.init(ctx);
         // 初始化成功后才激活，使 hooks 可被 runHooks 调用
@@ -549,6 +602,8 @@ export class PluginManager {
     /** hooks 摘要（不含 handler，供 /api/plugins 展示） */
     hooks: Array<{ type: string; priority: string }>;
     hookCount: number;
+    /** 插件实际注册的工具名（P2 声明-实际校验观测） */
+    tools: string[];
     /** 注册时间 ISO 字符串 */
     registeredAt: string;
   }> {
@@ -563,6 +618,7 @@ export class PluginManager {
         error: p.error,
         hooks,
         hookCount: hooks.length,
+        tools: [...p.toolNames],
         registeredAt: p.registeredAt.toISOString(),
       };
     });

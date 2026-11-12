@@ -90,6 +90,8 @@ export class MCPClientManager {
       definition: { name: string; description: string; parameters: Record<string, unknown> },
       handler: (params: Record<string, unknown>) => Promise<unknown>,
       checkFn?: () => boolean,
+      dynamicSchemaOverrides?: () => Partial<{ name: string; description: string; parameters: Record<string, unknown> }>,
+      source?: "core" | "plugin" | "extension" | "mcp",
     ) => void;
     unregisterTool: (name: string) => void;
     registeredTools: Map<string, unknown>;
@@ -364,6 +366,9 @@ export class MCPClientManager {
         // checkFn：动态挂载开关——toggleTool 关闭后，下一轮工具列表构建时本工具不再可见；
         // 未显式 toggle 过（undefined）默认开启。走"延迟失效"约定，不重注册。
         () => this.toolToggleState.get(registeredName) !== false,
+        undefined,
+        // source=mcp：核心工具封存后不得借 MCP 撞名覆盖内置工具（P2）
+        "mcp",
       );
     }
   }

@@ -41,6 +41,12 @@ export interface AgentExecutionResult {
   error?: string;
 }
 
+/**
+ * 工具注册来源（P2 插件准入护栏）。
+ * 非 `core` 来源在核心工具封存后默认不得覆盖同名核心工具。
+ */
+export type ToolSource = "core" | "plugin" | "extension" | "mcp";
+
 export interface ToolDefinition {
   name: string;
   description: string;

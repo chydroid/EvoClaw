@@ -142,7 +142,8 @@ export function registerToolExtension(
     return result;
   };
 
-  executor.registerTool(sdkDef.name, agentDef, handler);
+  // source=extension：核心工具封存后撞名会被拒绝（P2 插件准入护栏）
+  executor.registerTool(sdkDef.name, agentDef, handler, undefined, undefined, "extension");
 
   opts?.logger?.warn?.(`[extension-loader] registered tool extension: ${sdkDef.name}`);
 }

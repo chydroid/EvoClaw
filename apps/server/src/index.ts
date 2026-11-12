@@ -1421,6 +1421,11 @@ export class EvoClawServer {
     this.registerIntelligenceTools();
     this.registerMarkItDownTools();
 
+    // P2 插件准入护栏：内置工具全部注册完成后封存核心工具名快照。
+    // 之后加载的插件/扩展/MCP 撞名核心工具默认被 AgentModelExecutor 拒绝。
+    const sealedToolCount = this.agentModelExecutor.sealCoreToolSet();
+    this.logger.info("server", `[plugins] core tool set sealed (${sealedToolCount} tools)`);
+
     this.scheduleManager.start();
 
     // Register all built-in plugins

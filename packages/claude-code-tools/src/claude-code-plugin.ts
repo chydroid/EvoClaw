@@ -158,6 +158,9 @@ export class ClaudeCodePlugin {
         name: string,
         definition: { name: string; description: string; parameters: Record<string, unknown> },
         handler: (params: Record<string, unknown>) => Promise<unknown>,
+        checkFn?: () => boolean,
+        dynamicSchemaOverrides?: () => Partial<{ name: string; description: string; parameters: Record<string, unknown> }>,
+        source?: "core" | "plugin" | "extension" | "mcp",
       ): void;
     }>("agentModelExecutor");
 
@@ -228,6 +231,9 @@ export class ClaudeCodePlugin {
           message: `任务已提交，正在后台执行。使用 get_task_result 工具查询进度和结果，taskId: ${taskId}`,
         };
       },
+      undefined,
+      undefined,
+      "extension",
     );
 
     // Tool: Get task execution result
@@ -276,6 +282,9 @@ export class ClaudeCodePlugin {
           capabilityLevel: result.capabilityAssessment.level,
         };
       },
+      undefined,
+      undefined,
+      "extension",
     );
 
     // Tool: Decompose task (preview only)
@@ -307,6 +316,9 @@ export class ClaudeCodePlugin {
           criticalPathLength: plan.criticalPath.length,
         };
       },
+      undefined,
+      undefined,
+      "extension",
     );
 
     // Tool: Assess capability
@@ -328,6 +340,9 @@ export class ClaudeCodePlugin {
           needsUpgrade: assessment.needsUpgrade,
         };
       },
+      undefined,
+      undefined,
+      "extension",
     );
   }
 

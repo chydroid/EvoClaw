@@ -5336,12 +5336,36 @@ export class ProtocolAdapter {
         const pluginManager = this.registry.resolveService("pluginManager") as {
           registerPlugin(plugin: unknown): Promise<void>;
           getPlugins(): Array<{ manifest: { name: string; version: string; description: string }; status: string; error?: string }>;
+          runHooks(hook: {
+            type: "before_install";
+            packageName: string;
+            version: string;
+            source: string;
+            scanFindings?: string[];
+          }): Promise<{ blocked: boolean; blockReason?: string }>;
         } | undefined;
 
         if (!pluginManager) {
           res.status(503).json({ error: "Plugin manager not available" });
           return;
         }
+
+        // P2 安装前准入：走已存在的 before_install hook（此前零调用点）。
+        // 钩子异常 fail-closed —— 准入检查本身失败时不能放行安装。
+        const guardInstall = async (pkgName: string, pkgVersion: string, pkgSource: string): Promise<string | null> => {
+          try {
+            const result = await pluginManager.runHooks({
+              type: "before_install",
+              packageName: pkgName,
+              version: pkgVersion,
+              source: pkgSource,
+              scanFindings: [],
+            });
+            return result.blocked ? (result.blockReason || "blocked by plugin guard") : null;
+          } catch (err) {
+            return `plugin install guard failed: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        };
 
         // Try to dynamically import built-in plugin
         try {
@@ -5351,6 +5375,11 @@ export class ProtocolAdapter {
           });
           if (factory) {
             const plugin = factory();
+            const blocked = await guardInstall(plugin.manifest.name, plugin.manifest.version, "builtin");
+            if (blocked) {
+              res.status(403).json({ success: false, error: blocked });
+              return;
+            }
             await pluginManager.registerPlugin(plugin);
             res.json({ success: true, message: `Plugin "${plugin.manifest.name}" installed`, plugin: { name: plugin.manifest.name, version: plugin.manifest.version } });
             return;
@@ -5383,6 +5412,11 @@ export class ProtocolAdapter {
             return { healthy: false, message: "Community stub — no functionality loaded" };
           },
         };
+        const stubBlocked = await guardInstall(name, version || "0.1.0", source || "community");
+        if (stubBlocked) {
+          res.status(403).json({ success: false, error: stubBlocked });
+          return;
+        }
         await pluginManager.registerPlugin(stubPlugin);
         // 诚实语义：未下载/加载任何第三方代码，仅注册占位 stub，且不持久化（重启消失）
         res.json({
