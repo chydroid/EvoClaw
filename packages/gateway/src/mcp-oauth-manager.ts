@@ -13,6 +13,7 @@
 import * as path from "path";
 import * as crypto from "crypto";
 import * as fs from "fs";
+import { CrossProcessLock } from "@evoclaw/infrastructure";
 import {
   OAuthTokenStorage,
   OAuthServerMetadata,
@@ -57,7 +58,8 @@ export interface OAuthServerState {
 
 export interface AuthenticateOptions {
   serverUrl: string;
-  dataDir: string;
+  /** 缺省使用 manager 构造时的 dataDir */
+  dataDir?: string;
   scope?: string;
   /** 是否使用 device code 流程（无浏览器环境） */
   deviceCode?: boolean;
@@ -86,32 +88,17 @@ export interface GetTokenOptions {
 
 export interface OAuthManagerOptions {
   dataDir: string;
+  /** 刷新栅栏等待上限（默认 60s；测试可缩短） */
+  refreshLockTimeoutMs?: number;
 }
 
 // ─── 刷新栅栏 ──────────────────────────────────────────────
 
-interface FenceEntry {
-  pid: number;
-  startedAt: number;
-  tokenPath: string;
-}
-
-const _fenceMap = new Map<string, FenceEntry>();
-const _fenceLock = makeSimpleLock();
-
-function makeSimpleLock(): { acquire: () => Promise<() => void> } {
-  let chain: Promise<void> = Promise.resolve();
-  return {
-    acquire: () => {
-      const result = chain.then(() => {});
-      chain = result.then(
-        () => {},
-        () => {},
-      );
-      return result.then(() => () => {});
-    },
-  };
-}
+/**
+ * 跨进程刷新栅栏的等待上限。超时 fail-closed（抛错），绝不无锁刷新 ——
+ * 刷新 token 是一次性凭证，并发刷新会把后到的实例永久踢出登录态。
+ */
+const REFRESH_LOCK_TIMEOUT_MS = 60_000;
 
 // ─── Manager ───────────────────────────────────────────────
 
@@ -123,8 +110,11 @@ export class McpOAuthManager {
     clientId?: string;
   }>();
 
+  private readonly refreshLockTimeoutMs: number;
+
   constructor(options: OAuthManagerOptions) {
     this.dataDir = options.dataDir;
+    this.refreshLockTimeoutMs = options.refreshLockTimeoutMs ?? REFRESH_LOCK_TIMEOUT_MS;
   }
 
   // ── 公开接口 ────────────────────────────────────────────
@@ -354,20 +344,46 @@ export class McpOAuthManager {
 
     const metadata = await this._getMetadata(serverUrl);
 
-    // 获取刷新栅栏
-    const releaseFence = await this._acquireRefreshFence(serverUrl, tokenPath);
+    // 跨进程栅栏：read → POST → persist 整段持锁（P5）。
+    // 拿不到锁时 fail-closed，避免并发刷新互相作废 refresh token。
+    const lock = this._refreshLock(serverUrl);
     try {
-      // 在栅栏内重新加载 token（可能已被其他进程刷新）
+      await lock.acquire(this.refreshLockTimeoutMs);
+    } catch (err) {
+      throw new Error(
+        `MCP OAuth refresh lock unavailable for ${serverUrl}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    try {
+      // 锁内重读：另一个进程可能已经完成刷新
       const freshToken = loadToken(tokenPath);
       if (!freshToken || !freshToken.refresh_token) return null;
 
-      // 如果刚被刷新过，直接返回
+      // 如果刚被刷新过，直接采用磁盘上的新 token，不再 POST
       if (freshToken.access_token !== token.access_token) return freshToken;
 
       return await this._doRefresh(freshToken, serverUrl, metadata);
     } finally {
-      releaseFence();
+      lock.release();
     }
+  }
+
+  /**
+   * 便捷取 token（直接用 manager 的 dataDir）。
+   * 供 MCPClientTransport 的 auth provider 注入。
+   */
+  async getAccessToken(
+    serverUrl: string,
+    opts: { scope?: string; clientId?: string } = {},
+  ): Promise<string | null> {
+    return this.getToken({ serverUrl, dataDir: this.dataDir, ...opts });
+  }
+
+  /** 强制刷新一次并返回新 access token（401 重试用）。 */
+  async refreshAccessToken(serverUrl: string): Promise<string | null> {
+    const token = await this.refresh(serverUrl);
+    return token?.access_token ?? null;
   }
 
   /**
@@ -428,48 +444,22 @@ export class McpOAuthManager {
     return clientId;
   }
 
-  private async _acquireRefreshFence(
-    serverUrl: string,
-    tokenPath: string,
-  ): Promise<() => void> {
-    const fenceKey = `refresh:${serverUrl}`;
-    const existing = _fenceMap.get(fenceKey);
-
-    if (existing) {
-      // 已有进程在刷新，等待其完成
-      const waitMs = 5000;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-
-      // 重新检查
-      const afterWait = _fenceMap.get(fenceKey);
-      if (afterWait && afterWait.pid !== existing.pid) {
-        // 不同进程，说明刷新已完成
-        _fenceMap.delete(fenceKey);
-        return () => {};
-      }
-
-      // 同一进程还在刷新（可能是我们自己的重入），返回 no-op
-      return () => {};
-    }
-
-    // 创建栅栏
-    _fenceMap.set(fenceKey, {
-      pid: process.pid,
-      startedAt: Date.now(),
-      tokenPath,
-    });
-
-    return () => {
-      _fenceMap.delete(fenceKey);
-    };
+  /** 每个 server 一把跨进程锁（wx + PID + stale 检测），锁目录与 token 目录分离。 */
+  private _refreshLock(serverUrl: string): CrossProcessLock {
+    const lockName = `mcp-oauth-refresh-${crypto
+      .createHash("sha256")
+      .update(serverUrl)
+      .digest("hex")
+      .slice(0, 16)}`;
+    return new CrossProcessLock(path.join(this.dataDir, "locks"), lockName);
   }
 }
 
 /**
  * 创建 OAuth manager 实例。
  */
-export function createOAuthManager(dataDir: string): McpOAuthManager {
-  return new McpOAuthManager({ dataDir });
+export function createOAuthManager(dataDir: string, options: Omit<OAuthManagerOptions, "dataDir"> = {}): McpOAuthManager {
+  return new McpOAuthManager({ dataDir, ...options });
 }
 
 /**

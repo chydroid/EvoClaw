@@ -47,6 +47,8 @@ export class CrossProcessLock {
   private static readonly LOCK_SUFFIX = ".lock";
   private static readonly DEFAULT_TIMEOUT_MS = 60_000;
   private static readonly POLL_INTERVAL_MS = 100;
+  /** 本次 acquire 持有的 token（用于 release 时避免误删同进程其他实例后来获得的锁） */
+  private heldToken: string | null = null;
 
   constructor(
     private readonly lockDir: string,
@@ -83,6 +85,7 @@ export class CrossProcessLock {
         fsSync.writeFileSync(this.lockPath, JSON.stringify({ pid, token, acquiredAt: Date.now() }), {
           flag: "wx",
         });
+        this.heldToken = token;
         return;
       } catch (err: unknown) {
         const code = (err as NodeJS.ErrnoException)?.code;
@@ -146,12 +149,19 @@ export class CrossProcessLock {
   release(): void {
     try {
       const raw = fsSync.readFileSync(this.lockPath, "utf-8");
-      const data = JSON.parse(raw) as { pid: number };
-      if (data.pid === process.pid) {
+      const data = JSON.parse(raw) as { pid: number; token?: string };
+      // 同进程多个实例共用 pid：必须再比对 token，否则 A 的迟到 release
+      // 会删掉 B 刚获得的锁（ABA）。未持有 token 的 release 一律 no-op。
+      const ownsLock = this.heldToken !== null &&
+        data.pid === process.pid &&
+        data.token === this.heldToken;
+      if (ownsLock) {
         fsSync.unlinkSync(this.lockPath);
       }
     } catch {
       // 锁文件不存在或损坏，忽略
+    } finally {
+      this.heldToken = null;
     }
   }
 

@@ -25,7 +25,14 @@
  */
 import * as fs from "fs";
 import * as path from "path";
-import { MCPClientTransport, ExternalMCPServerConfig, DiscoveredTool } from "./mcp-client-transport.js";
+import {
+  MCPClientTransport,
+  ExternalMCPServerConfig,
+  DiscoveredTool,
+  validateMcpOAuthConfig,
+  type McpOAuthTokenProvider,
+} from "./mcp-client-transport.js";
+import type { McpOAuthManager } from "./mcp-oauth-manager.js";
 import { MCPGateway } from "./mcp-gateway.js";
 import { MCPTool } from "@evoclaw/core";
 import { atomicWriteFileSync } from "./atomic-write";
@@ -108,13 +115,42 @@ export class MCPClientManager {
    */
   private toolToggleState = new Map<string, boolean>();
 
+  /** OAuth token 管理器（P5；未注入时 oauth 配置被忽略） */
+  private oauthManager: McpOAuthManager | null = null;
+
   /** 注入投毒扫描器（MCPToolPoisoningScanner 鸭子类型兼容） */
   setPoisoningScanner(scanner: ToolPoisoningScanner): void {
     this.poisoningScanner = scanner;
   }
 
+  /** 注入 OAuth 管理器（P5）。需在 connectAll 之前调用。 */
+  setOAuthManager(manager: McpOAuthManager): void {
+    this.oauthManager = manager;
+  }
+
+  getOAuthManager(): McpOAuthManager | null {
+    return this.oauthManager;
+  }
+
   constructor(dataDir: string) {
     this.configPath = path.join(dataDir, "mcp-servers.json");
+  }
+
+  /** 读取单个 server 的配置（不存在返回 null；P5 OAuth 路由用） */
+  getServerConfig(name: string): ExternalMCPServerConfig | null {
+    return this.loadConfig()[name] ?? null;
+  }
+
+  /** 为 HTTP 传输构造 OAuth token provider（P5）；未启用/未注入时返回 undefined。 */
+  private buildOAuthProvider(config: ExternalMCPServerConfig): McpOAuthTokenProvider | undefined {
+    if (!this.oauthManager || !config.oauth?.enabled || !config.url) return undefined;
+    const serverUrl = config.url;
+    const scope = config.oauth.scopes?.join(" ");
+    const clientId = config.oauth.clientId;
+    return {
+      getToken: () => this.oauthManager!.getAccessToken(serverUrl, { scope, clientId }),
+      refreshToken: () => this.oauthManager!.refreshAccessToken(serverUrl),
+    };
   }
 
   /** 设置依赖服务 */
@@ -246,6 +282,12 @@ export class MCPClientManager {
       }
     }
 
+    // P5：OAuth 配置形状校验（不触网，连接前 fail-fast）
+    const oauthErrors = validateMcpOAuthConfig(config);
+    if (oauthErrors.length > 0) {
+      throw new Error(`MCP server "${name}" OAuth config invalid: ${oauthErrors.join("; ")}`);
+    }
+
     // per-name 互斥：同名 server 并发连接时，复用 in-flight 的连接结果，
     // 避免 disconnect 与 connect 交错导致状态不一致（TOCTOU 竞态）。
     const inflight = this.connectInflight.get(name);
@@ -261,8 +303,8 @@ export class MCPClientManager {
       this.servers.delete(name);
     }
 
-    // 创建并连接
-    const transport = new MCPClientTransport(name, config);
+    // 创建并连接（P5：HTTP 传输注入 OAuth token provider）
+    const transport = new MCPClientTransport(name, config, this.buildOAuthProvider(config));
     await transport.connect();
 
     // 发现工具

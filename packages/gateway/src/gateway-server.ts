@@ -25,6 +25,7 @@ import { AuthProvider } from "./auth-provider";
 import { ProtocolAdapter } from "./protocol-adapter";
 import { MCPGateway } from "./mcp-gateway";
 import { MCPClientManager } from "./mcp-client-manager";
+import { createOAuthManager, type McpOAuthManager } from "./mcp-oauth-manager";
 import { WebhookManager, type WebhookConfig } from "./webhook-manager";
 import { ProtocolHandler } from "./ws-protocol";
 import { WSServerTransport } from "./ws-server-transport";
@@ -67,6 +68,8 @@ export class GatewayServer {
   private protocolAdapter: ProtocolAdapter;
   private mcpGateway: MCPGateway;
   private mcpClientManager: MCPClientManager | null = null;
+  /** MCP OAuth token 管理器（P5；与 mcpClientManager 同一 dataDir 生命周期） */
+  private mcpOAuthManager: McpOAuthManager | null = null;
   private protocolHandler: ProtocolHandler;
   private wsTransport: WSServerTransport | null = null;
   private requestCounts: Map<string, { count: number; resetAt: number }> = new Map();
@@ -140,6 +143,10 @@ export class GatewayServer {
     this.protocolAdapter.initMigrations(dataDir, currentVersion);
     // Initialize external MCP client manager with the same data dir
     this.mcpClientManager = new MCPClientManager(dataDir);
+    // P5：token 落在 dataDir/mcp-oauth（getTokenPath 自动追加），
+    // 刷新栅栏锁文件在 dataDir/locks；注入后再 connectAll。
+    this.mcpOAuthManager = createOAuthManager(dataDir);
+    this.mcpClientManager.setOAuthManager(this.mcpOAuthManager);
   }
 
   /** Initialize and connect external MCP servers from config */
@@ -1451,6 +1458,8 @@ export class GatewayServer {
           url?: string;
           headers?: Record<string, string>;
           enabled?: boolean;
+          /** P5：OAuth 配置（仅 sse / streamable-http） */
+          oauth?: { enabled: boolean; scopes?: string[]; clientId?: string };
         };
       };
       if (!name || !config || !config.type) {
@@ -1505,6 +1514,127 @@ export class GatewayServer {
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
+    });
+
+    // ── P5 MCP OAuth：状态 / 发起认证 / 注销 ───────────────────
+    // token 永远不出现在响应里；status 只含 hasToken/hasRefreshToken 等布尔量。
+
+    const resolveOAuthServer = (
+      name: string,
+    ): { serverUrl: string; scopes?: string[]; clientId?: string; enabled: boolean } | null => {
+      const cfg = this.mcpClientManager?.getServerConfig(name);
+      if (!cfg || !cfg.url || cfg.type === "stdio") return null;
+      return {
+        serverUrl: cfg.url,
+        scopes: cfg.oauth?.scopes,
+        clientId: cfg.oauth?.clientId,
+        enabled: cfg.oauth?.enabled === true,
+      };
+    };
+
+    // GET /api/mcp-oauth/:server/status
+    this.app.get("/api/mcp-oauth/:server/status", (req: Request, res: Response) => {
+      if (!this.mcpClientManager || !this.mcpOAuthManager) {
+        res.status(503).json({ error: "MCP OAuth manager not initialized" });
+        return;
+      }
+      const { server } = req.params as { server: string };
+      const target = resolveOAuthServer(server);
+      if (!target) {
+        res.status(404).json({ error: `MCP server "${server}" not found or not an HTTP transport with url` });
+        return;
+      }
+      const state = this.mcpOAuthManager.getStatus(target.serverUrl);
+      res.json({
+        server,
+        enabled: target.enabled,
+        status: state.status,
+        hasToken: state.hasToken,
+        hasRefreshToken: state.hasRefreshToken,
+        needsRefresh: state.needsRefresh,
+        lastError: state.lastError,
+      });
+    });
+
+    // POST /api/mcp-oauth/:server/authenticate
+    // 立即返回授权 URL / device code（202），认证流程在后台继续；
+    // 完成后调用方可用 status 查询，或 reconnect 让新 token 生效。
+    this.app.post("/api/mcp-oauth/:server/authenticate", async (req: Request, res: Response) => {
+      if (!this.mcpClientManager || !this.mcpOAuthManager) {
+        res.status(503).json({ error: "MCP OAuth manager not initialized" });
+        return;
+      }
+      const { server } = req.params as { server: string };
+      const target = resolveOAuthServer(server);
+      if (!target) {
+        res.status(404).json({ error: `MCP server "${server}" not found or not an HTTP transport with url` });
+        return;
+      }
+      const body = (req.body || {}) as { deviceCode?: boolean };
+      const useDeviceCode = body.deviceCode === true;
+
+      let authorizationUrl: string | undefined;
+      let deviceCode:
+        | { userCode: string; verificationUri: string; verificationUriComplete?: string }
+        | undefined;
+      let flowError: string | undefined;
+
+      const oauth = this.mcpOAuthManager;
+      const baseOpts = {
+        serverUrl: target.serverUrl,
+        scope: target.scopes?.join(" "),
+        clientId: target.clientId,
+      };
+      const flow = useDeviceCode
+        ? oauth.authenticateDeviceCode({
+            ...baseOpts,
+            onDeviceCode: (info) => { deviceCode = info; },
+          })
+        : oauth.authenticate({
+            ...baseOpts,
+            onAuthorizationUrl: (url) => { authorizationUrl = url; },
+          });
+      // 后台流程失败只记录，不产生 unhandled rejection
+      void flow.catch((err) => {
+        flowError = err instanceof Error ? err.message : String(err);
+      });
+
+      // 回调在 metadata 发现 / device code 请求之后触发，最多等 10 秒
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && !authorizationUrl && !deviceCode && !flowError) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+
+      if (flowError) {
+        res.status(502).json({ error: `OAuth flow failed: ${flowError}` });
+        return;
+      }
+      if (!authorizationUrl && !deviceCode) {
+        res.status(502).json({ error: "OAuth flow did not produce an authorization URL or device code in time" });
+        return;
+      }
+      res.status(202).json({
+        success: true,
+        status: "pending",
+        ...(authorizationUrl ? { authorizationUrl } : {}),
+        ...(deviceCode ? { deviceCode } : {}),
+      });
+    });
+
+    // POST /api/mcp-oauth/:server/logout — 删除本地 token（不可恢复）
+    this.app.post("/api/mcp-oauth/:server/logout", (req: Request, res: Response) => {
+      if (!this.mcpClientManager || !this.mcpOAuthManager) {
+        res.status(503).json({ error: "MCP OAuth manager not initialized" });
+        return;
+      }
+      const { server } = req.params as { server: string };
+      const target = resolveOAuthServer(server);
+      if (!target) {
+        res.status(404).json({ error: `MCP server "${server}" not found or not an HTTP transport with url` });
+        return;
+      }
+      this.mcpOAuthManager.logout(target.serverUrl);
+      res.json({ success: true, server });
     });
 
     // ── P1-4 MCP 指挥中心：仪表盘 + 工具级动态挂载 ──────────────
