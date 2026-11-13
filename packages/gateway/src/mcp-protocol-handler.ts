@@ -10,6 +10,23 @@
  * Uses a tool registry (injected via constructor) for tool listing and execution.
  */
 
+// ─── Protocol Version ───────────────────────────────────────────────────────
+
+/**
+ * 本端点支持的 MCP 协议版本（与 @modelcontextprotocol/sdk 的
+ * SUPPORTED_PROTOCOL_VERSIONS 对齐；SDK 1.29.0 实装 5 个版本）。
+ * MCP 规范要求 initialize 结果必须带 protocolVersion；缺失会让标准 SDK
+ * Client 的 InitializeResultSchema 解析失败。
+ */
+const SUPPORTED_PROTOCOL_VERSIONS = [
+  "2025-11-25",
+  "2025-06-18",
+  "2025-03-26",
+  "2024-11-05",
+  "2024-10-07",
+] as const;
+const DEFAULT_PROTOCOL_VERSION = "2024-11-05";
+
 // ─── JSON-RPC Error Codes ────────────────────────────────────────────────────
 
 const JSONRPC_ERROR = {
@@ -95,12 +112,22 @@ export class MCPProtocolHandler {
   // ─── MCP Method Handlers ────────────────────────────────────────────────
 
   handleInitialize(params: {
+    protocolVersion?: string;
     clientInfo: { name: string; version: string };
     capabilities: Record<string, unknown>;
   }): {
+    protocolVersion: string;
     serverInfo: { name: string; version: string };
     capabilities: Record<string, unknown>;
   } {
+    // 客户端请求的协议版本若受支持则回显，否则回落到 DEFAULT（SDK 客户端会
+    // 检查该字段是否在自己的支持列表内，回落值对所有 SDK 版本都合法）。
+    const requested = params.protocolVersion;
+    const protocolVersion = typeof requested === "string" &&
+      (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(requested)
+      ? requested
+      : DEFAULT_PROTOCOL_VERSION;
+
     const serverCapabilities: Record<string, unknown> = {};
 
     if (this.toolRegistry !== null) {
@@ -116,6 +143,7 @@ export class MCPProtocolHandler {
     }
 
     return {
+      protocolVersion,
       serverInfo: {
         name: this.serverName,
         version: this.serverVersion,
@@ -426,6 +454,9 @@ export class MCPProtocolHandler {
           }
           const clientInfo = params.clientInfo as { name: string; version: string } | undefined;
           const capabilities = params.capabilities as Record<string, unknown> | undefined;
+          const protocolVersion = typeof params.protocolVersion === "string"
+            ? params.protocolVersion
+            : undefined;
           if (!clientInfo || !capabilities) {
             return {
               jsonrpc: "2.0",
@@ -433,7 +464,7 @@ export class MCPProtocolHandler {
               id,
             };
           }
-          const result = this.handleInitialize({ clientInfo, capabilities });
+          const result = this.handleInitialize({ protocolVersion, clientInfo, capabilities });
           return { jsonrpc: "2.0", result, id };
         }
 

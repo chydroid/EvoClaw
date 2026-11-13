@@ -478,6 +478,8 @@ export class MCPClientManager {
     tools: Array<{ name: string; enabled: boolean; poisoned: boolean }>;
     lastError?: string;
     connectedAt?: number;
+    /** P6：sampling 指标；未启用时为 null */
+    samplingMetrics: SamplingMetrics | null;
   }> {
     return Array.from(this.servers.values()).map((s) => {
       const poisoned = new Set(this.poisonedTools.get(s.name) ?? []);
@@ -493,6 +495,7 @@ export class MCPClientManager {
         })),
         lastError: s.lastError,
         connectedAt: s.connectedAt,
+        samplingMetrics: s.transport.getSamplingMetrics(),
       };
     });
   }
@@ -557,6 +560,20 @@ export class MCPClientManager {
 
   /** 添加 server 配置并连接 */
   async addServer(name: string, config: ExternalMCPServerConfig): Promise<ServerState> {
+    // P5：连接前先做同样的配置形状校验（stdio 命令安全 + OAuth 形状），
+    // 避免非法配置先落盘、connectServer 抛错后留下连不上的坏配置文件。
+    if (config.type === "stdio" && config.command) {
+      const validation = validateMCPServerConfig(config.command, config.args ?? []);
+      if (!validation.safe) {
+        const reasons = validation.threats.map((t) => t.description).join("; ");
+        throw new Error(`MCP server "${name}" config validation failed: ${reasons}`);
+      }
+    }
+    const oauthErrors = validateMcpOAuthConfig(config);
+    if (oauthErrors.length > 0) {
+      throw new Error(`MCP server "${name}" OAuth config invalid: ${oauthErrors.join("; ")}`);
+    }
+
     const configs = this.loadConfig();
     configs[name] = config;
     this.saveConfig(configs);

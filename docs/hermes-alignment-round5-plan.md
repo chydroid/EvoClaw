@@ -181,7 +181,7 @@
 - 原地更新：新增 `MemoryHub.updateMemoryContent(id, content)` —— 保留 id/type/metadata/ttl/createdAt，FTS5 `indexEntry` 幂等覆盖（DELETE+INSERT），向量索引 best-effort；不再走 `forgetMemory + remember` 新建 id 的老路径。
 - remove 重写：传 id 先 `longTerm.get` 校验存在；传 old_string 走唯一匹配；歧义返回候选；`not_found` 附最近条目，不再对不存在的 id 假成功。
 - 契约收紧：patch/remove 参数说明标注「必须唯一命中」；`id`/`old_string` 均 `required: false`，避免校验器把参数误判为必填。
-- Phase 2（staging）按计划保持可选/默认关闭，本轮**未实施**：需要新增配置项 + API/UI 闭环，且不改变默认行为，单独立项更合适。
+- Phase 2（staging）按计划保持可选/默认关闭，本轮**未实施**：需要新增配置项 + API/UI 闭环，且不改变默认行为，单独立项更合适。**第六轮复核维持不实施**：Phase 1 的唯一匹配 + 原地更新已消除数据损坏（原缺陷）；staging 属于「额外加一道审批」而非修 bug，默认关闭时零收益，开启又需要 pending 存储 + 审批 API + UI 三件套，L 级。
 - 测试：新增 `packages/memory/src/memory-match.test.ts`（9）、`apps/server/tests/memory-tools.test.ts`（14），`packages/memory/src/memory-hub.test.ts` 增 3 条（id/ttl 保留、FTS5 覆盖旧内容、未知 id 返回 null）；全量 `pnpm test` 7345 passed（342 files）。
 
 ---
@@ -216,7 +216,7 @@
 - 来源接线：extension-loader、claude-code-tools 内置扩展、MCP 客户端注册分别传 `extension` / `extension` / `mcp`。
 - `before_install` 接线：`/api/plugins/install` 在内置工厂与社区 stub 两条注册路径前调用 `pluginManager.runHooks({type:"before_install",...})`；`blocked` 或钩子抛错都返回 403（fail-closed）。无下载/解压/持久化的 stub 语义保持不变。
 - 声明-实际校验：`PluginManifest.providesTools?: string[]`；`PluginContext.registerTool` 是插件注册工具的唯一入口，注册工具名不在声明列表内直接抛错（init 失败、不注册），无声明则告警放行。`getPlugins()` 增加 `tools` 台账；executor 因核心撞名静默拒绝时（`getToolSource` 非 `plugin`）不记入台账。
-- 第 4 步静态扫描按计划**未实施**：仓库无真实 AST 解析器（`skill-scanner.astScanContent` 是逐行正则），引入解析器依赖属于新子系统，待插件分发体系落地再做。
+- 第 4 步静态扫描按计划**未实施**：仓库无真实 AST 解析器（`skill-scanner.astScanContent` 是逐行正则），引入解析器依赖属于新子系统，待插件分发体系落地再做。**第六轮复核维持不实施**：`/api/plugins/install` 仍只有内置工厂 + 无钩子 stub，请求体只有包名/版本/source，没有任何可扫描的插件代码实体；`scanFindings` 传空数组是诚实的，给空代码做「扫描」只会制造虚假安全感。
 - 测试：新增 `packages/agent/src/tool-source-guard.test.ts`（6）、`packages/core/src/plugin-system.test.ts`（5）、`packages/gateway/src/plugin-install-routes.test.ts`（4）；全量 `pnpm test` 7375 passed（346 files）。
 
 ---
@@ -252,7 +252,7 @@
 - 热重载：`ConfigWatcher` 新增 `onInvalid()`，`forceReload`/`handleFileChange` 校验失败时通知；`startWatching` 据此置 degraded 并保留上一份；后续有效重载清除降级。
 - 可观测：`GET /health` 增加 `config: {degraded, reason}`，整体 status 在配置降级时为 `degraded`（但不会掩盖真正的 `unhealthy`）；新增鉴权路由 `GET /api/config/status` 返回完整状态（未注册 config 服务时 503，不加入公开路径以免泄露 sourcePath/doctor 细节）。WebUI `ConfigDoctorPage` 增加降级横幅（中英 i18n）。
 - 顺带修复：`deepMerge` 原来是 `{...base}` 浅拷贝，未覆盖的 section 与共享的 `defaultConfig` 是同一对象，任意实例的 `set()` 会静默污染默认值、波及后续实例。改为深拷贝 base（配置体量小、合并频率低）。
-- 第 5 步 `schemaVersion`/迁移链接线仍列为后续可选项，未实施。
+- 第 5 步 `schemaVersion`/迁移链接线仍列为后续可选项，未实施。**第六轮复核维持不实施**：仓库已有两套并行迁移设施——`legacy-config-migrations.ts`（CLI `doctor --fix` 实际调用，字段级）与 `protocol-adapter.ts` 的 `/api/config/migrations`（WebUI ConfigMigrationPage，快照/回滚）；`ConfigMigrationManager` 是第三套未接线的版本链。再接一套会形成三轨冲突，且当前配置无 `schemaVersion` 字段、无待迁移的破坏性变更，没有真实需求。
 - 测试：`packages/core/src/config.test.ts` 增 6 条（损坏文件降级且保留配置、降级拒绝写回、成功加载签名/doctor、缺失文件不降级、非法热重载保留上一份、有效热重载清除降级）；`packages/gateway/src/gateway-server.test.ts` 增 2 条（/health 暴露降级、/api/config/status 鉴权与 503）；全量 `pnpm test` 7375 passed（346 files）。
 
 ---
@@ -288,7 +288,7 @@
 - 顺带修复 `CrossProcessLock.release()`：增加本次持有 token 比对，避免同进程多实例中 A 的迟到 release 删掉 B 刚获得的锁（ABA）；未持有 token 的 release 变为 no-op。
 - 配置面：`ExternalMCPServerConfig.oauth?: {enabled, scopes?, clientId?}`；新增 `validateMcpOAuthConfig()`（stdio 不支持、url 必填且合法、scopes/clientId 类型），`connectServer` 连接前 fail-fast。计划原写「纳入 `validateMCPServerConfig`」，但该函数只接收 command/args（stdio 命令安全），故 OAuth 形状校验落在 gateway 配置层。
 - 路由：`GET /api/mcp-oauth/:server/status`（只返 hasToken/hasRefreshToken/needsRefresh，不含 token 值）、`POST .../authenticate`（PKCE 或 `{deviceCode:true}`；202 立即返回授权 URL/设备码，流程后台继续，最长等 10s，失败 502）、`POST .../logout`（删除本地 token）。路由需鉴权；stdio/未知 server 404。
-- 未做：CLI 子命令与 WebUI（计划允许后置）；`/api/mcp-external/add` 仅扩展了 oauth 字段的请求体类型。
+- 未做：CLI 子命令与 WebUI（计划允许后置）；`/api/mcp-external/add` 仅扩展了 oauth 字段的请求体类型。**复核更正（第六轮）**：`addServer` 会把整个 `config`（含 `oauth`）原样持久化到 `data/mcp-servers.json`，`resolveOAuthServer` 从磁盘读取，故「仅类型」表述偏保守。真实缺口是「先落盘再校验」：非法 oauth 配置会留下坏配置文件，已在第六轮修复。
 - 测试：新增 `packages/gateway/src/mcp-oauth-wiring.test.ts`（12：Bearer 注入/401 一次刷新/刷新失败/不可重放 body/配置校验/两实例并发只 POST 一次/锁超时/损坏 token）、`packages/gateway/src/mcp-oauth-routes.test.ts`（6：status 不泄露 token、logout、authenticate 失败 502、鉴权）、`packages/infrastructure/src/cross-process-lock.test.ts`（1：ABA）；全量 `pnpm test` 7394 passed（349 files）。
 
 ---
@@ -323,7 +323,7 @@
 - 注入链：`MCPClientManager.setSamplingLlm()` ← `GatewayServer.initializeExternalMCPServers` 向已注册的 `agentModelExecutor` 取 `createMcpSamplingLlm()`（方法缺失则不启用，并输出告警）。`connectServer` 仅在有 LLM 回调时把 sampling 配置传给 transport。
 - `AgentModelExecutor.createMcpSamplingLlm()`：单次 `callLLMOnce`（可携带 server tools，toolChoice auto）；**不**读写主会话 history/systemPrompt，避免远端请求污染会话与 prompt 缓存；usage 在固定 sessionId `"mcp-sampling"` 下调用 `recordTokenUsage` 单点记账。
 - 与计划第 4 步的差异：未给 `auxiliary-client.ts` 增加 `mcp_sampling` 任务类型。实现需要 tools 透传，而 `callAuxLLM`/`AuxChatFn` 只返回文本；改为直接走 `callLLMOnce` 并保留单点记账。`auxiliary.<task>` 覆盖对 sampling 暂不生效（记录为后续可选）。
-- 计划提到的 `mcp-protocol-handler.ts` 协议版本字段不在本轮范围（未实施）。
+- 计划提到的 `mcp-protocol-handler.ts` 协议版本字段不在本轮范围（未实施）。**复核更正（第六轮）**：该字段是 MCP `InitializeResultSchema` 的必填项，缺失会让标准 SDK Client 直连 `POST /api/mcp` 的 initialize 解析失败，属真实协议缺陷，已在第六轮补齐。
 - 测试：新增 `packages/gateway/src/mcp-sampling.test.ts`（13：限流/白名单/clamp/超时/空响应/tools 默认关闭/轮次上限/文本转换/并发/脱敏）、`packages/gateway/src/mcp-sampling-integration.test.ts`（2：真实 stdio MCP server 端到端 sampling 成功；默认关闭时 MethodNotFound）；全量 `pnpm test` 7409 passed（351 files）。
 
 ---
@@ -368,7 +368,49 @@
 - 配额：`consumeQuota()` 滑动窗口（`windowStart + windowMs` 到期重置 `used`）；超限返回失败结果并发布 `scheduler.task_skipped`，不调用 handler、不累加 failureStreak。手动 `executeTask` 与 cron 共用该门（计划允许的「统一过 quota」选择）。
 - 时区：`cron.schedule` 使用 `task.timezone || EVOCLAW_TIMEZONE || Asia/Shanghai`；老任务无字段时行为不变。
 - Phase 2（SQLite occurrence 账本）**未实施**：Phase 1 仍是单进程 JSON 全文重写，未加跨进程锁；多进程部署需先上 Phase 2（或给 `saveTasks` 包 `CrossProcessLock`）。已在代码注释与本记录标注。
+- **第六轮复核修正**：原记录给的「给 `saveTasks` 包 `CrossProcessLock`」是**误导性替代方案**。`saveTasksSync` 已用 `atomicWriteFileSync`，单进程内不存在写-写撕裂；写锁只能防多进程并发写坏文件，但多进程的真实风险是**两个进程各自持有一份内存任务表、各自跑 cron tick、各自执行任务**——写锁完全挡不住，反而制造「已加锁所以安全」的错觉。当前 `new ScheduleManager` 只有 `apps/server/src/index.ts:886` 一个生产实例化点，单进程部署；真要多进程就必须上 Phase 2 的 occurrence claim 账本（`BEGIN IMMEDIATE` 抢占），没有 S 级捷径。保持 Phase 1 现状，不接半吊子锁。
 - 测试：新增 `packages/scheduler/src/schedule-manager-p7.test.ts`（8：崩溃后只补一次/活 owner 不抢占/TTL/停用清理/派发前落盘与完成后清除/配额/窗口滚动/时区持久化）、`packages/scheduler/src/schedule-manager-timezone.test.ts`（1：任务时区优先 + 全局回落）；全量 `pnpm test` 7418 passed（353 files）。
+
+---
+
+## 2.1 第六轮收尾（2026-11-13）
+
+对全文「未实施 / 后置 / 可选」项逐条重新勘察源码，按「是否有真实缺陷 / 是否小改可交付 / 是否不改默认行为」三条筛选。
+
+### 已实施（6 项，均为 S 级）
+
+| # | 项目 | 依据 | 改动 |
+|---|---|---|---|
+| R1 | **MCP initialize 补 `protocolVersion`** | `mcp-protocol-handler.ts:97-125` 的 initialize 结果缺该必填字段；SDK 1.29.0 `InitializeResultSchema` 要求 `z.string()`，`Client.connect()` 会解析失败。核心 `types/mcp.ts` 早已声明该字段，只是 handler 没用 | `mcp-protocol-handler.ts`：支持列表（对齐 SDK 5 版本）→ 回显客户端请求版本，不支持/缺失回落 `2024-11-05`；路由透传 `params.protocolVersion`；新增 `mcp-protocol-handler.test.ts`（3 条，含 SDK schema 解析断言） |
+| R2 | **CLI 通用鉴权欠账** | `apps/cli/src/utils/api.ts:73` 的 `apiRequest` 只发 `Content-Type/Accept`，而 `auth-provider.ts:50-127` 对所有非白名单 `/api/*` 要求 `web_ui_token` cookie 或 Bearer JWT → CLI 所有需鉴权命令 401 | `api.ts`：`getWebUiToken()`（显式 `EVOCLAW_WEB_UI_TOKEN`/`WEB_UI_TOKEN` → `.env`，不写 `process.env`、不打印）、`apiRequest` 第四参 `{token}` + 自动注入 cookie；`authFailureHint()` 401/403 可读提示；新增 `apps/cli/tests/api-auth.test.ts`（4 条）。env 路径延迟计算以支持 cwd 变化 |
+| R3 | **P5 CLI OAuth 子命令** | 三条路由已存在但 CLI 零入口；补 R2 后可用 | `apps/cli/src/commands/mcp.ts` 新增 `mcp oauth status\|login\|logout`：`--token` 显式、`--json`、`--device-code`；只展示布尔状态与授权 URL/设备码，绝不回显 token 值 |
+| R4 | **P5 WebUI OAuth 卡片** | `MCPExternalPage.tsx` 已有 server 卡片与 cookie 鉴权，零 OAuth UI | 卡片区按 server 查 `/status`，仅对 `enabled` 且非 stdio 显示；授权（PKCE 新窗口 / 设备码）、刷新状态、注销；zh/en i18n 各 12 键 |
+| R5 | **P6 sampling 指标可观测 + 计数语义** | 计数器已存在但零外部出口；`requests` 只在成功时自增，算不出错误率 | `mcp-sampling.ts` 增 `total/succeeded/maxToolRound`，入口即计 `total`，**所有 `fail()` 之后才计 `succeeded`**（工具轮次闸门会 fail，先计会破坏 `total = succeeded + errors`），保留 `requests` 兼容别名；`getDashboard()` 每 server 暴露 `samplingMetrics`（走已有鉴权的 `/api/mcp/dashboard`）；`mcp-sampling.test.ts` 增 2 条不变量断言（含轮次超限场景） |
+| R6 | **P5 `addServer` 落盘前校验 + 配置示例** | `addServer` 先写 `mcp-servers.json` 再 `connectServer`，非法 oauth（如 stdio+enabled）抛错后留下坏配置文件；`config/mcp-servers.example.json` 无 oauth/sampling 示例 | `mcp-client-manager.ts:addServer` 前置 `validateMCPServerConfig` + `validateMcpOAuthConfig`；新增 `mcp-external-add.test.ts`（2 条：非法不落盘 / 合法完整持久化）；示例文件补远程 HTTP + oauth 条目 |
+
+### 维持不实施（复核后理由更强，已在各节记录）
+
+- **P4 Phase 2 staging**：Phase 1 已消除数据损坏；staging 是额外审批而非修 bug，默认关闭零收益，开启需 pending 存储 + API + UI（L 级）。
+- **P2 静态扫描第 4 步**：安装路由没有任何可扫描的插件代码实体（只有包名/版本/source + stub），`scanFindings: []` 是诚实的；给空代码做扫描只会制造虚假安全感。
+- **P8 `schemaVersion` 迁移链**：仓库已有 CLI `doctor --fix` 字段级迁移 + WebUI `/api/config/migrations` 快照回滚两套，`ConfigMigrationManager` 是未接线的第三套；接线会形成三轨冲突，且无待迁移的破坏性变更。
+- **P6 auxiliary `mcp_sampling` 任务类型**：计划第 325 行取舍成立（`AuxChatFn` 只返回文本，无法承载 tool_use），改为直连 `callLLMOnce` 并保留单点记账；回退会动 4 处类型契约 + 双记账去重，改变默认关闭的行为，回归面大而收益仅为 provider 覆盖。
+- **P7 Phase 2 SQLite 账本 / `CrossProcessLock` 替代**：见上文修正——单进程部署无需求，写锁无法阻止双进程各跑一次任务，没有 S 级捷径。
+- **完整 OAuth 交互式闭环**：`/authenticate` 只返 202 + URL、后台完成无通知，需要后台任务状态存储 + SSE/轮询 UI + 回调页（M–L）；当前「CLI/WebUI 发起 + status 查询 + reconnect」已够用。
+- **让 `POST /api/mcp` 成为完整合规 HTTP MCP endpoint**（`notifications/initialized`、`MCP-Protocol-Version` header、session）：官方接入路径是 `apps/mcp-server` stdio 桥，新增外部接入面属独立立项。
+
+### 验证
+
+`pnpm build -> pnpm typecheck -> pnpm test`（顺序不可换）。
+
+**状态：全绿（2026-11-13）。**
+
+- `pnpm build` — 18 个包全部编译通过（含 `web-ui` vite build）。
+- `pnpm typecheck` — 18 个工作区项目 `tsc --noEmit` 全部通过。
+- `pnpm test` — **355 文件通过 / 1 跳过；7428 测试通过 / 14 跳过**（356 文件、7442 用例），耗时 115s。
+
+本轮新增/改动的测试单独复跑亦全绿：`mcp-protocol-handler.test.ts`(3) + `mcp-external-add.test.ts`(2) + `mcp-sampling.test.ts`(14) + `apps/cli/tests/api-auth.test.ts`(4) = **23/23**。
+
+> 备注：本轮编辑期间会话所用模型的安全分类器曾持续超时导致构建/测试被拦截（与代码无关）；切换模型后完成上述验证。
 
 ---
 
@@ -411,6 +453,6 @@
 | P4 | 已完成（Phase 1） | 08c6c86 | 批次 A；Phase 2 staging 可选、默认关闭，未实施 |
 | P2 | 已完成 | ffdfe70 | 批次 B；静态扫描（可选第 4 步）未实施 |
 | P8 | 已完成 | 085da10 | 批次 B |
-| P5 | 已完成 | 57e6f84 | 批次 C1；CLI/WebUI 后置 |
-| P6 | 已完成 | 0a7c727 | 批次 C2；auxiliary 任务类型未加（直连 callLLMOnce） |
+| P5 | 已完成 | 57e6f84 | 批次 C1；CLI/WebUI 收尾见「第六轮收尾」 |
+| P6 | 已完成 | 0a7c727 | 批次 C2；auxiliary 任务类型未加（直连 callLLMOnce）；protocolVersion / 指标出口见「第六轮收尾」 |
 | P7 | 已完成（Phase 1） | f4770cf | 批次 D；Phase 2 SQLite 未实施 |

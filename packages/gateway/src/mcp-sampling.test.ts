@@ -38,7 +38,22 @@ describe("createSamplingHandler（P6）", () => {
       stopReason: "endTurn",
       content: { type: "text", text: "hello" },
     });
-    expect(getMetrics()).toMatchObject({ requests: 1, errors: 0, tokensUsed: 7 });
+    expect(getMetrics()).toMatchObject({ requests: 1, total: 1, succeeded: 1, errors: 0, tokensUsed: 7 });
+  });
+
+  it("被拒请求计入 total 与 errors，且 total = succeeded + errors", async () => {
+    const { handler, getMetrics } = createSamplingHandler(
+      "s1",
+      config({ maxRequestsPerMinute: 1 }),
+      textLlm(),
+    );
+    await handler(params());
+    await expect(handler(params())).rejects.toMatchObject({ code: ErrorCode.InvalidRequest });
+    const m = getMetrics();
+    expect(m.total).toBe(2);
+    expect(m.succeeded).toBe(1);
+    expect(m.errors).toBe(1);
+    expect(m.total).toBe(m.succeeded + m.errors);
   });
 
   it("滑动窗口限流：超过 maxRequestsPerMinute 拒绝", async () => {
@@ -145,6 +160,12 @@ describe("createSamplingHandler（P6）", () => {
       handler(params({ tools: [{ name: "probe", inputSchema: { type: "object" } }] })),
     ).rejects.toMatchObject({ message: expect.stringContaining("tool loop limit exceeded") });
     expect(getMetrics().toolUseCount).toBe(3);
+    // 轮次闸门拒绝的那次不能同时算成功：total = succeeded + errors 恒成立
+    const m = getMetrics();
+    expect(m.total).toBe(3);
+    expect(m.succeeded).toBe(2);
+    expect(m.errors).toBe(1);
+    expect(m.total).toBe(m.succeeded + m.errors);
   });
 
   it("maxToolRounds=0 时禁用工具", async () => {

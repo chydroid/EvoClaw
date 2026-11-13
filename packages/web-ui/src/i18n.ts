@@ -2809,6 +2809,20 @@ const DICT: Record<Lang, Record<string, string>> = {
     "commitments.status_dismissed": "已取消",
     "commitments.tags_label": "标签",
     "commitments.created_at": "创建时间",
+
+    // ─── MCP OAuth（P5） ───────────────────────────────────────
+    "mcp_external.oauth_title": "OAuth 认证",
+    "mcp_external.oauth_authenticated": "已认证",
+    "mcp_external.oauth_unauthenticated": "未认证",
+    "mcp_external.oauth_login": "授权",
+    "mcp_external.oauth_device": "设备码",
+    "mcp_external.oauth_device_code": "设备码",
+    "mcp_external.oauth_refresh": "刷新状态",
+    "mcp_external.oauth_logout": "注销",
+    "mcp_external.oauth_opened": "已在新窗口打开授权页面，请在浏览器完成授权后刷新状态。",
+    "mcp_external.oauth_login_failed": "发起认证失败",
+    "mcp_external.oauth_logout_failed": "注销失败",
+    "mcp_external.oauth_logged_out": "已删除本地 OAuth token",
   },
 
   en: {
@@ -5591,6 +5605,20 @@ const DICT: Record<Lang, Record<string, string>> = {
     "commitments.status_dismissed": "Dismissed",
     "commitments.tags_label": "Tags",
     "commitments.created_at": "Created",
+
+    // ─── MCP OAuth (P5) ───────────────────────────────────────
+    "mcp_external.oauth_title": "OAuth",
+    "mcp_external.oauth_authenticated": "Authenticated",
+    "mcp_external.oauth_unauthenticated": "Not authenticated",
+    "mcp_external.oauth_login": "Authorize",
+    "mcp_external.oauth_device": "Device code",
+    "mcp_external.oauth_device_code": "Device code",
+    "mcp_external.oauth_refresh": "Refresh status",
+    "mcp_external.oauth_logout": "Log out",
+    "mcp_external.oauth_opened": "Authorization page opened in a new window. Refresh status after completing it in your browser.",
+    "mcp_external.oauth_login_failed": "Failed to start authentication",
+    "mcp_external.oauth_logout_failed": "Failed to log out",
+    "mcp_external.oauth_logged_out": "Local OAuth token deleted",
   },
 };
 

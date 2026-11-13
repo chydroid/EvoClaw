@@ -29,6 +29,17 @@
       "args": ["-y", "@paperjsx/mcp-server"],
       "enabled": true,
       "_comment": "PaperJSX — 从 JSON 生成 PPTX/DOCX/XLSX/PDF 文档。纯本地运行，无需 API key"
+    },
+    "remote-example": {
+      "type": "streamable-http",
+      "url": "https://mcp.example.com/mcp",
+      "enabled": true,
+      "oauth": {
+        "enabled": true,
+        "scopes": ["tools.read"],
+        "clientId": "your-client-id"
+      },
+      "_comment": "远程 HTTP MCP server 示例（P5）：oauth.enabled 开启后可用 CLI `evoclaw mcp oauth login remote-example` 或 WebUI 发起认证；stdio 不支持 OAuth。sampling 默认关闭，需显式配置 sampling.enabled=true 才允许远端请求本客户端代调 LLM。"
     }
   }
 }

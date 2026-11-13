@@ -5,12 +5,16 @@
  * - 查看已连接的外部 MCP server 及其工具
  * - 添加/移除/重连 server
  * - 查看 server 工具列表
+ * - 对 HTTP 传输的 server 查看 OAuth 状态 / 发起认证 / 注销（P5）
  *
  * 后端 API：
  * - GET  /api/mcp-external/list
  * - POST /api/mcp-external/add
  * - DELETE /api/mcp-external/:name
  * - POST /api/mcp-external/:name/reconnect
+ * - GET  /api/mcp-oauth/:server/status
+ * - POST /api/mcp-oauth/:server/authenticate
+ * - POST /api/mcp-oauth/:server/logout
  */
 import React, { useState, useEffect, useCallback } from "react";
 import {
@@ -38,6 +42,17 @@ interface ListResponse {
   configPath: string | null;
 }
 
+/** P5：OAuth 状态（后端不返回 token 值，只有布尔量） */
+interface OAuthState {
+  server: string;
+  enabled: boolean;
+  status: string;
+  hasToken: boolean;
+  hasRefreshToken: boolean;
+  needsRefresh: boolean;
+  lastError?: string;
+}
+
 export default function MCPExternalPage() {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -57,6 +72,22 @@ export default function MCPExternalPage() {
   // 移除确认
   const [removeTarget, setRemoveTarget] = useState<ServerInfo | null>(null);
 
+  // P5 OAuth：按 server 名缓存状态；仅 HTTP 传输（非 stdio）才展示
+  const [oauthStates, setOauthStates] = useState<Record<string, OAuthState>>({});
+  const [oauthBusy, setOauthBusy] = useState<Record<string, boolean>>({});
+  const [oauthNotice, setOauthNotice] = useState<{ server: string; text: string } | null>(null);
+
+  const loadOAuth = useCallback(async (server: ServerInfo) => {
+    if (server.type === "stdio") return;
+    try {
+      const res = await fetch(`${API}/api/mcp-oauth/${encodeURIComponent(server.name)}/status`);
+      if (!res.ok) return; // 无 OAuth 配置 / 未初始化：静默隐藏卡片
+      const data: OAuthState = await res.json();
+      if (!data.enabled) return;
+      setOauthStates((prev) => ({ ...prev, [server.name]: data }));
+    } catch { /* 状态查询失败不阻塞主列表 */ }
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -64,15 +95,18 @@ export default function MCPExternalPage() {
       const res = await fetch(`${API}/api/mcp-external/list`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: ListResponse = await res.json();
-      setServers(data.servers || []);
+      const list = data.servers || [];
+      setServers(list);
       setConfigPath(data.configPath);
+      setOauthStates({});
+      for (const server of list) void loadOAuth(server);
     } catch (err) {
       setError(errorMessage(err));
       setServers([]);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadOAuth]);
 
   useEffect(() => {
     loadData();
@@ -147,6 +181,57 @@ export default function MCPExternalPage() {
       showToast(t("mcp_external.reconnect_failed", "重连失败") + ": " + (errorMessage(err)), "error");
     } finally {
       setReconnecting(null);
+    }
+  };
+
+  const handleOAuthLogin = async (server: ServerInfo, deviceCode: boolean) => {
+    setOauthBusy((prev) => ({ ...prev, [server.name]: true }));
+    setOauthNotice(null);
+    try {
+      const res = await fetch(`${API}/api/mcp-oauth/${encodeURIComponent(server.name)}/authenticate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceCode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const url: string | undefined = data.authorizationUrl;
+      const dc = data.deviceCode as { userCode?: string; verificationUri?: string } | undefined;
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+        setOauthNotice({ server: server.name, text: t("mcp_external.oauth_opened", "已在新窗口打开授权页面，请在浏览器完成授权后刷新状态。") });
+      } else if (dc?.userCode) {
+        setOauthNotice({
+          server: server.name,
+          text: `${t("mcp_external.oauth_device_code", "设备码")}: ${dc.userCode} — ${dc.verificationUri || ""}`,
+        });
+      }
+      // 后台流程可能完成得很快，稍后刷新一次状态
+      void loadOAuth(server);
+    } catch (err) {
+      showToast(t("mcp_external.oauth_login_failed", "发起认证失败") + ": " + errorMessage(err), "error");
+    } finally {
+      setOauthBusy((prev) => ({ ...prev, [server.name]: false }));
+    }
+  };
+
+  const handleOAuthLogout = async (server: ServerInfo) => {
+    setOauthBusy((prev) => ({ ...prev, [server.name]: true }));
+    try {
+      const res = await fetch(`${API}/api/mcp-oauth/${encodeURIComponent(server.name)}/logout`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      showToast(t("mcp_external.oauth_logged_out", "已删除本地 OAuth token"), "success");
+      setOauthStates((prev) => {
+        const next = { ...prev };
+        delete next[server.name];
+        return next;
+      });
+      void loadOAuth(server);
+    } catch (err) {
+      showToast(t("mcp_external.oauth_logout_failed", "注销失败") + ": " + errorMessage(err), "error");
+    } finally {
+      setOauthBusy((prev) => ({ ...prev, [server.name]: false }));
     }
   };
 
@@ -241,6 +326,69 @@ export default function MCPExternalPage() {
                 {server.connectedAt && (
                   <div style={{ marginTop: 8, fontSize: 12, color: "var(--color-text-tertiary, #aaa)" }}>
                     {t("mcp_external.connected_at", "连接时间")}: {new Date(server.connectedAt).toLocaleString()}
+                  </div>
+                )}
+
+                {/* P5：OAuth 状态卡片（只显示给启用 OAuth 的 HTTP server） */}
+                {oauthStates[server.name] && (
+                  <div style={{
+                    marginTop: 12, padding: 10, borderRadius: 6,
+                    background: "var(--color-bg-secondary, #f6f6f6)",
+                    border: "1px solid var(--color-border, #e5e5e5)",
+                  }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <strong style={{ fontSize: 13 }}>{t("mcp_external.oauth_title", "OAuth 认证")}</strong>
+                      <Badge variant={oauthStates[server.name].hasToken ? "success" : "warning"}>
+                        {oauthStates[server.name].hasToken
+                          ? t("mcp_external.oauth_authenticated", "已认证")
+                          : t("mcp_external.oauth_unauthenticated", "未认证")}
+                      </Badge>
+                      <span style={{ fontSize: 12, color: "var(--color-text-secondary, #888)" }}>
+                        {oauthStates[server.name].status}
+                        {oauthStates[server.name].needsRefresh ? " · needsRefresh" : ""}
+                      </span>
+                      <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+                        <SecondaryButton
+                          small
+                          disabled={oauthBusy[server.name]}
+                          onClick={() => void handleOAuthLogin(server, false)}
+                        >
+                          {t("mcp_external.oauth_login", "授权")}
+                        </SecondaryButton>
+                        <SecondaryButton
+                          small
+                          disabled={oauthBusy[server.name]}
+                          onClick={() => void handleOAuthLogin(server, true)}
+                        >
+                          {t("mcp_external.oauth_device", "设备码")}
+                        </SecondaryButton>
+                        <SecondaryButton
+                          small
+                          disabled={oauthBusy[server.name]}
+                          onClick={() => void loadOAuth(server)}
+                        >
+                          {t("mcp_external.oauth_refresh", "刷新状态")}
+                        </SecondaryButton>
+                        <PrimaryButton
+                          small
+                          danger
+                          disabled={oauthBusy[server.name]}
+                          onClick={() => void handleOAuthLogout(server)}
+                        >
+                          {t("mcp_external.oauth_logout", "注销")}
+                        </PrimaryButton>
+                      </div>
+                    </div>
+                    {oauthStates[server.name].lastError && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "var(--color-error, #ef4444)" }}>
+                        {oauthStates[server.name].lastError}
+                      </div>
+                    )}
+                    {oauthNotice?.server === server.name && (
+                      <div style={{ marginTop: 6, fontSize: 12, color: "var(--color-text-secondary, #888)" }}>
+                        {oauthNotice.text}
+                      </div>
+                    )}
                   </div>
                 )}
               </Card>

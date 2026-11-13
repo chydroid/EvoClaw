@@ -77,10 +77,20 @@ export interface SamplingLlmResult {
 export type SamplingLlm = (req: SamplingLlmRequest) => Promise<SamplingLlmResult>;
 
 export interface SamplingMetrics {
-  requests: number;
+  /** 收到的请求总数（含被拒/失败），用于计算错误率 */
+  total: number;
+  /** 成功返回结果的请求数 */
+  succeeded: number;
+  /** 失败/被拒的请求数 */
   errors: number;
+  /** 成功调用消耗的 token 总数 */
   tokensUsed: number;
+  /** 返回 tool_use 的响应次数 */
   toolUseCount: number;
+  /** 连续 tool-use 轮次峰值（受 maxToolRounds 限制） */
+  maxToolRound: number;
+  /** 向后兼容别名：等于 succeeded（旧调用方/测试用） */
+  requests: number;
 }
 
 /** createMessage 请求参数的结构子集（避免把 SDK 内部类型泄漏到调用方） */
@@ -153,7 +163,15 @@ export function createSamplingHandler(
   const maxToolRounds = Math.max(0, config.maxToolRounds ?? 5);
   const allowedModels = config.allowedModels ?? [];
 
-  const metrics: SamplingMetrics = { requests: 0, errors: 0, tokensUsed: 0, toolUseCount: 0 };
+  const metrics: SamplingMetrics = {
+    total: 0,
+    succeeded: 0,
+    errors: 0,
+    tokensUsed: 0,
+    toolUseCount: 0,
+    maxToolRound: 0,
+    requests: 0,
+  };
   /** 滑动窗口时间戳（ms） */
   let rateWindow: number[] = [];
   let toolLoopCount = 0;
@@ -178,6 +196,9 @@ export function createSamplingHandler(
   };
 
   const handler = async (params: SamplingParamsLike): Promise<Record<string, unknown>> => {
+    // 入口即计总数：被限流/模型不允许/tools 未启用/超时/空响应都算一次请求，
+    // 这样 total = succeeded + errors，可直接算错误率。
+    metrics.total++;
     checkRateLimit(Date.now());
 
     const model = resolveModel(params);
@@ -241,6 +262,8 @@ export function createSamplingHandler(
         timeoutPromise,
       ]);
     } catch (err) {
+      // fail() 已计数的路径不会走到这里（它在 try 外抛出）。
+      // 超时 race 与 LLM 异常都在此统一计一次错误。
       metrics.errors++;
       if (err instanceof McpError) throw err;
       const message = sanitizeSamplingError(err instanceof Error ? err.message : String(err));
@@ -258,12 +281,13 @@ export function createSamplingHandler(
       fail("LLM returned an empty response");
     }
 
-    metrics.requests++;
-    metrics.tokensUsed += result.usage?.totalTokens ?? 0;
-
+    // toolUseCount 记录「LLM 返回了 tool_use 的响应次数」，即使随后被轮次闸门
+    // 拒绝也算（保持既有语义）；但 succeeded/tokensUsed 必须在所有 fail() 之后，
+    // 否则一次失败会同时计入 succeeded 和 errors，破坏 total = succeeded + errors。
     if (toolCalls.length > 0) {
       metrics.toolUseCount++;
       toolLoopCount++;
+      metrics.maxToolRound = Math.max(metrics.maxToolRound, toolLoopCount);
       if (maxToolRounds === 0) {
         toolLoopCount = 0;
         fail("tool loops are disabled for this server (maxToolRounds=0)");
@@ -272,6 +296,16 @@ export function createSamplingHandler(
         toolLoopCount = 0;
         fail(`tool loop limit exceeded (max ${maxToolRounds} rounds)`);
       }
+    } else {
+      // 文本响应重置连续 tool-use 计数
+      toolLoopCount = 0;
+    }
+
+    metrics.succeeded++;
+    metrics.requests = metrics.succeeded; // 向后兼容别名
+    metrics.tokensUsed += result.usage?.totalTokens ?? 0;
+
+    if (toolCalls.length > 0) {
       return {
         role: "assistant",
         model: result.model,
@@ -286,9 +320,6 @@ export function createSamplingHandler(
         })),
       };
     }
-
-    // 文本响应重置连续 tool-use 计数
-    toolLoopCount = 0;
     // 文本响应使用单 content（CreateMessageResultSchema 的向后兼容形态）；
     // 工具响应才用数组（CreateMessageResultWithTools）。
     return {

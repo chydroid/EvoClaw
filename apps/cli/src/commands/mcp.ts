@@ -3,7 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as child_process from "child_process";
 import { c, ICONS } from "../utils/colors";
-import { apiRequest, checkServer } from "../utils/api";
+import { apiRequest, checkServer, authFailureHint } from "../utils/api";
 
 export function register(program: Command, _shared: (c: Command) => Command, _apply: (o: Record<string, unknown>) => void): void {
   const mcp = program
@@ -275,6 +275,136 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
         }
       } catch (err) {
         console.log(c("red", `${ICONS.error()} Failed: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  // ── P5 MCP OAuth：状态 / 发起认证 / 注销 ───────────────────────
+  // 三条路由都需要鉴权；token 由 --token 或 WEB_UI_TOKEN/.env 提供，
+  // 且 CLI 只展示布尔状态与授权 URL，绝不回显 token 值。
+  const oauth = mcp
+    .command("oauth")
+    .description("Manage MCP server OAuth authentication");
+
+  const oauthAuth = (opts: Record<string, unknown>): { token?: string } => ({
+    token: typeof opts.token === "string" ? opts.token : undefined,
+  });
+
+  const oauthFail = (res: { status: number; data: unknown }, fallback: string): string => {
+    const hint = authFailureHint(res.status);
+    if (hint) return hint;
+    const body = res.data as { error?: string } | null;
+    return body?.error || `${fallback} (HTTP ${res.status})`;
+  };
+
+  oauth
+    .command("status <server>")
+    .description("Show OAuth status for an HTTP MCP server")
+    .option("--token <token>", "Web UI token (or set WEB_UI_TOKEN / .env)")
+    .option("--json", "Output as JSON")
+    .action(async (server: string, opts: Record<string, unknown>) => {
+      if (!(await checkServer())) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: evoclaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{
+          server: string;
+          enabled: boolean;
+          status: string;
+          hasToken: boolean;
+          hasRefreshToken: boolean;
+          needsRefresh: boolean;
+          lastError?: string;
+        }>("GET", `/api/mcp-oauth/${encodeURIComponent(server)}/status`, undefined, oauthAuth(opts));
+        if (r.status >= 400) {
+          console.log(c("red", `${ICONS.error()} ${oauthFail(r, "查询失败")}`));
+          return;
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(r.data, null, 2));
+          return;
+        }
+        const s = r.data;
+        console.log(`\n${c("bold", `=== MCP OAuth: ${s.server} ===\n`)}`);
+        console.log(`  ${ICONS.bullet()} 配置启用:     ${s.enabled ? c("green", "是") : c("yellow", "否")}`);
+        console.log(`  ${ICONS.bullet()} 状态:         ${s.status}`);
+        console.log(`  ${ICONS.bullet()} 已有 token:   ${s.hasToken ? c("green", "是") : c("gray", "否")}`);
+        console.log(`  ${ICONS.bullet()} 有刷新令牌:   ${s.hasRefreshToken ? c("green", "是") : c("gray", "否")}`);
+        console.log(`  ${ICONS.bullet()} 需要刷新:     ${s.needsRefresh ? c("yellow", "是") : "否"}`);
+        if (s.lastError) console.log(`  ${c("red", `最近错误: ${s.lastError}`)}`);
+        console.log();
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} 查询失败: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  oauth
+    .command("login <server>")
+    .description("Start an OAuth flow (PKCE or device code)")
+    .option("--device-code", "Use device code flow instead of PKCE")
+    .option("--token <token>", "Web UI token (or set WEB_UI_TOKEN / .env)")
+    .action(async (server: string, opts: Record<string, unknown>) => {
+      if (!(await checkServer())) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: evoclaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{
+          success: boolean;
+          status: string;
+          authorizationUrl?: string;
+          deviceCode?: { userCode: string; verificationUri: string; verificationUriComplete?: string };
+        }>(
+          "POST",
+          `/api/mcp-oauth/${encodeURIComponent(server)}/authenticate`,
+          { deviceCode: opts.deviceCode === true },
+          oauthAuth(opts),
+        );
+        if (r.status >= 400) {
+          console.log(c("red", `${ICONS.error()} ${oauthFail(r, "发起认证失败")}`));
+          return;
+        }
+        const data = r.data;
+        if (data.authorizationUrl) {
+          console.log(c("cyan", "请在浏览器打开授权 URL："));
+          console.log(`  ${data.authorizationUrl}`);
+        } else if (data.deviceCode) {
+          console.log(c("cyan", "设备码流程："));
+          console.log(`  打开: ${data.deviceCode.verificationUri}`);
+          console.log(`  输入代码: ${c("bold", data.deviceCode.userCode)}`);
+          if (data.deviceCode.verificationUriComplete) {
+            console.log(`  或直接打开: ${data.deviceCode.verificationUriComplete}`);
+          }
+        }
+        console.log(c("gray", "认证在后台继续；完成后用 `evoclaw mcp oauth status` 查询，必要时重连 server。"));
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} 发起认证失败: ${err instanceof Error ? err.message : String(err)}`));
+      }
+    });
+
+  oauth
+    .command("logout <server>")
+    .description("Delete the local OAuth token for an MCP server")
+    .option("--token <token>", "Web UI token (or set WEB_UI_TOKEN / .env)")
+    .action(async (server: string, opts: Record<string, unknown>) => {
+      if (!(await checkServer())) {
+        console.log(c("yellow", `${ICONS.warn()} Server not running. Start with: evoclaw gateway start`));
+        return;
+      }
+      try {
+        const r = await apiRequest<{ success: boolean; server: string }>(
+          "POST",
+          `/api/mcp-oauth/${encodeURIComponent(server)}/logout`,
+          undefined,
+          oauthAuth(opts),
+        );
+        if (r.status >= 400) {
+          console.log(c("red", `${ICONS.error()} ${oauthFail(r, "注销失败")}`));
+          return;
+        }
+        console.log(c("green", `${ICONS.ok()} 已删除 ${r.data.server} 的本地 OAuth token`));
+      } catch (err) {
+        console.log(c("red", `${ICONS.error()} 注销失败: ${err instanceof Error ? err.message : String(err)}`));
       }
     });
 

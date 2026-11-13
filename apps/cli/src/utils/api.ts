@@ -17,6 +17,30 @@ export const VERSION = loadVersion();
 /** OpenClaw-compatible version for WeChat plugin compatibility */
 export const OPENCLAW_COMPAT_VERSION = "2026.3.22";
 
+/** .env 查找顺序：当前工作目录 → 仓库根（与 CLI dist 布局对齐）。延迟计算以支持 cwd 变化。 */
+function envPaths(): string[] {
+  return [
+    path.join(process.cwd(), ".env"),
+    path.join(__dirname, "..", "..", "..", "..", ".env"),
+  ];
+}
+
+/** 从 .env 读取单个键（不修改 process.env，避免影响调用方） */
+function readEnvValue(key: string): string | undefined {
+  for (const p of envPaths()) {
+    try {
+      if (!fs.existsSync(p)) continue;
+      const content = fs.readFileSync(p, "utf-8");
+      // 值可能被引号包裹；只取第一个非空定义
+      const match = content.match(new RegExp(`^${key}\\s*=\\s*(.*)$`, "m"));
+      if (!match) continue;
+      const value = match[1].trim().replace(/^["']|["']$/g, "");
+      if (value) return value;
+    } catch { /* ignore */ }
+  }
+  return undefined;
+}
+
 /** Auto-detect port: try .env file, then probe common ports */
 export function detectPort(): number {
   // 1. From environment variable
@@ -27,22 +51,34 @@ export function detectPort(): number {
   }
 
   // 2. From .env file in CWD or project root
-  const envPaths = [
-    path.join(process.cwd(), ".env"),
-    path.join(__dirname, "..", "..", "..", "..", ".env"),
-  ];
-  for (const p of envPaths) {
-    try {
-      if (fs.existsSync(p)) {
-        const content = fs.readFileSync(p, "utf-8");
-        const match = content.match(/^EvoClaw_PORT\s*=\s*(\d+)/m);
-        if (match) return parseInt(match[1], 10);
-      }
-    } catch { /* ignore */ }
+  const fromFile = readEnvValue("EvoClaw_PORT");
+  if (fromFile) {
+    const p = parseInt(fromFile, 10);
+    if (Number.isFinite(p) && p > 0 && p < 65536) return p;
   }
 
   // 3. Default
   return 27788;
+}
+
+/**
+ * CLI 调用需要鉴权的 /api 端点时使用的 WebUI 令牌。
+ *
+ * Gateway 的 AuthProvider 接受 `web_ui_token` cookie（见 auth-provider.ts），
+ * 而 CLI 的 apiRequest 此前完全不带认证，导致所有非公开 /api 调用 401。
+ * 来源：显式环境变量 WEB_UI_TOKEN / EVOCLAW_WEB_UI_TOKEN → .env。
+ * 只在本机回环发送，且绝不把令牌写入日志或输出。
+ */
+export function getWebUiToken(): string | undefined {
+  const explicit = process.env.EVOCLAW_WEB_UI_TOKEN?.trim() || process.env.WEB_UI_TOKEN?.trim();
+  return explicit || readEnvValue("WEB_UI_TOKEN");
+}
+
+/** 401/403 时给用户的可读提示（不泄露令牌值） */
+export function authFailureHint(status: number): string | null {
+  if (status !== 401 && status !== 403) return null;
+  return "未授权：请设置 WEB_UI_TOKEN 环境变量或在 .env 中配置（CLI 自动读取），" +
+    "或用 --token 传入有效令牌；Gateway 需使用同一令牌启动。";
 }
 
 export const DEFAULT_PORT = detectPort();
@@ -61,16 +97,24 @@ export interface ApiResponse<T = unknown> {
 export function apiRequest<T = unknown>(
   method: string,
   endpoint: string,
-  body?: unknown
+  body?: unknown,
+  options?: { token?: string },
 ): Promise<ApiResponse<T>> {
   return new Promise((resolve, reject) => {
     const url = new URL(endpoint, `http://localhost:${port}`);
     const payload = body ? JSON.stringify(body) : undefined;
+    // 显式 --token > 环境/.env 自动读取；无令牌时保持旧行为（公开端点仍可用）
+    const token = (options?.token?.trim() || getWebUiToken() || "").trim();
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    if (token) headers.Cookie = `web_ui_token=${encodeURIComponent(token)}`;
     const req = http.request(
       url.toString(),
       {
         method,
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers,
         timeout: 10000,
       },
       (res) => {
