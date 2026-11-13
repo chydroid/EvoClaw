@@ -152,6 +152,12 @@ export const IconBootstrap = Icon(
   </>
 );
 
+export const IconFiles = Icon(
+  <>
+    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+  </>
+);
+
 export const IconCanvas = Icon(
   <>
     <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -337,6 +343,13 @@ export const IconObservability = Icon(
   </>
 );
 
+export const IconAnalytics = Icon(
+  <>
+    <path d="M21.21 15.89A10 10 0 1 1 8 2.83" />
+    <path d="M22 12A10 10 0 0 0 12 2v10z" />
+  </>
+);
+
 export const IconStreamView = Icon(
   <>
     <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
@@ -363,6 +376,34 @@ export const IconSteer = Icon(
     <line x1="12" y1="18" x2="12" y2="22" />
     <line x1="2" y1="12" x2="6" y2="12" />
     <line x1="18" y1="12" x2="22" y2="12" />
+  </>
+);
+
+export const IconProfiles = Icon(
+  <>
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </>
+);
+
+export const IconPairing = Icon(
+  <>
+    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+  </>
+);
+
+export const IconEnv = Icon(
+  <>
+    <polyline points="16 18 22 12 16 6" />
+    <polyline points="8 6 2 12 8 18" />
+  </>
+);
+
+export const IconDocs = Icon(
+  <>
+    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
   </>
 );
 
@@ -429,6 +470,7 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   events: IconEvents,
   skills: IconSkills,
   bootstrap: IconBootstrap,
+  files: IconFiles,
   canvas: IconCanvas,
   monitoring: IconMonitor,
   settings: IconSettings,
@@ -457,6 +499,11 @@ export const ICON_MAP: Record<string, React.FC<IconProps>> = {
   cli: IconTerminal,
   observability: IconObservability,
   "stream-view": IconStreamView,
+  analytics: IconAnalytics,
+  profiles: IconProfiles,
+  pairing: IconPairing,
+  env: IconEnv,
+  docs: IconDocs,
   workboard: IconWorkboard,
   steer: IconSteer,
   guardrails: IconGuardrails,
