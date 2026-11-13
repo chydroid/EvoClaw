@@ -56,7 +56,7 @@ export type { LazySkill, LazySkillEntry, LazyLoaderConfig, LoadStatus } from "./
 export { FirstEventTracer } from "./first-event-tracer";
 export type { FirstEventTrace, TraceStage, FirstEventTracerConfig } from "./first-event-tracer";
 export { TokenUsageTracker } from "./token-usage-tracker";
-export type { UsageRecord, UsageSummary, TokenUsageTrackerConfig, ModelCostInfo, ModelCostProvider } from "./token-usage-tracker";
+export type { UsageRecord, UsageSummary, TokenUsageTrackerConfig, ModelCostInfo, ModelCostProvider, ModelPricingPerMillion } from "./token-usage-tracker";
 export { DEFAULT_MODEL_COSTS } from "./token-usage-tracker";
 export { SessionUndoManager } from "./session-undo-manager";
 export type { UndoUnit, SessionUndoConfig } from "./session-undo-manager";

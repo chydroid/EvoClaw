@@ -70,7 +70,7 @@ export interface TokenUsageTrackerConfig {
   cache?: ModelCostProvider;
   /** 保留历史数量 */
   retainCount?: number;
-  /** 价格未配置时的默认值 */
+  /** 价格未配置时的默认值（默认 0：未配置即不计成本） */
   defaultInputCostPer1k?: number;
   defaultOutputCostPer1k?: number;
   /** 默认推理token每千个成本 */
@@ -86,6 +86,15 @@ export interface TokenUsageTrackerConfig {
 /** 简化的Model cost provider接口 - 兼容GatewayMetadataCache */
 export interface ModelCostProvider {
   getModelCost(provider: string, model: string): ModelCostInfo | undefined;
+}
+
+/**
+ * 用户在「LLM 配置」中为每个模型填写的单价（USD / 1M tokens）。
+ * 键为 `${provider}/${model}`；未配置的模型一律按 0 成本计算。
+ */
+export interface ModelPricingPerMillion {
+  inputCostPerMillion: number;
+  outputCostPerMillion: number;
 }
 
 /** 预算限制配置 */
@@ -126,6 +135,8 @@ export class TokenUsageTracker {
   private cache?: ModelCostProvider;
   private counter = 0;
   private budgetLimiter?: BudgetLimiter;
+  /** 用户在 LLM 配置中填写的模型单价（USD / 1M tokens），键 `provider/model` */
+  private modelPricing: Record<string, ModelPricingPerMillion> = {};
   private storeDir: string;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -134,9 +145,10 @@ export class TokenUsageTracker {
     this.config = {
       cache: config.cache as ModelCostProvider,
       retainCount: config.retainCount ?? 10000,
-      defaultInputCostPer1k: config.defaultInputCostPer1k ?? 0.002,
-      defaultOutputCostPer1k: config.defaultOutputCostPer1k ?? 0.006,
-      defaultReasoningCostPer1k: config.defaultReasoningCostPer1k ?? 0.006,
+      // 未配置单价时不虚构价格：按 0 成本计算（用户要求）。
+      defaultInputCostPer1k: config.defaultInputCostPer1k ?? 0,
+      defaultOutputCostPer1k: config.defaultOutputCostPer1k ?? 0,
+      defaultReasoningCostPer1k: config.defaultReasoningCostPer1k ?? 0,
       onRecord: config.onRecord ?? (() => {}),
       budget: config.budget,
       storeDir: this.storeDir,
@@ -203,14 +215,56 @@ export class TokenUsageTracker {
     return record;
   }
 
+  /**
+   * 设置/刷新用户在 LLM 配置中填写的单价表（USD / 1M tokens）。
+   * 调用后会用新单价重算内存中已有记录，保证「配置后立刻看到正确成本」。
+   */
+  setModelPricing(pricing: Record<string, ModelPricingPerMillion>): void {
+    this.modelPricing = { ...pricing };
+    this.recalculateAllCosts();
+  }
+
+  /** 读取当前生效的单价表（调试/测试用） */
+  getModelPricing(): Record<string, ModelPricingPerMillion> {
+    return { ...this.modelPricing };
+  }
+
+  private resolveModelPricing(provider: string, model: string): ModelPricingPerMillion | undefined {
+    return this.modelPricing[`${provider}/${model}`];
+  }
+
+  private recalculateAllCosts(): void {
+    if (this.records.length === 0) return;
+    for (const record of this.records) {
+      const cost = this.calculateCost(
+        record.provider,
+        record.model,
+        record.inputTokens,
+        record.outputTokens,
+        record.reasoningTokens,
+      );
+      record.inputCost = cost.input;
+      record.outputCost = cost.output;
+      record.reasoningCost = cost.reasoning;
+      record.totalCost = cost.total;
+    }
+    this.schedulePersist();
+  }
+
   /** 计算成本 */
   private calculateCost(provider: string, model: string, inputTokens: number, outputTokens: number, reasoningTokens?: number): { input: number; output: number; reasoning: number; total: number } {
     let costInfo: ModelCostInfo | undefined;
     if (this.cache) {
       costInfo = this.cache.getModelCost(provider, model);
     }
-    const inputPer1k = costInfo?.inputCostPer1k ?? this.config.defaultInputCostPer1k;
-    const outputPer1k = costInfo?.outputCostPer1k ?? this.config.defaultOutputCostPer1k;
+    // 用户配置的单价优先；未配置时才回退历史 cache；两者皆无则 0。
+    const configured = this.resolveModelPricing(provider, model);
+    const inputPer1k = configured
+      ? configured.inputCostPerMillion / 1000
+      : costInfo?.inputCostPer1k ?? this.config.defaultInputCostPer1k;
+    const outputPer1k = configured
+      ? configured.outputCostPerMillion / 1000
+      : costInfo?.outputCostPer1k ?? this.config.defaultOutputCostPer1k;
     const reasoningPer1k = costInfo?.reasoningCostPer1k ?? this.config.defaultReasoningCostPer1k;
     const input = (inputTokens / 1000) * inputPer1k;
     const output = (outputTokens / 1000) * outputPer1k;

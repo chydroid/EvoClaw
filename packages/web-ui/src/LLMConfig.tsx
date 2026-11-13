@@ -25,6 +25,11 @@ interface LLMProvider {
    * 靠这个字段实现；缺省表示从未配置过。
    */
   updatedAt?: number;
+  /**
+   * 每个模型的单价（USD / 1M tokens），用于 Token 用量页的成本计算。
+   * 未填写的模型按 0 成本计。
+   */
+  modelPricing?: Record<string, { inputPerMillion?: number; outputPerMillion?: number }>;
   config: {
     temperature: number;
     maxTokens: number;
@@ -568,6 +573,35 @@ function LLMConfigPanel() {
     );
   }
 
+  /** 更新某模型每 1M tokens 的输入/输出成本；留空 = 未配置（按 0 计）。 */
+  function updateModelPricing(
+    providerId: string,
+    modelName: string,
+    field: "inputPerMillion" | "outputPerMillion",
+    raw: string,
+  ) {
+    setProviders((prev) =>
+      prev.map((p) => {
+        if (p.id !== providerId) return p;
+        const modelPricing = { ...(p.modelPricing || {}) };
+        const entry = { ...(modelPricing[modelName] || {}) };
+        if (raw.trim() === "") {
+          delete entry[field];
+        } else {
+          const n = Number(raw);
+          if (!Number.isFinite(n)) return p;
+          entry[field] = Math.max(0, n);
+        }
+        if (entry.inputPerMillion === undefined && entry.outputPerMillion === undefined) {
+          delete modelPricing[modelName];
+        } else {
+          modelPricing[modelName] = entry;
+        }
+        return { ...p, modelPricing };
+      })
+    );
+  }
+
   function addCustomModel(providerId: string) {
     const modelName = prompt(t("llm.enter_model_name"));
     if (modelName) {
@@ -584,9 +618,12 @@ function LLMConfigPanel() {
       prev.map((p) => {
         if (p.id !== providerId) return p;
         const newModels = p.models.filter((m) => m !== modelName);
+        const modelPricing = { ...(p.modelPricing || {}) };
+        delete modelPricing[modelName];
         return {
           ...p,
           models: newModels,
+          modelPricing,
           selectedModel: p.selectedModel === modelName ? (newModels[0] || "") : p.selectedModel,
         };
       })
@@ -902,13 +939,42 @@ function LLMConfigPanel() {
                         style={{ ...s.input, flex: 1 as const, width: "auto" }}
                         value={model}
                         onChange={(e) => {
+                          const oldName = model;
+                          const newName = e.target.value;
                           const newModels = [...currentProvider.models];
-                          newModels[idx] = e.target.value;
+                          newModels[idx] = newName;
+                          // 模型改名时同步迁移其单价配置，避免成本配置丢失
+                          const modelPricing = { ...(currentProvider.modelPricing || {}) };
+                          if (oldName !== newName && modelPricing[oldName]) {
+                            modelPricing[newName] = modelPricing[oldName];
+                            delete modelPricing[oldName];
+                          }
                           updateProvider(activeProvider, {
                             models: newModels,
-                            selectedModel: idx === 0 ? e.target.value : currentProvider.selectedModel,
+                            modelPricing,
+                            selectedModel: idx === 0 ? newName : currentProvider.selectedModel,
                           });
                         }}
+                      />
+                      <input
+                        style={s.modelPriceInput}
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={currentProvider.modelPricing?.[model]?.inputPerMillion ?? ""}
+                        placeholder={t("llm.input_cost")}
+                        title={t("llm.input_cost")}
+                        onChange={(e) => updateModelPricing(activeProvider, model, "inputPerMillion", e.target.value)}
+                      />
+                      <input
+                        style={s.modelPriceInput}
+                        type="number"
+                        min={0}
+                        step="0.01"
+                        value={currentProvider.modelPricing?.[model]?.outputPerMillion ?? ""}
+                        placeholder={t("llm.output_cost")}
+                        title={t("llm.output_cost")}
+                        onChange={(e) => updateModelPricing(activeProvider, model, "outputPerMillion", e.target.value)}
                       />
                       {currentProvider.catalog && (
                         <span style={s.modelMeta}>
@@ -951,6 +1017,9 @@ function LLMConfigPanel() {
                     {t("llm.model_priority_hint")}
                   </div>
                 )}
+                <div style={s.modelPriceHint}>
+                  {t("llm.model_price_hint")}
+                </div>
               </div>
 
               <div style={s.divider} />
@@ -1555,6 +1624,14 @@ const s: Record<string, React.CSSProperties> = {
     maxWidth: "140px",
     overflow: "hidden",
     textOverflow: "ellipsis",
+  },
+  modelPriceInput: {
+    width: "82px", flexShrink: 0, padding: "4px 6px", fontSize: "11px",
+    background: "var(--input-bg)", border: "1px solid var(--input-border)",
+    borderRadius: "4px", color: "var(--text-primary)", outline: "none",
+  },
+  modelPriceHint: {
+    marginTop: "6px", fontSize: "11px", color: "var(--text-muted)",
   },
   modelActionBtn: {
     padding: "0px 6px", fontSize: "10px", cursor: "pointer",

@@ -453,6 +453,12 @@ export default function TokenUsagePage() {
             { label: t("tokenUsage.stats.avgCostPerCall"), value: formatCost(overview.totalCost / Math.max(overview.totalCalls, 1)), color: "var(--text-primary)" },
           ]} />
 
+          {overview.totalCost === 0 && (
+            <div style={{ marginTop: 12, fontSize: 12, color: "var(--text-muted)" }}>
+              {t("tokenUsage.cost.unconfigured")}
+            </div>
+          )}
+
           <Section title={t("tokenUsage.cost.byProvider")} style={{ marginTop: 24 }}>
             <Card>
               {providerCosts.length === 0 ? (

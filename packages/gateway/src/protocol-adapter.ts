@@ -838,6 +838,9 @@ export class ProtocolAdapter {
       process.stderr.write("[ProtocolAdapter] Failed to load LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
     }
 
+    // 无论是否有配置文件，都同步一次（空表会把历史记录里虚构的默认成本归零）。
+    this.syncModelPricingToUsageTracker(this.savedLLMProviders || []);
+
     try {
       if (fs.existsSync(IMAGE_GEN_CONFIG_FILE)) {
         const raw = fs.readFileSync(IMAGE_GEN_CONFIG_FILE, "utf-8");
@@ -1093,6 +1096,44 @@ export class ProtocolAdapter {
       atomicWriteFileSync(LLM_CONFIG_FILE, JSON.stringify({ providers }, null, 2));
     } catch (err) {
       process.stderr.write("[ProtocolAdapter] Failed to persist LLM config:" + " " + (err instanceof Error ? err.message : String(err)) + "\n");
+    }
+  }
+
+  /**
+   * 把 LLM 配置里的每模型单价（USD / 1M tokens）推给 TokenUsageTracker。
+   * 未配置的模型不写入 → 成本按 0 计。每次加载/保存配置后调用，
+   * tracker 会按新单价重算已有记录。
+   */
+  private syncModelPricingToUsageTracker(providers: Record<string, unknown>[]): void {
+    try {
+      const tracker = this.registry.resolveService<{
+        setModelPricing?: (pricing: Record<string, { inputCostPerMillion: number; outputCostPerMillion: number }>) => void;
+      }>("tokenUsageTracker");
+      if (!tracker?.setModelPricing) return;
+
+      const pricing: Record<string, { inputCostPerMillion: number; outputCostPerMillion: number }> = {};
+      for (const provider of providers) {
+        const providerId = typeof provider.id === "string" ? provider.id : "";
+        if (!providerId) continue;
+        const table = provider.modelPricing as Record<string, { inputPerMillion?: unknown; outputPerMillion?: unknown }> | undefined;
+        if (!table || typeof table !== "object") continue;
+        const models = Array.isArray(provider.models) ? provider.models : [];
+        for (const model of models) {
+          const modelId = String(model);
+          const entry = table[modelId];
+          if (!entry || typeof entry !== "object") continue;
+          const input = Number(entry.inputPerMillion);
+          const output = Number(entry.outputPerMillion);
+          if (!Number.isFinite(input) && !Number.isFinite(output)) continue;
+          pricing[`${providerId}/${modelId}`] = {
+            inputCostPerMillion: Number.isFinite(input) ? Math.max(0, input) : 0,
+            outputCostPerMillion: Number.isFinite(output) ? Math.max(0, output) : 0,
+          };
+        }
+      }
+      tracker.setModelPricing(pricing);
+    } catch (err) {
+      process.stderr.write(`[ProtocolAdapter] syncModelPricingToUsageTracker failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   }
 
@@ -4257,6 +4298,8 @@ export class ProtocolAdapter {
           // Resolve references before applying
           const resolved = this.resolveLLMProviders(processedProviders);
           this.applyLLMProviders(resolved);
+          // 成本计算依赖这些单价：保存后立刻生效并重算统计
+          this.syncModelPricingToUsageTracker(processedProviders);
         }
         res.json({ success: true });
       } catch (err) {

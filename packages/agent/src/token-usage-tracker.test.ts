@@ -62,3 +62,49 @@ describe("TokenUsageTracker — 缓存命中/写入字段（P0 埋点回归）",
     expect(s.totalCacheWriteTokens).toBe(0);
   });
 });
+
+describe("TokenUsageTracker — 成本仅来自 LLM 配置的每 M 单价", () => {
+  let tmpDir: string;
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-tucost-"));
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("未配置单价时成本为 0（不再套用虚构默认价）", () => {
+    const t = new TokenUsageTracker({ storeDir: path.join(tmpDir, "unconfigured") });
+    const r = t.record({ sessionId: "s", provider: "openai", model: "gpt-4", inputTokens: 1_000_000, outputTokens: 1_000_000 });
+    expect(r.inputCost).toBe(0);
+    expect(r.outputCost).toBe(0);
+    expect(r.totalCost).toBe(0);
+    expect(t.getSummary().totalCost).toBe(0);
+  });
+
+  it("配置 $/1M 后按输入/输出分别计算", () => {
+    const t = new TokenUsageTracker({ storeDir: path.join(tmpDir, "configured") });
+    t.setModelPricing({ "openai/gpt-4": { inputCostPerMillion: 2.5, outputCostPerMillion: 10 } });
+    const r = t.record({ sessionId: "s", provider: "openai", model: "gpt-4", inputTokens: 1_000_000, outputTokens: 500_000 });
+    expect(r.inputCost).toBeCloseTo(2.5, 6);
+    expect(r.outputCost).toBeCloseTo(5, 6);
+    expect(r.totalCost).toBeCloseTo(7.5, 6);
+  });
+
+  it("仅配置输入成本时输出按 0 计", () => {
+    const t = new TokenUsageTracker({ storeDir: path.join(tmpDir, "input-only") });
+    t.setModelPricing({ "openai/gpt-4": { inputCostPerMillion: 2, outputCostPerMillion: 0 } });
+    const r = t.record({ sessionId: "s", provider: "openai", model: "gpt-4", inputTokens: 1_000_000, outputTokens: 1_000_000 });
+    expect(r.totalCost).toBeCloseTo(2, 6);
+  });
+
+  it("设置单价后重算已有记录（历史虚构成本被纠正）", () => {
+    const t = new TokenUsageTracker({ storeDir: path.join(tmpDir, "recalc") });
+    t.record({ sessionId: "s", provider: "openai", model: "gpt-4", inputTokens: 1_000_000, outputTokens: 1_000_000 });
+    expect(t.getSummary().totalCost).toBe(0);
+    t.setModelPricing({ "openai/gpt-4": { inputCostPerMillion: 3, outputCostPerMillion: 15 } });
+    expect(t.getSummary().totalCost).toBeCloseTo(18, 6);
+    expect(t.getRecent(1)[0].totalCost).toBeCloseTo(18, 6);
+  });
+});
