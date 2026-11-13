@@ -402,7 +402,7 @@
 
 `pnpm build -> pnpm typecheck -> pnpm test`（顺序不可换）。
 
-**状态：全绿（2026-11-13）。**
+**状态：全绿（2026-11-13）。提交 `68b6434`。**
 
 - `pnpm build` — 18 个包全部编译通过（含 `web-ui` vite build）。
 - `pnpm typecheck` — 18 个工作区项目 `tsc --noEmit` 全部通过。
