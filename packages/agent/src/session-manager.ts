@@ -15,6 +15,7 @@ import * as crypto from "crypto";
 import { atomicWriteFileSync } from "@evoclaw/core";
 import { redactSessionTurn } from "./transcript-redactor";
 import type { ThinkingStep } from "./thinking-trace";
+import { applyDerivedTitle } from "./session-title";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,10 @@ export interface SessionInfo {
   tokenEstimate: number;
   preview?: string;
   customName?: string;
+  /** 自动派生的会话标题（对标 hermes title_generator 的即时标题）。 */
+  title?: string;
+  /** 标题来源权威：derived < llm < user（user 手输即 customName，永不覆盖）。 */
+  titleSource?: "derived" | "llm" | "user";
 }
 
 export interface SessionInsights {
@@ -420,6 +425,16 @@ export class SessionManager {
       if (session) {
         session.turnCount++;
         session.tokenEstimate += this.estimateTurnTokens(turn);
+        // 自动派生会话标题（对标 hermes title_generator）：首条可 title 的用户消息，
+        // provenance derived < llm < user；用户手输 customName 永不覆盖。
+        // applyDerivedTitle 自身保证：已有 title/customName 时返回 null，不会覆写。
+        if (turn.role === "user" && typeof turn.content === "string" && !session.title) {
+          const derivedTitle = applyDerivedTitle(session, turn.content);
+          if (derivedTitle) {
+            session.title = derivedTitle.title;
+            session.titleSource = derivedTitle.titleSource;
+          }
+        }
         this.updateSessionMeta(session);
       }
     });

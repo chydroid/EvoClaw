@@ -16,6 +16,7 @@ import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
+import { SubdirectoryHintTracker } from "./subdirectory-hints";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
 import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
@@ -35,6 +36,25 @@ import { asyncLog } from "./async-log";
 // 展开结果，避免每轮 LLM 调用重建数组 + 逐条 {...p, model} 字面量分配。
 let _lastExpandedProvidersRef: ProviderConfig[] | null = null;
 let _lastExpandedProviders: ProviderConfig[] | null = null;
+
+// ── 渐进式子目录上下文（对标 hermes subdirectory_hints.py）──
+// 每会话一个 tracker，首次工具调用时按 deps.workspacePath 惰性创建；
+// 上下文追加到**工具结果**而非系统提示，保持 prompt cache 稳定。
+const _subdirHintTrackers = new Map<string, SubdirectoryHintTracker>();
+const _SUBDIR_HINT_MAX_SESSIONS = 256;
+function getSubdirHintTracker(sessionId: string, workspacePath?: string): SubdirectoryHintTracker {
+  let t = _subdirHintTrackers.get(sessionId);
+  if (!t) {
+    t = new SubdirectoryHintTracker(workspacePath);
+    _subdirHintTrackers.set(sessionId, t);
+    if (_subdirHintTrackers.size > _SUBDIR_HINT_MAX_SESSIONS) {
+      // 淘汰最旧（Map 保序，FIFO 足够；tracker 无重要状态需保留）
+      const oldest = _subdirHintTrackers.keys().next().value;
+      if (oldest !== undefined) _subdirHintTrackers.delete(oldest);
+    }
+  }
+  return t;
+}
 
 /**
  * 解析工具执行 span 归属的 trace ID —— 专用于 deps.sessionId 动态的场合。
@@ -7217,6 +7237,18 @@ if (deps.contextPruningManager && !prunerNoop) {
           // ★ 2026-11-03 修复：file_read/code_search 使用 32K 上限，
           //   与上方 MAX_RESULT_LEN 保持一致。其他工具保持 4K 上限不变。
           const maxChars = (toolName === "file_read" || toolName === "code_search") ? 32_000 : TOOL_RESULT_MAX_CHARS;
+
+          // ── 渐进式子目录上下文：首次进入某子目录时把该目录的 AGENTS.md/CLAUDE.md/.cursorrules
+          //    追加到工具结果（不改系统提示 → 缓存安全）。失败静默，绝不影响工具结果本身。
+          if (!toolErrored && toolName !== "sequential_thinking") {
+            try {
+              const hint = getSubdirHintTracker(sessionId, deps.workspacePath).checkToolCall(toolName, args);
+              if (hint) toolResult += hint;
+            } catch (hintErr) {
+              process.stderr.write(`[LLMCaller] subdirectory hints failed: ${hintErr instanceof Error ? hintErr.message : String(hintErr)}\n`);
+            }
+          }
+
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
         };
 
