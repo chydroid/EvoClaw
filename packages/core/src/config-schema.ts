@@ -173,6 +173,8 @@ const AGENT_SCHEMA: SchemaDefinition = {
   },
   maxHistoryTurns: { type: "number", default: 20, min: 1, max: 100 },
   autoCompaction: { type: "boolean", default: true },
+  // 空闲触发压缩阈值（秒）。0 = 关闭（默认）。对齐 hermes compression.idle_compact_after_seconds。
+  idleCompactAfterSeconds: { type: "number", default: 0, min: 0 },
   workspacePath: { type: "string", default: "data/workspace" },
   sessionDir: { type: "string", default: "data/sessions" },
 };

@@ -46,6 +46,7 @@ import { registerSequentialThinkingTool as registerSequentialThinkingToolFn, typ
 import { execute as dagExecute, executeSkillDirectly as dagExecuteSkillDirectly, generateReasoning as dagGenerateReasoning, extractToolParams as dagExtractToolParams, generateDefaultOutput as dagGenerateDefaultOutput, extractKeywords as dagExtractKeywords, type DAGExecutionDeps } from "./dag-execution";
 import { HumanApprovalManager, type PendingApproval, type ApprovalConfig, type TrustRule, type RiskLevel } from "./human-approval";
 import { ApprovalDenialBreaker, resolveDenialBreakerConfig, type DenialBreakerState } from "./approval-denial-breaker";
+import { IdleCompactionTracker } from "./idle-compaction";
 import { SemanticQuickReply } from "./semantic-quick-reply";
 import { CopilotRouter, type CopilotRouterConfig, type RoutingDecision } from "./copilot-router";
 import { IterationBudget, DEFAULT_CHILD_BUDGET, type IterationBudgetConfig, type IterationBudgetStatus } from "./iteration-budget";
@@ -105,6 +106,15 @@ export class AgentModelExecutor {
   private thinkingLevel: "off" | "low" | "medium" | "high" = "medium";
   private sequentialThinkingHistory: ThinkingHistoryMap = new Map();
   private autoCompactionEnabled = true;
+  /**
+   * 空闲触发压缩阈值（秒）。0 = 关闭（默认，对齐 hermes
+   * `compression.idle_compact_after_seconds` 默认 0 的 opt-in 语义）。
+   * 开启后，会话从上一次活动到本次 turn 起点的墙钟间隔 ≥ 该值且 token 超过 floor 时，
+   * 提前压缩历史（而非等到 token 触及 compactionTokenThreshold）。
+   */
+  private idleCompactAfterSeconds = 0;
+  /** 空闲触发压缩的会话级活动/产出追踪器（借鉴 hermes `_last_activity_ts` + `last_compression_rough_tokens`）。 */
+  private readonly idleCompactionTracker = new IdleCompactionTracker();
   private memoryHub: {
     getLongTerm(): {
       store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>;
@@ -813,6 +823,9 @@ export class AgentModelExecutor {
     this.sessionDataDir = path.resolve(process.cwd(), "data", "sessions");
     this.workspacePath = path.resolve(process.cwd(), "data", "workspace");
     this.compactionTokenThreshold = 100000; // 100K tokens — trigger compaction when context exceeds this
+    // 空闲触发压缩：默认 0（关闭）；env 可开启，见 hermes compression.idle_compact_after_seconds。
+    const idleAfterRaw = Number.parseInt(String(process.env.EVOCLAW_IDLE_COMPACT_AFTER_SECONDS ?? ""), 10);
+    this.idleCompactAfterSeconds = Number.isFinite(idleAfterRaw) && idleAfterRaw > 0 ? idleAfterRaw : 0;
     this.executionCheckpointStore = new ExecutionCheckpointStore(
       path.resolve(process.cwd(), "data", "execution-checkpoints")
     );
@@ -1064,6 +1077,24 @@ export class AgentModelExecutor {
     this.compactionTokenThreshold = tokens;
   }
 
+  /**
+   * 设置空闲触发压缩阈值（秒）。<=0 关闭（默认）。
+   * 对标 hermes `compression.idle_compact_after_seconds`。
+   */
+  setIdleCompactAfterSeconds(seconds: number): void {
+    this.idleCompactAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  }
+
+  /** 获取空闲触发压缩阈值（秒）；0 = 关闭。 */
+  getIdleCompactAfterSeconds(): number {
+    return this.idleCompactAfterSeconds;
+  }
+
+  /** 空闲压缩活动追踪器（测试/诊断用）。 */
+  getIdleCompactionTracker(): IdleCompactionTracker {
+    return this.idleCompactionTracker;
+  }
+
   setWorkspacePath(dir: string): void {
     this.workspacePath = dir;
     if (!fs.existsSync(dir)) {
@@ -1151,6 +1182,8 @@ export class AgentModelExecutor {
       sessionPersistenceEnabled: this.sessionPersistenceEnabled,
       autoCompactionEnabled: this.autoCompactionEnabled,
       compactionTokenThreshold: this.compactionTokenThreshold,
+      idleCompactAfterSeconds: this.idleCompactAfterSeconds,
+      idleCompactionTracker: this.idleCompactionTracker,
       conversationHistory: this.conversationHistory,
       compactionManager: this.compactionManager,
       lifecycleManager: this.lifecycleManager,
@@ -1202,6 +1235,8 @@ export class AgentModelExecutor {
       sessionPersistenceEnabled: this.sessionPersistenceEnabled,
       autoCompactionEnabled: this.autoCompactionEnabled,
       compactionTokenThreshold: this.compactionTokenThreshold,
+      idleCompactAfterSeconds: this.idleCompactAfterSeconds,
+      idleCompactionTracker: this.idleCompactionTracker,
       compactionManager: this.compactionManager,
       lifecycleManager: this.lifecycleManager,
       memoryHub: this.memoryHub,

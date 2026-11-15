@@ -9,6 +9,7 @@ import { redactContent, redactMetadata } from "./transcript-redactor";
 import type { CompactionManager } from "./compaction-manager";
 import type { AgentLifecycleManager } from "./agent-lifecycle";
 import type { SessionManager } from "./session-manager";
+import { shouldIdleCompact, idleFloorTokens, type IdleCompactionTracker } from "./idle-compaction";
 
 /** Conversation history entry type */
 export interface SessionHistoryEntry {
@@ -46,6 +47,13 @@ export interface SessionPersistenceDeps {
    * compactionManager 可用时优先使用 LLM 摘要，失败则回退规则提取。
    */
   llmSummarizer?: (prompt: string) => Promise<string>;
+  /**
+   * 空闲触发压缩阈值（秒）。0/未设置 = 关闭（默认）。
+   * 对标 hermes `compression.idle_compact_after_seconds` 的 opt-in 语义。
+   */
+  idleCompactAfterSeconds?: number;
+  /** 空闲触发压缩的会话级活动/产出追踪器。 */
+  idleCompactionTracker?: import("./idle-compaction").IdleCompactionTracker;
 }
 
 /** Compute the file path for a session's JSONL persistence file */
@@ -427,4 +435,101 @@ export async function compactConversationHistory(
       accessedAt: new Date(),
     }).catch((err: unknown) => process.stderr.write(`[SessionPersistence] Failed to store compaction summary: ${err}\n`));
   }
+}
+
+// ── 空闲触发压缩（对标 hermes `_idle_compaction` + `_should_idle_compact`）──
+
+/** 空闲压缩决策/执行结果（供上层 emit 状态消息与日志）。 */
+export interface IdleCompactionOutcome {
+  /** 是否实际执行了空闲压缩 */
+  triggered: boolean;
+  /** 空闲秒数（triggered 时有值） */
+  idleGapSeconds?: number;
+  /** 压缩前 token 估算 */
+  tokensBefore?: number;
+  /** 压缩后 token 估算（实际产出，用于抬高下次 floor） */
+  tokensAfter?: number;
+  /** 因何未触发（方便诊断，未触发时可能带） */
+  skipReason?: "disabled" | "no-tracker" | "no-prior-activity" | "below-threshold" | "cooldown";
+}
+
+/**
+ * 计算当前会话的请求 token 估算（系统提示 + 历史），与 needsCompaction 口径一致。
+ */
+function estimateRequestTokens(
+  deps: SessionPersistenceDeps,
+  sessionId: string,
+  systemPrompt: string,
+): number {
+  const history = deps.conversationHistory.get(sessionId) || [];
+  const systemTokens = estimateMessagesTokens([{ role: "system", content: systemPrompt }]);
+  const historyTokens = estimateMessagesTokens(history.map((h) => ({ role: h.role, content: h.content })));
+  return systemTokens + historyTokens;
+}
+
+/**
+ * 若满足空闲触发条件，执行一次空闲压缩。
+ *
+ * 不变式（对齐 hermes）：
+ * - 默认关闭：`idleCompactAfterSeconds <= 0` 或未注入追踪器 → 不做事、零成本。
+ * - 首次活动前（追踪器无记录）→ 不触发（gap 未知）。
+ * - 冷却期（压缩失败 / 反抖动）→ 不触发。
+ * - floor 由 `compactionTokenThreshold × summary_target_ratio` 计算，`lastCompactionTokens`
+ *   抬高有效 floor 防反复压缩（#97239）。
+ * - 压缩后记录**实际产出** token 抬高下次 floor，并刷新活动时间。
+ *
+ * @param now 当前时间戳（测试可注入）。调用方应在「读取 gap 之后、本轮任何活动之前」调用，
+ *            这样 gap 反映的是上一轮结束到本轮开始之间的真实空闲。
+ */
+export async function maybeIdleCompact(
+  deps: SessionPersistenceDeps,
+  sessionId: string,
+  systemPrompt: string,
+  now: number = Date.now(),
+): Promise<IdleCompactionOutcome> {
+  const idleAfter = deps.idleCompactAfterSeconds ?? 0;
+  const tracker: IdleCompactionTracker | undefined = deps.idleCompactionTracker;
+  if (!deps.autoCompactionEnabled || idleAfter <= 0) return { triggered: false, skipReason: "disabled" };
+  if (!tracker) return { triggered: false, skipReason: "no-tracker" };
+
+  const idleGapSeconds = tracker.getIdleGapSeconds(sessionId, now);
+  if (idleGapSeconds === null) return { triggered: false, skipReason: "no-prior-activity" };
+
+  const tokensBefore = estimateRequestTokens(deps, sessionId, systemPrompt);
+  const floorTokens = idleFloorTokens(deps.compactionTokenThreshold);
+  const cooldownActive = deps.compactionManager?.shouldSkipCompaction() ?? false;
+  const lastCompactionTokens = tracker.getLastCompactionTokens(sessionId);
+
+  if (!shouldIdleCompact({
+    enabled: true,
+    idleAfterSeconds: idleAfter,
+    idleGapSeconds,
+    tokens: tokensBefore,
+    floorTokens,
+    cooldownActive,
+    lastCompactionTokens,
+  })) {
+    return {
+      triggered: false,
+      skipReason: cooldownActive ? "cooldown" : "below-threshold",
+      idleGapSeconds,
+      tokensBefore,
+    };
+  }
+
+  process.stderr.write(
+    `[SessionPersistence] Idle compaction: ${Math.round(idleGapSeconds)}s idle >= ${idleAfter}s, ` +
+    `~${tokensBefore} tokens > floor ${floorTokens} (last compaction produced ${lastCompactionTokens}) ` +
+    `for session "${sessionId}"\n`,
+  );
+
+  await compactConversationHistory(deps, sessionId);
+
+  const tokensAfter = estimateRequestTokens(deps, sessionId, systemPrompt);
+  tracker.recordCompaction(sessionId, tokensAfter, now);
+  // 让 CompactionManager 的反抖动计数器生效（此前 recordCompressionEffect 是死代码）：
+  // 连续两次无效压缩会让后续空闲压缩在冷却内被拒绝，避免反复白跑全量摘要。
+  deps.compactionManager?.recordCompressionEffect(tokensBefore, tokensAfter);
+
+  return { triggered: true, idleGapSeconds, tokensBefore, tokensAfter };
 }

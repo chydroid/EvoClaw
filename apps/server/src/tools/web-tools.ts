@@ -9,6 +9,8 @@ import { getWorkspaceDir, type ServiceRegistry } from "@evoclaw/core";
 import type { BrowserController } from "@evoclaw/infrastructure";
 import { extractClaimsFromEvidence } from "@evoclaw/intelligence";
 import { fetchJsonFromUrl } from "./browser-tools";
+import { truncateWebText, buildTruncationFooter, storeWebText, stripInlineImages } from "./web-fetch-truncate";
+import { SearchMemo, ExtractCache, resolveWebCacheConfig, defaultExtractCacheDir, buildSearchMemoKey } from "./web-result-cache";
 // scrapling_fetch 合并进 web_fetch(action=stealth)；其脚本执行辅助函数复用 shell-media-tools 的实现
 import { findPythonPaths, runPythonScriptAsync } from "./shell-media-tools";
 
@@ -305,6 +307,45 @@ export function registerWebTools(
     }
   };
 
+  // ── web 结果缓存（对标 hermes web_result_cache.py）──
+  // searchMemo：进程内单飞 + TTL，重复/并发相同查询共享结果（默认启用，安全无副作用）。
+  // extractCache：磁盘跨进程抓取缓存（默认关闭，opt-in；命中仍重跑 SSRF + 截断管道）。
+  const webCacheConfig = resolveWebCacheConfig();
+  const searchMemo = new SearchMemo<unknown>({
+    ttlMs: webCacheConfig.searchMemoTtlMinutes * 60_000,
+    maxEntries: 200,
+  });
+  const extractCache = webCacheConfig.extractEnabled
+    ? new ExtractCache(defaultExtractCacheDir(), webCacheConfig.extractTtlMinutes * 60_000)
+    : null;
+
+  /**
+   * 把抓取到的原始文本转成模型可见输出：去内联图片 → head+tail 截断 →
+   * 超预算时落盘全文并附 file_read 回读指引（对标 hermes web_tools_truncate.py）。
+   */
+  const renderFetchedText = (
+    raw: string,
+    url: string,
+    charLimit: number,
+  ): { text: string; totalChars: number } => {
+    const fullText = stripInlineImages(raw);
+    const trunc = truncateWebText(fullText, charLimit);
+    let outText = trunc.text;
+    if (trunc.truncated && trunc.omittedStartLine != null && trunc.omittedEndLine != null) {
+      const storedPath = storeWebText(fullText, url);
+      if (storedPath) {
+        outText += buildTruncationFooter({
+          totalChars: trunc.totalChars,
+          shownChars: trunc.shownChars,
+          storedPath,
+          omittedStartLine: trunc.omittedStartLine,
+          omittedEndLine: trunc.omittedEndLine,
+        });
+      }
+    }
+    return { text: outText, totalChars: fullText.length };
+  };
+
   // BrowserController 原先只能从 browser-tools 的注册闭包里取；合并后 web_search
   // (action=browser) / web_fetch (action=json) 需要它，故新增可选注入参数，
   // 并保留服务注册表回退（两条路都拿不到时由各 action 的降级分支处理）。
@@ -351,6 +392,22 @@ export function registerWebTools(
     const ssrfReason = await checkSsrf(url);
     if (ssrfReason) {
       return { success: false, error: `URL blocked by security policy: ${ssrfReason}`, url };
+    }
+    // 抓取缓存命中（opt-in）：安全校验之后才查缓存，命中仅跳过网络抓取，
+    // 仍走截断 + 落盘 + 回读管道（安全/呈现不变式）。
+    if (extractCache && format !== "json") {
+      const cached = extractCache.get(url);
+      if (cached) {
+        const rendered = renderFetchedText(cached.text, cached.url || url, 5000);
+        return {
+          url: cached.url || url,
+          title: cached.title || url,
+          status: 200,
+          text: rendered.text,
+          length: rendered.totalChars,
+          cached: true,
+        };
+      }
     }
     try {
       const controller = new AbortController();
@@ -418,12 +475,17 @@ export function registerWebTools(
       ).replace(/\s+/g, " ").trim();
 
       const titleMatch = text.match(/<title[^>]*>([^<]*)<\/title>/i);
+      const pageTitle = titleMatch ? titleMatch[1].trim() : redirectUrl;
+      // 大页截断 + 全文落盘 + 回读指引（对标 hermes web_tools_truncate.py，默认预算 5000 不变）
+      const rendered = renderFetchedText(plainText, redirectUrl, 5000);
+      // 抓取缓存（opt-in）：仅成功抓取后写入；命中路径在 SSRF 校验之后（见函数开头）
+      extractCache?.set(redirectUrl, { title: pageTitle, text: plainText });
       return {
         url: redirectUrl,
-        title: titleMatch ? titleMatch[1].trim() : redirectUrl,
+        title: pageTitle,
         status: finalResponse.status,
-        text: plainText.slice(0, 5000),
-        length: plainText.length,
+        text: rendered.text,
+        length: rendered.totalChars,
       };
     } catch (err: any) {
       return { success: false, error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
@@ -516,11 +578,28 @@ export function registerWebTools(
         }
       }
 
+      // 大页截断 + 全文落盘 + 回读指引（对标 hermes web_tools_truncate.py）。
+      // 超预算时不再直接丢弃中段：head+tail 呈现，全文落盘并给出 file_read 回读行号。
+      const fullText = stripInlineImages(finalContent);
+      const trunc = truncateWebText(fullText, maxLength);
+      let outContent = trunc.text;
+      if (trunc.truncated && trunc.omittedStartLine != null && trunc.omittedEndLine != null) {
+        const storedPath = storeWebText(fullText, url);
+        if (storedPath) {
+          outContent += buildTruncationFooter({
+            totalChars: trunc.totalChars,
+            shownChars: trunc.shownChars,
+            storedPath,
+            omittedStartLine: trunc.omittedStartLine,
+            omittedEndLine: trunc.omittedEndLine,
+          });
+        }
+      }
       return {
         url,
         title: titleMatch ? titleMatch[1].trim().replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"') : url,
-        content: finalContent.slice(0, maxLength),
-        length: finalContent.length,
+        content: outContent,
+        length: fullText.length,
       };
     } catch (err: any) {
       return { success: false, error: err.name === "AbortError" ? "Request timed out" : (err.message || String(err)), url };
@@ -656,8 +735,8 @@ except Exception as e:
   // 与 browser_search（浏览器后端搜索，实现从 browser-tools.ts 搬来）：
   // 一个工具 + action 字段，保持 schema 紧凑、降低每轮 token 成本。
 
-  /** 原 web_search */
-  const handleWebSearch = async (params: Record<string, unknown>) => {
+  /** 原 web_search（未缓存实现；外层的 handleWebSearch 负责单飞 + TTL 记忆） */
+  const handleWebSearchUncached = async (params: Record<string, unknown>) => {
     const query = String(params.query || "");
     // 上限 clamp：原先只有下限，模型传 limit:100000 会原样透传给 provider，
     // 造成超量请求/费用浪费与长时间挂起。
@@ -808,6 +887,24 @@ except Exception as e:
     console.warn(`[WebSearch] All search providers failed for query variants: ${allQueries.join(", ")}`);
     const errorMsg = "All search providers failed for all query variants";
     return { success: false, error: errorMsg, query, source: "none", results: [] };
+  };
+
+  /**
+   * web_search 外层：单飞 + TTL 记忆（对标 hermes web_result_cache search memo）。
+   * limit 归入 10/20/50/100 桶，使近似请求命中同一条目；仅成功结果入缓存。
+   */
+  const handleWebSearch = async (params: Record<string, unknown>) => {
+    const query = String(params.query || "");
+    if (!query) return { success: false, error: "Search query is required" };
+    const limitRaw = parseInt(String(params.limit ?? "10"), 10);
+    const limit = Math.max(1, Math.min(Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 10, 50));
+    const freshness = String(params.freshness || "");
+    const key = buildSearchMemoKey({ query, limit, freshness });
+    return searchMemo.run(
+      key,
+      () => handleWebSearchUncached(params),
+      (r) => !(r && typeof r === "object" && (r as { success?: boolean }).success === false),
+    );
   };
 
   /** 原 grounded_research（内部 runTool("web_search" / "web_fetch") 仍指向上面的复合工具，

@@ -62,7 +62,7 @@ import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWeb
 import { isTruncatedOrSpilled, sanitizeExecResult } from "./tool-output-spill";
 import { getToolOutputPruner } from "./tool-output-pruner";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
-import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, maybeIdleCompact as maybeIdleCompactFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
 import { applyAnthropicCacheControl } from "./prompt-cache";
 import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
@@ -1044,6 +1044,10 @@ export interface LLMCallerDeps {
   autoCompactionEnabled: boolean;
   compactionTokenThreshold: number;
   compactionManager: import("./compaction-manager").CompactionManager | null;
+  /** 空闲触发压缩阈值（秒）；0/undefined = 关闭（默认）。对标 hermes idle_compact_after_seconds。 */
+  idleCompactAfterSeconds?: number;
+  /** 空闲触发压缩的会话活动/产出追踪器。 */
+  idleCompactionTracker?: import("./idle-compaction").IdleCompactionTracker;
   lifecycleManager: import("./agent-lifecycle").AgentLifecycleManager | null;
   memoryHub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } } | null;
   // Callbacks for provider stats
@@ -2221,6 +2225,8 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
     sessionPersistenceEnabled: deps.sessionPersistenceEnabled,
     autoCompactionEnabled: deps.autoCompactionEnabled,
     compactionTokenThreshold: deps.compactionTokenThreshold,
+    idleCompactAfterSeconds: deps.idleCompactAfterSeconds,
+    idleCompactionTracker: deps.idleCompactionTracker,
     conversationHistory: deps.conversationHistory,
     compactionManager: deps.compactionManager,
     lifecycleManager: deps.lifecycleManager,
@@ -4476,6 +4482,32 @@ export async function tryCallLLM(
   // 「发生了什么 + 下一步做什么」，而不是通用的"请检查 API Key/服务是否在线"。
   let lastFailureEvidence: TerminalFailureEvidence | null = null;
   let errorAttemptsByProvider = new Map<string, number>();
+
+  // ── 空闲触发压缩（对标 hermes `_idle_compaction`）──
+  // 在每个 turn 起点、provider 循环之前执行一次（而非每 provider 一次），
+  // 使 gap 反映「上一轮结束 → 本轮开始」的真实空闲。默认关闭（阈值 0）时零成本。
+  // 注：此处不 stamp 活动时间——活动在 turn 结束时统一记录（见 tryCallLLM 尾部 finally），
+  // 否则本轮开始会把 gap 清零，永远测不到空闲。
+  if (deps.idleCompactionTracker && (deps.idleCompactAfterSeconds ?? 0) > 0) {
+    try {
+      const idleOutcome = await maybeIdleCompactFn(
+        getSessionPersistenceDeps(deps),
+        sessionId,
+        systemPrompt,
+      );
+      if (idleOutcome.triggered) {
+        onProgress?.({
+          type: "status",
+          phase: "thinking",
+          detail: `💤 已空闲 ${Math.round(idleOutcome.idleGapSeconds ?? 0)} 秒后恢复 — 已压缩 ~${idleOutcome.tokensBefore ?? 0} → ~${idleOutcome.tokensAfter ?? 0} tokens，继续执行。`,
+          progress: 5,
+        });
+      }
+    } catch (err) {
+      // 空闲压缩失败不阻断主流程（回退到原始 history，后续仍有 token 阈值压缩兜底）
+      asyncLog(`[AgentModelExecutor] Idle compaction failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
 
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
@@ -7960,14 +7992,20 @@ if (deps.contextPruningManager && !prunerNoop) {
   return fallbackResult;
   }; // end doTryCall
 
-  if (tracing?.isEnabled()) {
-    return tracing.withSpan("llm.try_call", async (span: Span) => {
-      span.setAttribute("session.id", options.sessionId);
-      span.setAttribute("providers.count", options.providers.length);
-      span.setAttribute("message.length", options.message.length);
-      return doTryCall();
-    });
-  } else {
-    return doTryCall();
+  // ── Turn 结束统一记录活动时间（空闲压缩的测量基准）──
+  // 无论正常返回还是异常，都把「上一轮结束时间」写入追踪器；下一 turn 起点据此计算空闲。
+  try {
+    if (tracing?.isEnabled()) {
+      return await tracing.withSpan("llm.try_call", async (span: Span) => {
+        span.setAttribute("session.id", options.sessionId);
+        span.setAttribute("providers.count", options.providers.length);
+        span.setAttribute("message.length", options.message.length);
+        return await doTryCall();
+      });
+    } else {
+      return await doTryCall();
+    }
+  } finally {
+    deps.idleCompactionTracker?.touch(options.sessionId ?? "");
   }
 }
