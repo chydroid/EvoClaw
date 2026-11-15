@@ -317,6 +317,37 @@ function stripSlashEnumImpl(schema: JsonSchema): JsonSchema {
 
 // ── 主函数 ──────────────────────────────────────────────────────────────────
 
+// ── 统计（供 EnhancementHub 证明真实接线） ─────────────────────
+
+export interface SchemaSanitizerStats {
+  /** 调用 sanitizeToolSchemas 的次数 */
+  calls: number;
+  /** 累计清洗的工具 schema 数 */
+  toolsSanitized: number;
+  /** 各 backend 调用次数 */
+  byBackend: Record<string, number>;
+  /** 反应式清洗次数（provider 返回 grammar/组合器错误后触发） */
+  reactiveCalls: number;
+}
+
+const sanitizerStats: SchemaSanitizerStats = {
+  calls: 0,
+  toolsSanitized: 0,
+  byBackend: {},
+  reactiveCalls: 0,
+};
+
+export function getSchemaSanitizerStats(): SchemaSanitizerStats {
+  return { ...sanitizerStats, byBackend: { ...sanitizerStats.byBackend } };
+}
+
+export function resetSchemaSanitizerStats(): void {
+  sanitizerStats.calls = 0;
+  sanitizerStats.toolsSanitized = 0;
+  sanitizerStats.byBackend = {};
+  sanitizerStats.reactiveCalls = 0;
+}
+
 /**
  * 清洗单个工具 schema。
  * 借鉴 hermes-agent _sanitize_single_tool。
@@ -424,7 +455,11 @@ export function sanitizeToolSchemas(
     };
   }
 
-  return tools.map((tool) => sanitizeSingleTool(tool, opts));
+  const sanitized = tools.map((tool) => sanitizeSingleTool(tool, opts));
+  sanitizerStats.calls++;
+  sanitizerStats.toolsSanitized += sanitized.length;
+  sanitizerStats.byBackend[opts.backend] = (sanitizerStats.byBackend[opts.backend] ?? 0) + 1;
+  return sanitized;
 }
 
 /**
@@ -436,6 +471,7 @@ export function reactiveSanitize(
   errorText: string,
 ): ToolSchema[] {
   if (!tools || tools.length === 0) return tools;
+  sanitizerStats.reactiveCalls++;
 
   // 根据错误文本判断需要哪种清洗
   const lowerError = errorText.toLowerCase();

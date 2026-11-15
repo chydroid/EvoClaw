@@ -141,6 +141,21 @@ describe("RecordingManager", () => {
     expect(data.metadata?.totalToolCalls).toBe(2);
   });
 
+  it("getStats 反映活跃录制与最近录制", () => {
+    mgr.startRecording("task-active", "session-1");
+    mgr.recordToolExecution("task-active", 1, "shell_exec", "c1", {}, "ok", true, 10);
+    mgr.startRecording("task-done", "session-2");
+    mgr.endRecording("task-done", "completed");
+
+    const stats = mgr.getStats();
+    expect(stats.activeRecordings).toBe(1);
+    expect(stats.totalRecordings).toBe(2);
+    expect(stats.active[0]?.taskId).toBe("task-active");
+    expect(stats.active[0]?.totalToolCalls).toBe(1);
+    expect(stats.recent.some((r) => r.taskId === "task-active")).toBe(true);
+    expect(stats.recent.some((r) => r.taskId === "task-done" && r.finalStatus === "completed")).toBe(true);
+  });
+
   it("generateTaskId 生成唯一 ID", () => {
     const id1 = RecordingManager.generateTaskId();
     const id2 = RecordingManager.generateTaskId();

@@ -11,6 +11,8 @@ import { runBackgroundReview, resolveReviewRuntime, type ReviewChatFn, type Revi
 // P0-2：共享异步日志（替代热路径同步 process.stdout/stderr.write，16ms 批量刷新）
 import { asyncLog, asyncErr } from "./async-log";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
+import { toolQualityManager } from "./enhancement-runtime";
+import { RecordingManager } from "./recording-manager";
 import { getProcessTimeZone, getCachedLocaleDateString } from "./local-time";
 import * as fs from "fs";
 import * as path from "path";
@@ -322,6 +324,9 @@ export class AgentModelExecutor {
    */
   private tokenBudgetOptimizer: TokenBudgetOptimizer | null = null;
   private lastBudgetReport: BudgetReport | null = null;
+
+  /** 三触发器演化统计提供者（服务端注入；避免 agent → evolution 循环依赖）。 */
+  private evolutionTriggerStatsProvider: (() => unknown) | null = null;
 
   /** P1-2：sessionId → 已执行的 LLM 调用次数（TokenBudget 报告降频计数器） */
   private _budgetReportCounters = new Map<string, number>();
@@ -4304,13 +4309,48 @@ export class AgentModelExecutor {
     if (sessionController) {
       sessionDeps.abortSignal = sessionController.signal;
     }
-    return tryCallLLMFn(sessionDeps, {
-      message, systemPrompt, skillsMessage, dynamicSystemTail, installedSkills, providers, startTime,
-      sessionId, pendingPermissions, attachments, onProgress,
-      searchPreDone, channel,
-      abortSignal: sessionController?.signal,
-      rawUserMessage,
-    });
+    // ── RecordingManager：每个 chat run 一个录制任务 ──
+    // 接线前该类只有定义，metadata.json 只会在测试里出现。录制只写
+    // data/recordings/<taskId>/（JSONL + metadata），失败不影响 LLM 调用。
+    const recordingManager = RecordingManager.getInstance();
+    const recordingTaskId = RecordingManager.generateTaskId();
+    try {
+      recordingManager.startRecording(recordingTaskId, sessionId);
+      recordingManager.recordConversationSetup(
+        recordingTaskId,
+        systemPrompt,
+        Array.from(depsCache.registeredTools.values()).map((t) => t.definition),
+        sessionId,
+      );
+      sessionDeps.recordingTaskId = recordingTaskId;
+    } catch (recErr) {
+      process.stderr.write(
+        `[AgentModelExecutor] recording setup failed: ${recErr instanceof Error ? recErr.message : String(recErr)}\n`,
+      );
+    }
+
+    try {
+      const result = await tryCallLLMFn(sessionDeps, {
+        message, systemPrompt, skillsMessage, dynamicSystemTail, installedSkills, providers, startTime,
+        sessionId, pendingPermissions, attachments, onProgress,
+        searchPreDone, channel,
+        abortSignal: sessionController?.signal,
+        rawUserMessage,
+      });
+      try {
+        recordingManager.endRecording(recordingTaskId, result ? "completed" : "failed", result ? undefined : "no result");
+      } catch { /* 录制收尾失败不影响结果 */ }
+      return result;
+    } catch (err) {
+      try {
+        recordingManager.endRecording(
+          recordingTaskId,
+          /abort|cancel/i.test(err instanceof Error ? err.message : String(err)) ? "cancelled" : "failed",
+          err instanceof Error ? err.message : String(err),
+        );
+      } catch { /* ignore */ }
+      throw err;
+    }
   }
 
   /** 懒初始化 ToolResultCacheV2（best-effort，失败返回 null）。 */
@@ -4352,6 +4392,32 @@ export class AgentModelExecutor {
    */
   getTokenBudgetReport(): BudgetReport | null {
     return this.lastBudgetReport;
+  }
+
+  /**
+   * 工具质量报告（/api/agent/tool-quality-stats）。
+   * 数据来自 llm-caller 每次工具执行后的 ToolQualityManager.recordExecution。
+   */
+  getToolQualityReport(): ReturnType<typeof toolQualityManager.getQualityReport> {
+    return toolQualityManager.getQualityReport();
+  }
+
+  /** 任务录制统计（/api/agent/recording-stats）。 */
+  getRecordingStats(): ReturnType<RecordingManager["getStats"]> {
+    return RecordingManager.getInstance().getStats();
+  }
+
+  /**
+   * 三触发器演化统计（/api/agent/evolution-trigger-stats）。
+   * 通过 provider 注入，避免 agent → evolution 的循环依赖；
+   * 服务端创建 EvolutionTriggers 后调用 setEvolutionTriggerStatsProvider。
+   */
+  setEvolutionTriggerStatsProvider(provider: (() => unknown) | null): void {
+    this.evolutionTriggerStatsProvider = provider;
+  }
+
+  getEvolutionTriggerStats(): unknown | null {
+    return this.evolutionTriggerStatsProvider ? this.evolutionTriggerStatsProvider() : null;
   }
 
   // ── End-to-end cancellation ─────────────────────────────────────────────

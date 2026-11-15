@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { ServiceRegistry, EventBus, type EvolutionCandidate, type EvolutionCycle, type Skill } from "@evoclaw/core";
 import { EvolutionApplier } from "../src/evolution-applier";
+import { LineageStore, readSkillIdSidecar } from "@evoclaw/skills";
 import { SkillAutoGenerator } from "../src/skill-auto-generator";
 import * as fs from "fs";
 import * as path from "path";
@@ -181,6 +182,31 @@ describe("EvolutionApplier", () => {
     // _meta.json 版本同步
     const meta = JSON.parse(fs.readFileSync(path.join(skillDir, "_meta.json"), "utf-8"));
     expect(meta.version).toBe("1.0.1");
+  });
+
+  it("skill_update: 写入 FIX 血缘节点并把 .skill_id 指向新版本", async () => {
+    const mgr = makeSkillManager(skillsDir);
+    registry.registerService("skillManager", mgr);
+    const lineageStore = new LineageStore(path.join(tmpDir, "lineage-data"));
+    registry.registerService("lineageStore", lineageStore);
+
+    const skillDir = path.join(skillsDir, "my-skill");
+    fs.mkdirSync(skillDir, { recursive: true });
+    const skillMd = path.join(skillDir, "SKILL.md");
+    fs.writeFileSync(skillMd, "---\nname: my-skill\nversion: 1.0.0\n---\n", "utf-8");
+    const skill = await mgr.installSkill(skillMd);
+
+    const applier = makeApplier();
+    const candidate = makeCandidate();
+    const cycle = makeCycle({ targetSkill: skill.id, candidates: [candidate], selectedCandidate: candidate.id });
+    expect((await applier.applyCandidate(cycle, candidate)).mode).toBe("skill_updated");
+
+    const lineages = lineageStore.getAllLineages();
+    expect(lineages).toHaveLength(1);
+    expect(lineages[0]?.evolutionType).toBe("fix");
+    expect(lineages[0]?.parentIds).toHaveLength(1);
+    expect(lineages[0]?.skillId).not.toBe(lineages[0]?.parentIds[0]);
+    expect(readSkillIdSidecar(skillDir)).toBe(lineages[0]?.skillId);
   });
 
   it("skill_update: 重复补丁跳过", async () => {

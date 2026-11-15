@@ -32,3 +32,7 @@ export { SkillAutoGenerator } from "./skill-auto-generator";
 export type { EvolutionResult, GeneratedSkill } from "./skill-auto-generator";
 export { EvolutionABTest } from "./evolution-ab-test";
 export type { TestStatus } from "./evolution-ab-test";
+// 三触发器演化系统（post-analysis / tool-degradation / metric-monitor）。
+// 2026-11-16 重新接线：源码此前被当作死代码删除，现恢复并挂到运行时监控循环。
+export { EvolutionTriggers } from "./evolution-triggers";
+export type { EvolutionTriggerConfig, LlmConfirmationFn, SkillMetrics } from "./evolution-triggers";

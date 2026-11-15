@@ -44,7 +44,7 @@ import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler, ReviewChatFn, 
 import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
 import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
-import { EvolutionEngine } from "@evoclaw/evolution";
+import { EvolutionEngine, EvolutionTriggers, type SkillMetrics } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, CodeKernelRegistry, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry, createTTSRegistry, createSttRegistry } from "@evoclaw/infrastructure";
@@ -106,6 +106,8 @@ export class EvoClawServer {
   private skillManager: SkillManager;
   private skillTranslateTimer: ReturnType<typeof setTimeout> | null = null;
   private evolutionEngine: EvolutionEngine;
+  private evolutionTriggers: EvolutionTriggers | null = null;
+  private evolutionMonitorTimer: ReturnType<typeof setInterval> | null = null;
   private memoryHub: MemoryHub;
   private securityGovernor: SecurityGovernor;
   private auditCenter: AuditCenter;
@@ -678,6 +680,45 @@ export class EvoClawServer {
     this.evolutionEngine = new EvolutionEngine(this.registry, this.eventBus, { storeDir: dataDir });
     // EvolutionEngine self-registers in its constructor — no manual registerService needed
     this.crestodian.setServiceHealth("evolutionEngine", "ok");
+
+    // ── EvolutionTriggers 接线（三触发器：post-analysis / tool-degradation / metric-monitor）──
+    // 源码曾被当作死代码删除（1c29f4a），现恢复并挂到真实运行时：
+    //   1. 每 10 分钟读取 ToolQualityManager 报告 + SkillManager 技能统计；
+    //   2. 触发建议先经 LLMReflector.confirmSuggestion 二次确认（防循环/防误报）；
+    //   3. 已确认建议送入 EvolutionEngine.startEvolutionCycle（评估→沙箱→发布）。
+    this.evolutionTriggers = new EvolutionTriggers({}, (suggestion) =>
+      this.evolutionEngine.confirmEvolutionSuggestion(suggestion),
+    );
+    this.registry.registerService("evolutionTriggers", this.evolutionTriggers);
+    this.agentModelExecutor.setEvolutionTriggerStatsProvider(() => this.evolutionTriggers?.getStats() ?? null);
+    this.evolutionTriggers.on("evolution:confirmed", (suggestion: { reason: string; type: string; targetSkillIds: string[]; proposedChange: string; triggeredBy: string; triggerMetrics?: Record<string, unknown> }) => {
+      void this.evolutionEngine
+        .submitTriggeredEvolution(suggestion)
+        .catch((err: unknown) => this.logger.warn("evolution", `submitTriggeredEvolution failed: ${err instanceof Error ? err.message : String(err)}`));
+    });
+    const runEvolutionTriggerMonitor = async () => {
+      try {
+        const triggers = this.evolutionTriggers;
+        if (!triggers) return;
+        triggers.startTask(`monitor:${Date.now()}`);
+        await triggers.processToolDegradation(this.agentModelExecutor.getToolQualityReport());
+        const skills = await this.skillManager.listSkills();
+        const metrics: SkillMetrics[] = skills.map((skill) => ({
+          skillId: skill.id,
+          skillName: skill.name,
+          selections: skill.stats.invocationCount ?? 0,
+          applied: skill.stats.invocationCount ?? 0,
+          completions: skill.stats.successCount ?? 0,
+          fallbacks: skill.stats.failureCount ?? 0,
+        }));
+        await triggers.processMetricCheck(metrics);
+        triggers.endTask();
+      } catch (err) {
+        this.logger.warn("evolution", `trigger monitor failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    this.evolutionMonitorTimer = setInterval(() => { void runEvolutionTriggerMonitor(); }, 10 * 60 * 1000);
+    this.evolutionMonitorTimer.unref?.();
     this.memoryHub = new MemoryHub(this.registry, this.eventBus);
     // MemoryHub self-registers in its constructor — no manual registerService needed
     this.agentModelExecutor.setMemoryHub(this.memoryHub);

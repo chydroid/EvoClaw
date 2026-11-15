@@ -325,6 +325,62 @@ function coerceObjectProperties(
   return { value: result, coerced: anyCoerced };
 }
 
+// ── 运行时统计（进程级）─────────────────────────────────────────────────────
+// 供 /api/agent/coercer-stats 展示真实接线状态，避免 EnhancementHub 卡片
+// 只显示静态占位数据。计数只增不减，重启归零。
+
+export interface ToolArgumentCoercionStats {
+  /** coerceToolArguments 调用次数 */
+  calls: number;
+  /** 实际发生类型转换的次数 */
+  coerced: number;
+  /** 转换失败/告警次数 */
+  failed: number;
+  byType: {
+    stringToInt: number;
+    stringToNumber: number;
+    stringToBool: number;
+    jsonToObject: number;
+    bareToArray: number;
+  };
+}
+
+const coercionStats: ToolArgumentCoercionStats = {
+  calls: 0,
+  coerced: 0,
+  failed: 0,
+  byType: {
+    stringToInt: 0,
+    stringToNumber: 0,
+    stringToBool: 0,
+    jsonToObject: 0,
+    bareToArray: 0,
+  },
+};
+
+/** 记录一次参数强制转换结果（由 LLM 调用循环在转换后调用）。 */
+export function recordToolArgumentCoercion(result: {
+  coerced: boolean;
+  warnings: string[];
+  byType?: Partial<ToolArgumentCoercionStats["byType"]>;
+}): void {
+  coercionStats.calls++;
+  if (result.coerced) coercionStats.coerced++;
+  if (result.warnings.length > 0) coercionStats.failed += result.warnings.length;
+  if (result.byType) {
+    for (const [k, v] of Object.entries(result.byType)) {
+      if (typeof v === "number" && k in coercionStats.byType) {
+        coercionStats.byType[k as keyof ToolArgumentCoercionStats["byType"]] += v;
+      }
+    }
+  }
+}
+
+/** 读取参数强制转换统计（返回快照，调用方不能修改内部状态）。 */
+export function getToolArgumentCoercionStats(): ToolArgumentCoercionStats {
+  return { ...coercionStats, byType: { ...coercionStats.byType } };
+}
+
 // ── 主函数 ──────────────────────────────────────────────────────────────────
 
 /**

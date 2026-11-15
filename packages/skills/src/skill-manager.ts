@@ -36,6 +36,7 @@ import {
   type IntegrityVerificationResult,
   type SkillOrigin,
 } from "./skill-integrity";
+import { LineageStore, ensureSkillIdSidecar, readSkillIdSidecar } from "./lineage-store";
 
 // ── Skill Installation Pipeline Types ──
 
@@ -119,6 +120,9 @@ export class SkillManager {
   private skillEcosystem: import("./skill-ecosystem").SkillEcosystem | null = null;
   private skillWorkshop: import("./skill-workshop").SkillWorkshop | null = null;
   private installPolicyManager: import("./install-policy").InstallPolicyManager | null = null;
+  /** 技能版本血缘 DAG（.skill_id sidecar + lineages.json） */
+  private lineageStore: LineageStore;
+  private lineageDataDir: string;
   /** 跟踪 "Install requires review" 是否已打印，避免每次启动重复 40+ 行 */
   private reviewLogged = false;
   private reviewCount = 0;
@@ -173,7 +177,69 @@ export class SkillManager {
       console.debug(`[SkillManager] InstallPolicyManager not available: ${err instanceof Error ? err.message : String(err)}`);
     }
 
+    // 血缘 DAG：dataDir 取 data/skills 的父目录，LineageStore 自身写入
+    // <dataDir>/skill-curator/lineages.json（与 SkillCurator 的目录布局一致）。
+    this.lineageDataDir = path.dirname(this.resolveDataSkillsDir());
+    this.lineageStore = new LineageStore(this.lineageDataDir);
+    svcRegistry.registerService("lineageStore", this.lineageStore);
     svcRegistry.registerService("skillManager", this);
+  }
+
+  /**
+   * 记录技能安装为一个 captured 根节点（无父）。
+   * 已存在的 .skill_id（目录改名/重装）保持身份不变，不重复写根节点。
+   */
+  private recordInstallLineage(skillDir: string, skill: Skill): void {
+    try {
+      const skillId = ensureSkillIdSidecar(skillDir);
+      if (this.lineageStore.getLineage(skillId)) return;
+      this.lineageStore.addLineage(
+        {
+          skillId,
+          parentIds: [],
+          evolutionType: "captured",
+          contentSnapshot: fs.existsSync(skill.installPath)
+            ? fs.readFileSync(skill.installPath, "utf-8").slice(0, 200_000)
+            : undefined,
+          evolvedAt: Date.now(),
+          reason: `install:${skill.name}`,
+          isActive: true,
+        },
+        skill.name,
+      );
+    } catch (err) {
+      // 血缘失败不影响安装主流程（身份/历史是增强能力，不是安装前提）
+      process.stderr.write(
+        `[SkillManager] lineage record failed for "${skill.name}": ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
+  }
+
+  /** 血缘统计（供 /api/skills/lineage-stats 与 EnhancementHub）。 */
+  getLineageStats(): {
+    total: number;
+    active: number;
+    roots: number;
+    captured: number;
+    derived: number;
+    fixed: number;
+    dataDir: string;
+  } {
+    const lineages = this.lineageStore.getAllLineages();
+    return {
+      total: lineages.length,
+      active: lineages.filter((l) => l.isActive).length,
+      roots: this.lineageStore.getRoots().length,
+      captured: lineages.filter((l) => l.evolutionType === "captured").length,
+      derived: lineages.filter((l) => l.evolutionType === "derived").length,
+      fixed: lineages.filter((l) => l.evolutionType === "fix").length,
+      dataDir: this.lineageDataDir,
+    };
+  }
+
+  /** 读取技能目录的 .skill_id（不存在返回 null）。 */
+  getSkillSidecarId(skillDir: string): string | null {
+    return readSkillIdSidecar(skillDir);
   }
 
   async installSkill(skillPath: string, force = false): Promise<Skill> {
@@ -566,6 +632,7 @@ export class SkillManager {
     this.skills.set(skill.id, skill);
     this.registry.registerSkill(skill);
     this.lifecycle.activate(skill);
+    this.recordInstallLineage(skillDir, skill);
 
     await this.hookEngine.executeHook(skill, "onInstall");
 

@@ -19,11 +19,13 @@ import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-gu
 import { SubdirectoryHintTracker } from "./subdirectory-hints";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
-import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
+import { detectPrematureStop, buildContinuationDirective, isPlaceholderOnlyReply } from "./auto-continuation";
 import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { normalizeToolActionArg } from "./tool-arg-normalization";
+import { coerceToolArguments, recordToolArgumentCoercion } from "./tool-argument-coercer";
+import { toolQualityManager } from "./enhancement-runtime";
 import { runWithToolCallContext } from "./tool-call-context";
 import { resolveContextWindow } from "./model-context-window";
 import { estimateMessagesTokens } from "./error-classifier";
@@ -68,6 +70,50 @@ function resolveTraceId(
   const v = deps.currentTraceId;
   return typeof v === "function" ? v(sessionId) : v;
 }
+/** provider 方言 → SchemaSanitizer backend（未知 provider 用 generic，仅做深拷贝）。 */
+function resolveSchemaBackend(provider?: ProviderConfig): BackendType {
+  const p = (provider?.provider || "").toLowerCase();
+  if (p === "anthropic" || p.includes("claude")) return "anthropic";
+  if (p === "google" || p === "gemini") return "google";
+  if (p.includes("codex")) return "openai-codex";
+  if (p.includes("fireworks")) return "fireworks";
+  if (p === "xai" || p.includes("grok")) return "xai";
+  if (p.includes("llama") || p.includes("llama.cpp")) return "llama-cpp";
+  if (p.includes("ollama")) return "ollama";
+  return "openai";
+}
+
+let defaultTransformsRegistered = false;
+
+/**
+ * 注册 ToolResultMiddleware 的默认结果转换（幂等）。
+ *
+ * 保守脱敏：只匹配高置信度的凭据格式，且只作用于字符串结果文本，
+ * 不改变 JSON 结构（替换值均为无引号的安全占位符）。这样工具结果进入
+ * 模型上下文与 spill 文件之前，密钥不会以原文出现。
+ */
+function ensureDefaultToolResultTransforms(): void {
+  if (defaultTransformsRegistered) return;
+  defaultTransformsRegistered = true;
+  try {
+    const mw = getToolResultMiddleware();
+    if (mw.getStats().resultTransforms > 0) return;
+    mw.addResultTransform((ctx) => {
+      if (typeof ctx.result !== "string" || ctx.result.length < 20) return;
+      const redacted = ctx.result
+        .replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED:openai-key]")
+        .replace(/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "[REDACTED:github-token]")
+        .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED:aws-key]")
+        .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED:slack-token]")
+        .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]{20,}/g, "$1[REDACTED:bearer]");
+      if (redacted === ctx.result) return;
+      return { ...ctx, result: redacted };
+    });
+  } catch (err) {
+    process.stderr.write(`[LLMCaller] middleware defaults failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+}
+
 import type { Span } from "@opentelemetry/api";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
@@ -80,6 +126,13 @@ import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
 import { isTruncatedOrSpilled, sanitizeExecResult } from "./tool-output-spill";
+import { sanitizeToolSchemas, reactiveSanitize, type BackendType } from "./schema-sanitizer";
+import { getToolResultPersistenceManager } from "./tool-result-persistence";
+import { getToolResultMiddleware } from "./tool-result-middleware";
+import { getConcurrentToolExecutor } from "./concurrent-tool-executor";
+import { getIterationContextPolicy } from "./iteration-context-policy";
+import { getCrossSessionRateGuard } from "./cross-session-rate-guard";
+import { RecordingManager } from "./recording-manager";
 import { getToolOutputPruner } from "./tool-output-pruner";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
 import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, maybeIdleCompact as maybeIdleCompactFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
@@ -1119,6 +1172,8 @@ export interface LLMCallerDeps {
   contextPruningManager?: import("./context-pruning").ContextPruningManager;
   // Token usage tracker (optional — enables real-time token/cost tracking)
   tokenUsageTracker?: import("./token-usage-tracker").TokenUsageTracker;
+  // RecordingManager task ID (optional — enabled by AgentModelExecutor per run)
+  recordingTaskId?: string;
   // 会话级工具组单调并集存储（P0-2：buildOpenAITools 的 baseTools 出参回写）
   toolGroupStore?: Map<string, Set<string>>;
   // Service-gated tools: TTL-cached check_fn evaluator (optional — filters unavailable tools before sending to LLM)
@@ -5057,6 +5112,25 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   换掉 5-9 轮超时风险，划算。
       }
 
+      // 工具结果中间件默认转换（脱敏）——只注册一次。
+      ensureDefaultToolResultTransforms();
+
+      // ── SchemaSanitizer：按 provider 方言清洗工具 JSON Schema ──
+      // 接线前该类只有定义与 stats 占位端点，从未进入真实请求体。放在
+      // buildOpenAITools 之后、请求构造之前：清洗只作用于本轮 tools 段，
+      // 不触碰 messages 前缀，因此不破坏 prompt cache（tools 在请求体末尾）。
+      if (tools.length > 0) {
+        const backend = resolveSchemaBackend(providers[0]);
+        try {
+          const sanitized = sanitizeToolSchemas(tools as never, { backend });
+          if (sanitized.length > 0) tools = sanitized as typeof tools;
+        } catch (schemaErr) {
+          process.stderr.write(
+            `[LLMCaller] SchemaSanitizer failed (backend=${backend}); using raw schemas: ${schemaErr instanceof Error ? schemaErr.message : String(schemaErr)}\n`,
+          );
+        }
+      }
+
       // ★ P0-4 缓存稳定化（2026-10-26）：searchPreDone 不再移除搜索工具。
       // ★ 2026-10-27 更正：tools **不是**前缀第一段。请求体 key 的插入序是
       //   model → messages → max_tokens → … → (system) → tools → tool_choice，
@@ -5456,8 +5530,107 @@ if (deps.contextPruningManager && !prunerNoop) {
         // ★ P0-8：构造本轮调用的消息数组 = conversationMessages + pendingTransient。
         // transient 消息（nudge/warning/directive）只影响当前调用，不写入 history。
         // 下一轮 conversationMessages 保持纯追加式增长，前缀缓存不被 mid-history 变化击穿。
-        const callMessages = [...conversationMessages, ...pendingTransient];
+        let callMessages = [...conversationMessages, ...pendingTransient];
         pendingTransient = [];
+
+        // ── IterationContextPolicy：按迭代轮次渐进压缩「本次请求」的消息副本 ──
+        // 接线前 applyPolicy 只有定义与注释里的 task-orchestrator 挂载计划，运行时零调用。
+        // 关键安全边界：
+        //   1. 只改 callMessages 副本，不回写 conversationHistory（history 保持纯追加，
+        //      缓存前缀稳定；cap 是内容确定性变换，跨轮对同一消息产生相同字节）。
+        //   2. system 消息受 preserveSystemMessages 保护，不 cap、不被 truncate 丢弃。
+        //   3. truncate 后 repairToolPairing 修复 assistant.tool_calls ↔ tool 配对，
+        //      避免 provider 400。
+        try {
+          const policy = getIterationContextPolicy();
+          const policyInput = callMessages.map((m, idx) => {
+            const rawContent = (m as { content?: unknown }).content;
+            const content = typeof rawContent === "string"
+              ? rawContent
+              : rawContent == null
+                ? ""
+                : JSON.stringify(rawContent);
+            return {
+              role: m.role as "user" | "assistant" | "system" | "tool",
+              content,
+              toolCallId: (m as { tool_call_id?: string }).tool_call_id,
+              toolName: (m as { name?: string }).name,
+              isSkillContext: m.role === "system" && typeof skillsMessage === "string" && content === skillsMessage,
+              toolCalls: ((m as { tool_calls?: Array<{ id?: string }> }).tool_calls ?? [])
+                .filter((t): t is { id: string } => typeof t.id === "string")
+                .map((t) => ({ id: t.id })),
+              timestamp: idx,
+            };
+          });
+          const policyResult = policy.applyPolicy(policyInput, round + 1);
+          if (policyResult.appliedStrategies.length > 0 && policyResult.resultCount !== policyResult.originalCount) {
+            const rebuilt: typeof callMessages = [];
+            for (const pm of policyResult.messages) {
+              const orig = callMessages[pm.timestamp ?? -1];
+              if (!orig) continue;
+              const rawContent = (orig as { content?: unknown }).content;
+              if (typeof rawContent !== "string") {
+                rebuilt.push(orig);
+              } else if (pm.content !== rawContent) {
+                rebuilt.push({ ...orig, content: pm.content } as typeof orig);
+              } else {
+                rebuilt.push(orig);
+              }
+            }
+            callMessages = rebuilt;
+          } else if (policyResult.appliedStrategies.length > 0) {
+            // 仅 cap（数量不变）：按索引替换内容，保留原始消息对象的所有字段。
+            callMessages = callMessages.map((orig, idx) => {
+              const pm = policyResult.messages.find((m) => m.timestamp === idx);
+              const rawContent = (orig as { content?: unknown }).content;
+              if (!pm || typeof rawContent !== "string" || pm.content === rawContent) return orig;
+              return { ...orig, content: pm.content } as typeof orig;
+            });
+          }
+        } catch (policyErr) {
+          // 策略是尽力而为：失败时使用未裁剪的 callMessages，不影响主流程。
+          process.stderr.write(
+            `[LLMCaller] IterationContextPolicy skipped: ${policyErr instanceof Error ? policyErr.message : String(policyErr)}\n`,
+          );
+        }
+
+        // ── RecordingManager：每轮记录请求上下文（仅在有录制任务时） ──
+        if (deps.recordingTaskId) {
+          try {
+            const tokenEstimate = callMessages.reduce(
+              (sum, m) => sum + Math.ceil(((typeof m.content === "string" ? m.content.length : 0)) / 4) + 4,
+              0,
+            );
+            RecordingManager.getInstance().recordIterationContext(
+              deps.recordingTaskId,
+              round + 1,
+              callMessages.map((m) => ({
+                role: m.role,
+                content: typeof m.content === "string" ? m.content.slice(0, 20_000) : "[non-text]",
+              })),
+              tokenEstimate,
+            );
+          } catch { /* 录制失败不影响主流程 */ }
+        }
+
+        // ── CrossSessionRateGuard：真正的配额耗尽冷却期内直接跳过 provider ──
+        // 与 overload ladder 互补：短窗口 429 仍走退避重试；只有 isGenuine
+        // （reset 窗口 >= 60s）的配额耗尽才跨会话跳过，消除 retry amplification。
+        if (getCrossSessionRateGuard().shouldSkipRequest(provider.name)) {
+          const remainingMs = getCrossSessionRateGuard().getRemainingCooldown(provider.name);
+          process.stderr.write(
+            `[AgentModelExecutor] Skipping provider "${provider.name}" — cross-session rate-limit cooldown ${Math.ceil(remainingMs / 1000)}s remaining\n`,
+          );
+          onProgress?.({
+            type: "status",
+            phase: "generating",
+            detail: `provider ${provider.name} 配额冷却中（${Math.ceil(remainingMs / 1000)}s），切换到下一个 provider`,
+            progress: 25,
+            round: round + 1,
+          });
+          continue;
+        }
+
         const result = await callLLMOnce(callProvider, callMessages, tools, tc, onProgress, deps, trace, includeAccumulatedReplyInTokenEvents);
 
         if (!result) {
@@ -5505,6 +5678,38 @@ if (deps.contextPruningManager && !prunerNoop) {
             model: provider.model,
           };
           process.stderr.write(`[AgentModelExecutor] Error classified as "${classified.type}" for provider "${provider.name}": ${classified.message}\n`);
+
+          // ── CrossSessionRateGuard：记录 429 配额窗口 ──
+          // ClassifiedError 已把 Retry-After / x-ratelimit-reset-* 解析进
+          // backoffMs（含 jitter），这里换算回秒数写入共享状态文件；
+          // 短窗口（<60s）标记 isGenuine=false，不影响后续请求。
+          if (classified.type === LLMErrorType.RATE_LIMIT) {
+            try {
+              getCrossSessionRateGuard().recordRateLimit(provider.name, 429, {
+                "retry-after": String(Math.max(0, Math.round(classified.backoffMs / 1000))),
+              });
+            } catch (guardErr) {
+              process.stderr.write(`[LLMCaller] rate guard record failed: ${guardErr instanceof Error ? guardErr.message : String(guardErr)}\n`);
+            }
+          }
+
+          // ── SchemaSanitizer 反应式清洗：provider 报 grammar/组合器/enum 不兼容 ──
+          // 下一轮重试/下一个 provider 会重新走 buildOpenAITools，因此这里把
+          // 本轮 tools 就地替换为清洗后的 schema。
+          if (tools.length > 0) {
+            const lowerMsg = classified.message.toLowerCase();
+            if (
+              lowerMsg.includes("grammar") || lowerMsg.includes("anyof") || lowerMsg.includes("oneof") ||
+              lowerMsg.includes("pattern") || lowerMsg.includes("$ref") || lowerMsg.includes("enum")
+            ) {
+              try {
+                tools = reactiveSanitize(tools as never, classified.message) as typeof tools;
+                asyncLog(`[AgentModelExecutor] Reactive schema sanitize applied for provider "${provider.name}"\n`);
+              } catch (sanErr) {
+                process.stderr.write(`[LLMCaller] reactive sanitize failed: ${sanErr instanceof Error ? sanErr.message : String(sanErr)}\n`);
+              }
+            }
+          }
 
           // ── R2-1: 错误消息友好化（借鉴 hermes-agent _content_policy_blocked_result） ──
           const friendlyError = formatClassifiedErrorForUser(classified, provider.name);
@@ -6386,6 +6591,10 @@ if (deps.contextPruningManager && !prunerNoop) {
 
         conversationMessages.push(assistantMsg);
 
+        // 本轮新增工具消息的起点 + 重置 turn 级持久化跟踪（每轮独立预算）。
+        const roundToolMsgStart = conversationMessages.length;
+        try { getToolResultPersistenceManager().resetTurn(); } catch { /* 统计清理失败不影响主流程 */ }
+
         // ── Parallel tool execution (inspired by OpenClaw's executeToolCallsParallel) ──
         // Tools that are read-only and independent can be executed in parallel.
         // Tools with side-effects or dependencies must be executed sequentially.
@@ -6483,7 +6692,32 @@ if (deps.contextPruningManager && !prunerNoop) {
             args = actionNorm.args;
           }
 
-          // ★ P0 性能优化（performance-analysis.md 建议 1）：args 序列化只做一次。
+          // ★ 2026-11-16 接线：ToolArgumentCoercer 参数类型强制转换。
+          //   此前该类只有定义与 stats 占位端点，从未进入执行路径——
+          //   EnhancementHub 的"工具参数类型强制转换"卡片因此永远未就绪。
+          //   现在在 action 归一化之后、缓存键构造之前校正类型：
+          //   string→int/number/boolean、JSON string→object/array、bare→[value]。
+          if (toolEntry?.definition.parameters) {
+            try {
+              const { properties } = normalizeToolParameters(toolEntry.definition.parameters);
+              const coercion = coerceToolArguments(args, { type: "object", properties });
+              if (coercion.coerced) {
+                process.stderr.write(
+                  `[LLMCaller] Coerced tool arguments for "${toolName}"` +
+                    (coercion.warnings.length > 0 ? ` (${coercion.warnings.join("; ")})` : "") + "\n",
+                );
+                args = coercion.args;
+              }
+              recordToolArgumentCoercion({ coerced: coercion.coerced, warnings: coercion.warnings });
+            } catch (coerceErr) {
+              // 强制转换是尽力而为：失败时保留原始参数，不影响工具执行。
+              process.stderr.write(
+                `[LLMCaller] Tool argument coercion skipped for "${toolName}": ${coerceErr instanceof Error ? coerceErr.message : String(coerceErr)}\n`,
+              );
+            }
+          }
+
+
           // 幂等缓存键（L6136）与工具结果缓存键（原 L6289）此前各自
           // JSON.stringify(args)，大参数（文件内容/搜索结果可达数百 KB）时
           // 重复序列化纯浪费。现在在解析完成后序列化一次，全流程复用；
@@ -6752,6 +6986,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_act", "skill_manage"].includes(toolName);
             const isBrowser = toolName.startsWith("browser_");
             const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
+            const toolStartedAt = Date.now();
 
             try {
               // Use retryAsync for network tools (max 2 retries with exponential
@@ -7047,6 +7282,18 @@ if (deps.contextPruningManager && !prunerNoop) {
               }
               anyToolExecuted = true;
               recordToolSuccess(toolName);
+              // ★ 2026-11-16 接线：ToolQualityManager 记录真实执行结果。
+              //   此前该类只有定义，执行路径从不记录，/api/agent/tool-quality-stats
+              //   永远返回 enabled:false。现在按 toolName+args 作为键累计成功率/延迟。
+              try {
+                toolQualityManager.recordExecution(
+                  toolName,
+                  toolName,
+                  !semanticallyFailed,
+                  Date.now() - toolStartedAt,
+                  semanticallyFailed ? failure ?? undefined : undefined,
+                );
+              } catch { /* 质量统计失败不影响主流程 */ }
               // ── 验证证据：把「验证类命令的成功运行」记入账本 ──
               // 成功（exitCode===0）会清空编辑记录——与 hermes 语义一致：
               // 「全量通过的验证证明工作区没问题」，之后的编辑才需重验。
@@ -7091,6 +7338,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               toolErrored = true;
               toolError = errMsg;
               recordToolFailure(toolName);
+              try {
+                toolQualityManager.recordExecution(toolName, toolName, false, Date.now() - toolStartedAt, errMsg);
+              } catch { /* 质量统计失败不影响主流程 */ }
               // ★ 2026-10-11：硬失败（抛异常）此前**既不进 failedTools 也不进轨迹**，
               //   导致轨迹里只有「决定调用 X」却没有任何结果（断裂），
               //   完成声明对账也漏掉这类失败（"失败被当成成功"的另一道缝）。
@@ -7124,6 +7374,23 @@ if (deps.contextPruningManager && !prunerNoop) {
             } catch (hookErr) {
               process.stderr.write(`[LLMCaller] after_tool_call hook failed for ${toolName}:` + " " + hookErr + "\n");
             }
+          }
+
+          // ── RecordingManager：工具执行轨迹（traj.jsonl） ──
+          if (deps.recordingTaskId) {
+            try {
+              RecordingManager.getInstance().recordToolExecution(
+                deps.recordingTaskId,
+                round + 1,
+                toolName,
+                tc.id,
+                args,
+                toolResult.slice(0, 4_000),
+                !toolErrored,
+                Date.now() - toolStartTime,
+                toolError || undefined,
+              );
+            } catch { /* 录制失败不影响主流程 */ }
           }
 
           // Record tool trace
@@ -7249,29 +7516,101 @@ if (deps.contextPruningManager && !prunerNoop) {
             }
           }
 
+          // ── ToolResultMiddleware：结果脱敏/大小/格式转换（进入模型与落盘之前）──
+          // 接线前该类只有单例与 stats 端点，主执行链从未调用 execute/transform。
+          // 放在持久化之前：避免把未脱敏的密钥原文写进 spill 文件。
+          try {
+            const mw = getToolResultMiddleware();
+            const transformed = mw.transformResult({
+              toolName,
+              toolCallId: tc.id,
+              sessionId,
+              turnId: String(round + 1),
+              args,
+              result: toolResult,
+              durationMs: Date.now() - toolStartTime,
+              success: !toolErrored,
+              error: toolError || undefined,
+            });
+            if (typeof transformed.result === "string") {
+              toolResult = transformed.result;
+            }
+          } catch (mwErr) {
+            process.stderr.write(
+              `[LLMCaller] ToolResultMiddleware skipped for "${toolName}": ${mwErr instanceof Error ? mwErr.message : String(mwErr)}\n`,
+            );
+          }
+
+          // ── ToolResultPersistenceManager：超长结果落盘 + 预览回填 ──
+          // 接线前该类只有定义与占位端点。阈值按上下文预算设置：
+          // 默认单结果 16K（与 MAX_RESULT_LEN 同量级），exec 类 60K，
+          // code_search 32K；file_read 属 pinned=Infinity，避免
+          // persist→read→persist 死循环。已 spill 的 exec 结果不再二次落盘。
+          if (!toolErrored && !isTruncatedOrSpilled(toolResult)) {
+            try {
+              const persistence = getToolResultPersistenceManager({
+                defaultResultSizeChars: 16_000,
+                toolOverrides: {
+                  shell_exec: 60_000,
+                  execute_code: 60_000,
+                  code_search: 32_000,
+                },
+              });
+              const persisted = persistence.maybePersistToolResult(toolResult, toolName, tc.id);
+              if (persisted.persisted) {
+                toolResult = persisted.content;
+              }
+            } catch (persistErr) {
+              process.stderr.write(
+                `[LLMCaller] ToolResultPersistence skipped for "${toolName}": ${persistErr instanceof Error ? persistErr.message : String(persistErr)}\n`,
+              );
+            }
+          }
+
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
         };
 
         // ── Execute parallel-safe tools concurrently ──
         if (parallelCalls.length > 1) {
           asyncLog(`[AgentModelExecutor] Executing ${parallelCalls.length} tools in parallel: ${parallelCalls.map(tc => tc.function.name).join(", ")}\n`);
-          const parallelResults = await Promise.allSettled(parallelCalls.map(tc => executeSingleToolCall(tc)));
-          for (let i = 0; i < parallelResults.length; i++) {
-            const result = parallelResults[i];
+          // ── ConcurrentToolExecutor：承载并行批次（信号量 + 超时 + 心跳 + 顺序还原）──
+          // 该批次在进入此处之前已由 PARALLEL_SAFE_TOOLS 过滤，因此关闭二次
+          // 安全分类（避免把 file_read 同路径串行化等行为变化）；浏览器工具
+          // 从不进入该批次。超时放宽到 10 分钟，避免外层 120s 默认值提前
+          // 截断长工具（内层工具已有自己的更严格超时）。
+          const executor = getConcurrentToolExecutor({
+            maxConcurrency: 8,
+            toolTimeoutMs: 600_000,
+            heartbeatTimeoutMs: 600_000,
+            pollIntervalMs: 30_000,
+            enableSafetyClassification: false,
+          });
+          const batch = await executor.execute(
+            parallelCalls.map((tc) => {
+              let parsedArgs: Record<string, unknown> = {};
+              try { parsedArgs = JSON.parse(tc.function.arguments || "{}"); } catch { /* 保持空对象；执行器内部会再解析 */ }
+              return { id: tc.id, name: tc.function.name, args: parsedArgs };
+            }),
+            async (tool) => {
+              const original = parallelCalls.find((tc) => tc.id === tool.id);
+              if (!original) throw new Error(`unknown tool call id ${tool.id}`);
+              return executeSingleToolCall(original);
+            },
+          );
+          for (let i = 0; i < batch.length; i++) {
+            const result = batch[i];
             const toolCall = parallelCalls[i];
-            if (result.status === "fulfilled") {
-              conversationMessages.push(result.value);
+            if (result.success && result.output) {
+              conversationMessages.push(result.output as { role: string; tool_call_id: string; name: string; content: string });
             } else {
               // 失败结果也以工具消息形式加入对话，避免 LLM 等待永远不会到来的工具结果导致卡死
-              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed: ${result.reason}\n`);
+              const reason = result.error || "Tool execution failed";
+              process.stderr.write(`[AgentModelExecutor] Parallel tool execution failed: ${reason}\n`);
               conversationMessages.push({
                 role: "tool",
                 tool_call_id: toolCall.id,
                 name: toolCall.function.name,
-                content: JSON.stringify({
-                  error: "Tool execution failed",
-                  reason: result.reason instanceof Error ? result.reason.message : String(result.reason),
-                }),
+                content: JSON.stringify({ error: "Tool execution failed", reason }),
               });
             }
           }
@@ -7326,6 +7665,45 @@ if (deps.contextPruningManager && !prunerNoop) {
           });
           turnExitReason = "guardrail_halt";
           break;
+        }
+
+        // ── ToolResultPersistenceManager Layer 3：turn 级聚合预算 ──
+        // 逐条阈值只能防止单个工具撑爆上下文；一轮内多个大结果叠加仍可能超预算。
+        // 这里检查本轮新增的 tool 消息总量，超预算时把最大的非持久化结果 spill
+        // 到磁盘并用预览块替换（只改本轮尾部追加内容，不动历史前缀）。
+        try {
+          const roundToolMessages: Array<{ role: string; content: string; tool_call_id?: string; name?: string }> = [];
+          for (let i = roundToolMsgStart; i < conversationMessages.length; i++) {
+            const msg = conversationMessages[i] as { role?: string; content?: unknown; tool_call_id?: string; name?: string };
+            if (msg.role !== "tool") continue;
+            roundToolMessages.push({
+              role: "tool",
+              content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content ?? ""),
+              tool_call_id: msg.tool_call_id,
+              name: msg.name,
+            });
+          }
+          if (roundToolMessages.length > 1) {
+            const persistence = getToolResultPersistenceManager();
+            const enforcement = persistence.enforceTurnBudget(roundToolMessages);
+            if (enforcement.spilled > 0) {
+              const replacementById = new Map<string, string>();
+              for (const msg of enforcement.messages) {
+                if (msg.tool_call_id) replacementById.set(msg.tool_call_id, msg.content);
+              }
+              for (let i = roundToolMsgStart; i < conversationMessages.length; i++) {
+                const msg = conversationMessages[i] as { role?: string; tool_call_id?: string };
+                if (msg.role !== "tool" || !msg.tool_call_id) continue;
+                const replacement = replacementById.get(msg.tool_call_id);
+                if (replacement !== undefined) {
+                  conversationMessages[i] = { ...(msg as object), content: replacement } as typeof conversationMessages[number];
+                }
+              }
+              asyncLog(`[AgentModelExecutor] Turn budget spill: ${enforcement.spilled} tool result(s) persisted (total ${enforcement.totalChars} chars)\n`);
+            }
+          }
+        } catch (budgetErr) {
+          process.stderr.write(`[LLMCaller] Turn budget enforcement skipped: ${budgetErr instanceof Error ? budgetErr.message : String(budgetErr)}\n`);
         }
 
         // ── 调查循环检测器（2026-11-04）──
@@ -7742,6 +8120,18 @@ if (deps.contextPruningManager && !prunerNoop) {
         try {
           getTurnLivenessWatchdog().touch(sessionId);
         } catch { /* best-effort */ }
+
+        // ── 占位符兜底（2026-11-16 事故）─────────────────────────────
+        // 模型偶发只返回「[工具结果]」这类 5-token 空壳，工具一次都没调。
+        // 自动续跑用尽后仍可能停留在占位符上；绝不能把占位符当最终回复交付。
+        if (finalReply && isPlaceholderOnlyReply(finalReply)) {
+          process.stderr.write(
+            `[AgentModelExecutor] Placeholder-only final reply detected (${JSON.stringify(finalReply)}); replacing with honest fallback\n`,
+          );
+          finalReply =
+            "⚠️ 本次处理没有产出可用的结果：模型只返回了占位符，没有实际执行任务。\n\n" +
+            "请重新发送一次任务描述，我会重新执行；如果问题持续出现，请检查当前模型服务是否正常（可能需要切换模型）。";
+        }
 
         // ── Turn Finalizer：终末安全网（对标 hermes-agent turn_finalizer.py）──
         // 在回复组装完毕后、持久化前运行。五个结构机制：

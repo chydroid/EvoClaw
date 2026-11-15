@@ -54,6 +54,28 @@ describe("ConcurrentToolExecutor — 超时后槽位保持占用（回归）", (
     expect(elapsed).toBeGreaterThanOrEqual(120);
   });
 
+  it("统计真实承载的批次与执行数（主链路并行批次的证据）", async () => {
+    const exec = new ConcurrentToolExecutor({
+      maxConcurrency: 3,
+      toolTimeoutMs: 5000,
+      heartbeatTimeoutMs: 10000,
+      pollIntervalMs: 100,
+      enableSafetyClassification: false,
+    });
+
+    await exec.execute(makeTools(["x1", "x2", "x3"]), async (tool) => `ok-${tool.id}`);
+    await exec.execute(makeTools(["y1"]), async (tool) => `ok-${tool.id}`);
+
+    const stats = exec.getStats();
+    expect(stats.batches).toBe(2);
+    expect(stats.executed).toBe(4);
+    expect(stats.parallelized).toBe(4);
+    expect(stats.failures).toBe(0);
+    expect(stats.maxObservedActive).toBeGreaterThan(0);
+    expect(stats.maxConcurrency).toBe(3);
+    expect(stats.activeCount).toBe(0);
+  });
+
   it("正常完成（未超时）的工具正确释放槽位，不泄漏", async () => {
     const exec = new ConcurrentToolExecutor({
       maxConcurrency: 2,

@@ -219,6 +219,14 @@ export class ToolResultPersistenceManager {
   private storageDir: string;
   /** turn 内已持久化的结果跟踪 */
   private turnResults: Array<{ toolCallId: string; content: string; size: number; persisted: boolean }> = [];
+  /** 进程级累计统计（跨 turn，供 EnhancementHub 展示真实接线） */
+  private stats = {
+    turns: 0,
+    maybePersistCalls: 0,
+    persisted: 0,
+    spilled: 0,
+    totalChars: 0,
+  };
 
   constructor(config: Partial<BudgetConfig> = {}) {
     this.config = { ...DEFAULT_BUDGET_CONFIG, ...config };
@@ -262,6 +270,8 @@ export class ToolResultPersistenceManager {
     toolCallId: string,
   ): PersistedOutputInfo {
     const threshold = this.resolveThreshold(toolName);
+    this.stats.maybePersistCalls++;
+    this.stats.totalChars += content.length;
 
     // 不超过阈值，直接返回
     if (threshold === Infinity || content.length <= threshold) {
@@ -290,6 +300,7 @@ export class ToolResultPersistenceManager {
       const persistedContent = buildPersistedMessage(preview, hasMore, content.length, filePath);
 
       this.turnResults.push({ toolCallId, content: persistedContent, size: content.length, persisted: true });
+      this.stats.persisted++;
 
       return {
         persisted: true,
@@ -320,6 +331,7 @@ export class ToolResultPersistenceManager {
    * @param messages turn 内的所有工具消息
    */
   enforceTurnBudget(messages: TurnMessage[]): TurnBudgetResult {
+    this.stats.turns++;
     let current = [...messages];
     let totalChars = current.reduce((sum, m) => sum + m.content.length, 0);
     let spilled = 0;
@@ -356,6 +368,7 @@ export class ToolResultPersistenceManager {
       spilled++;
     }
 
+    this.stats.spilled += spilled;
     return { spilled, messages: current, totalChars };
   }
 
@@ -414,6 +427,27 @@ export class ToolResultPersistenceManager {
       totalResults: this.turnResults.length,
       persistedResults: this.turnResults.filter((r) => r.persisted).length,
       totalChars: this.turnResults.reduce((sum, r) => sum + r.size, 0),
+    };
+  }
+
+  /**
+   * 进程级统计（跨 turn）。
+   */
+  getStats(): {
+    turns: number;
+    maybePersistCalls: number;
+    persisted: number;
+    spilled: number;
+    totalChars: number;
+    turnResults: number;
+    turnBudgetChars: number;
+    storageDir: string;
+  } {
+    return {
+      ...this.stats,
+      turnResults: this.turnResults.length,
+      turnBudgetChars: this.config.turnBudgetChars,
+      storageDir: this.storageDir,
     };
   }
 

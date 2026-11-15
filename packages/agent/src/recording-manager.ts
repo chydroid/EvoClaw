@@ -323,6 +323,60 @@ export class RecordingManager {
 
   // ── 查询 ────────────────────────────────────────────────
 
+  /** 汇总统计（供 EnhancementHub 展示真实接线） */
+  getStats(): {
+    activeRecordings: number;
+    totalRecordings: number;
+    baseDir: string;
+    active: Array<{
+      taskId: string;
+      sessionId: string;
+      startedAt: number;
+      totalIterations: number;
+      totalToolCalls: number;
+      totalTokensUsed: number;
+      skillsUsed: string[];
+    }>;
+    recent: Array<{
+      taskId: string;
+      finalStatus?: string;
+      startedAt?: number;
+      endedAt?: number;
+      totalIterations?: number;
+      totalToolCalls?: number;
+    }>;
+  } {
+    const active = Array.from(this.activeRecordings.values()).map(({ metadata }) => ({
+      taskId: metadata.taskId,
+      sessionId: metadata.sessionId,
+      startedAt: metadata.startedAt,
+      totalIterations: metadata.totalIterations,
+      totalToolCalls: metadata.totalToolCalls,
+      totalTokensUsed: metadata.totalTokensUsed,
+      skillsUsed: [...metadata.skillsUsed],
+    }));
+    const all = this.listRecordings();
+    const recent = all
+      .filter((r) => r.metadata)
+      .sort((a, b) => (b.metadata?.startedAt ?? 0) - (a.metadata?.startedAt ?? 0))
+      .slice(0, 10)
+      .map((r) => ({
+        taskId: r.taskId,
+        finalStatus: r.metadata?.finalStatus,
+        startedAt: r.metadata?.startedAt,
+        endedAt: r.metadata?.endedAt,
+        totalIterations: r.metadata?.totalIterations,
+        totalToolCalls: r.metadata?.totalToolCalls,
+      }));
+    return {
+      activeRecordings: this.activeRecordings.size,
+      totalRecordings: all.length,
+      baseDir: this.baseDir,
+      active,
+      recent,
+    };
+  }
+
   /** 获取任务录制目录 */
   getRecordingDir(taskId: string): string | null {
     return this.activeRecordings.get(taskId)?.dir ?? null;

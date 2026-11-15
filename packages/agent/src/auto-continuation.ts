@@ -41,7 +41,13 @@ export type PrematureStopKind =
    * 但它实质上就是变相停工。必须单独识别，否则用户看到的仍然是
    * 「EvoClaw 卡住 → 要我帮忙 → 我帮完它才继续」。
    */
-  | "blame_environment";
+  | "blame_environment"
+  /**
+   * 最终回复只有「[工具结果]」这类占位符，没有任何面向用户的内容
+   * （2026-11-16 真实事故：模型只回了 5 个 token 的「[工具结果]」，
+   * 工具一次都没调，任务完全没执行，但旧规则全部漏过）。
+   */
+  | "placeholder_reply";
 
 /**
  * 「请用户回复继续」类特征——最直接、最该被消灭的停顿形态。
@@ -167,6 +173,29 @@ const ASK_PERMISSION_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * 纯占位符回复——整条回复只有「[工具结果]」之类的空壳，没有任何用户可读内容。
+ *
+ * 注意必须**整条匹配**：正文里正常引用「工具结果」四个字不算占位符。
+ */
+const PLACEHOLDER_ONLY_PATTERNS: RegExp[] = [
+  // [工具结果] / 【工具结果】 / (工具结果) / [工具执行结果] / [工具运行详情]
+  /^\s*[\[【(（<]\s*(?:工具|tool)?\s*(?:调用|执行|运行)?\s*(?:结果|输出|详情)\s*[\]】)）>]\s*$/i,
+  // 工具结果 / 工具执行结果 / 工具输出
+  /^\s*(?:工具|tool)\s*(?:调用|执行|运行)?\s*(?:结果|输出|详情)\s*$/i,
+  // [tool result] / [tool_result] / tool results
+  /^\s*[\[【(（<]?\s*(?:tool[_\s-]?results?|tool[_\s-]?outputs?)\s*[\]】)）>]?\s*$/i,
+];
+
+/** 判断整条回复是否只是工具结果占位符（没有真实内容）。 */
+export function isPlaceholderOnlyReply(reply: string | null | undefined): boolean {
+  if (!reply || !reply.trim()) return false;
+  const text = reply.trim();
+  // 防御性长度上限：真正的占位符不会很长；避免把正常长文误判。
+  if (text.length > 40) return false;
+  return PLACEHOLDER_ONLY_PATTERNS.some((re) => re.test(text));
+}
+
+/**
  * 判断回复是否属于「过早停顿」。
  *
  * @param reply 模型本轮生成的文本
@@ -179,6 +208,11 @@ export function detectPrematureStop(
 ): PrematureStopKind | null {
   if (!reply || !reply.trim()) return null;
   const text = reply.trim();
+
+  // 0) 整条回复只是「[工具结果]」占位符——无论本轮有没有调工具都不算完成。
+  if (isPlaceholderOnlyReply(text)) {
+    return "placeholder_reply";
+  }
 
   // 1) 明确要用户回复「继续」——无论本轮有没有调用工具都算停顿
   //    （本轮调了工具还要求用户说继续，同样是多余的停顿）
@@ -251,6 +285,22 @@ export function buildContinuationDirective(ctx: ContinuationContext): string {
       lines.push(`用户的目标是：${ctx.userMessage.slice(0, 300)}`);
     }
     lines.push("请直接在回复中输出完整内容，覆盖用户要求的所有要点。");
+    return lines.join("\n");
+  }
+
+  if (ctx.kind === "placeholder_reply") {
+    lines.push("[系统指令] 你上一轮的最终回复**只有占位符**（如「[工具结果]」），没有任何面向用户的内容，**任务并未完成**。");
+    if (ctx.userMessage) {
+      lines.push(`用户的目标是：${ctx.userMessage.slice(0, 300)}`);
+    }
+    if (ctx.failedTools && ctx.failedTools.length > 0) {
+      lines.push(
+        "本轮以下工具执行失败，请换一种方式重试：\n" +
+          ctx.failedTools.map((f) => `  - \`${f.name}\`：${f.error}`).join("\n"),
+      );
+    }
+    lines.push("请立即真正执行任务：需要工具就调用工具（如 email / file_read / shell_exec 等），拿到返回后把**完整、可读的结果**直接写在最终回复里。");
+    lines.push("绝对禁止只输出「[工具结果]」「工具结果」「[tool result]」这类占位符；如果确实无法完成，请如实说明原因和下一步。");
     return lines.join("\n");
   }
 

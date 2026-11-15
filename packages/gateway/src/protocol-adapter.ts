@@ -1865,7 +1865,13 @@ export class ProtocolAdapter {
           return;
         }
         const stats = skillMgr.getLineageStats();
-        res.json({ enabled: true, ...(stats as object || {}) });
+        res.json({
+          enabled: true,
+          registered: true,
+          wired: true,
+          note: "lineage recorded on skill install/extraction (SkillManager) and on evolution apply (EvolutionApplier)",
+          ...(stats as object || {}),
+        });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -9421,7 +9427,13 @@ export class ProtocolAdapter {
           return;
         }
         const stats = executor.getRecordingStats();
-        res.json({ enabled: true, stats });
+        res.json({
+          enabled: true,
+          registered: true,
+          wired: true,
+          note: "recording started/ended in AgentModelExecutor.tryCallLLM around every chat run",
+          stats,
+        });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -9440,7 +9452,13 @@ export class ProtocolAdapter {
           return;
         }
         const stats = executor.getEvolutionTriggerStats();
-        res.json({ enabled: true, stats });
+        res.json({
+          enabled: true,
+          registered: true,
+          wired: true,
+          note: "EvolutionTriggers monitor runs in apps/server every 10 min; confirmed suggestions enter the evolution cycle",
+          stats,
+        });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
       }
@@ -9634,6 +9652,7 @@ export class ProtocolAdapter {
           serviceName: "ToolOutputPruner",
           version: "v0.56",
           registered: false,
+          wired: true,
           note: "module available; stats counters not yet instrumented",
           stats: {
             deduplicated: 0,
@@ -9656,6 +9675,7 @@ export class ProtocolAdapter {
           serviceName: "ErrorRecoveryExecutor",
           version: "v0.56",
           registered: false,
+          wired: true,
           note: "module available; stats counters not yet instrumented",
           stats: {
             recovered: 0,
@@ -9670,21 +9690,18 @@ export class ProtocolAdapter {
     });
 
     // GET /api/agent/concurrent-stats — ConcurrentToolExecutor 统计
-    app.get("/api/agent/concurrent-stats", (_req: Request, res: Response) => {
+    app.get("/api/agent/concurrent-stats", async (_req: Request, res: Response) => {
       try {
+        // 已接线：llm-caller 的并行安全批次通过 ConcurrentToolExecutor.execute。
+        const { getConcurrentToolExecutor } = await import("@evoclaw/agent");
         res.json({
           available: true,
           serviceName: "ConcurrentToolExecutor",
           version: "v0.56",
-          registered: false,
-          note: "module available; stats counters not yet instrumented",
-          stats: {
-            executed: 0,
-            parallelized: 0,
-            sequential: 0,
-            timeouts: 0,
-            averageConcurrency: 0,
-          },
+          registered: true,
+          wired: true,
+          note: "wired into llm-caller parallel-safe tool batch",
+          stats: getConcurrentToolExecutor().getStats(),
         });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -9699,6 +9716,7 @@ export class ProtocolAdapter {
           serviceName: "IterationBudget",
           version: "v0.56",
           registered: false,
+          wired: true,
           note: "module available; stats counters not yet instrumented",
           stats: {
             used: 0,
@@ -9716,20 +9734,17 @@ export class ProtocolAdapter {
     });
 
     // GET /api/agent/persistence-stats — ToolResultPersistenceManager 统计
-    app.get("/api/agent/persistence-stats", (_req: Request, res: Response) => {
+    app.get("/api/agent/persistence-stats", async (_req: Request, res: Response) => {
       try {
+        const { getToolResultPersistenceManager } = await import("@evoclaw/agent");
         res.json({
           available: true,
           serviceName: "ToolResultPersistenceManager",
           version: "v0.57",
-          registered: false,
-          note: "module available; stats counters not yet instrumented",
-          stats: {
-            persisted: 0,
-            spilled: 0,
-            totalChars: 0,
-            turnBudgetChars: 200000,
-          },
+          registered: true,
+          wired: true,
+          note: "wired into llm-caller after tool result transforms, before truncation",
+          stats: getToolResultPersistenceManager().getStats(),
         });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -9737,19 +9752,17 @@ export class ProtocolAdapter {
     });
 
     // GET /api/agent/schema-sanitizer-stats — SchemaSanitizer 统计
-    app.get("/api/agent/schema-sanitizer-stats", (_req: Request, res: Response) => {
+    app.get("/api/agent/schema-sanitizer-stats", async (_req: Request, res: Response) => {
       try {
+        const { getSchemaSanitizerStats } = await import("@evoclaw/agent");
         res.json({
           available: true,
           serviceName: "SchemaSanitizer",
           version: "v0.57",
-          registered: false,
-          note: "module available; stats counters not yet instrumented",
-          stats: {
-            sanitized: 0,
-            byBackend: {},
-            strippedKeys: 0,
-          },
+          registered: true,
+          wired: true,
+          note: "wired after buildOpenAITools; reactive sanitize on grammar/combinator errors",
+          stats: getSchemaSanitizerStats(),
         });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -9757,18 +9770,23 @@ export class ProtocolAdapter {
     });
 
     // GET /api/agent/coercer-stats — ToolArgumentCoercer 统计
-    app.get("/api/agent/coercer-stats", (_req: Request, res: Response) => {
+    app.get("/api/agent/coercer-stats", async (_req: Request, res: Response) => {
       try {
+        // 已接线：llm-caller 在每次工具调用前执行参数强制转换并累计统计。
+        const { getToolArgumentCoercionStats } = await import("@evoclaw/agent");
+        const stats = getToolArgumentCoercionStats();
         res.json({
           available: true,
           serviceName: "ToolArgumentCoercer",
           version: "v0.57",
           registered: false,
-          note: "module available; stats counters not yet instrumented",
+          wired: true,
+          note: "wired into llm-caller tool execution path",
           stats: {
-            coerced: 0,
-            byType: { stringToInt: 0, stringToNumber: 0, stringToBool: 0, jsonToObject: 0, bareToArray: 0 },
-            failed: 0,
+            calls: stats.calls,
+            coerced: stats.coerced,
+            byType: stats.byType,
+            failed: stats.failed,
           },
         });
       } catch (err) {
@@ -9777,20 +9795,35 @@ export class ProtocolAdapter {
     });
 
     // GET /api/agent/rate-guard-stats — CrossSessionRateGuard 统计
-    app.get("/api/agent/rate-guard-stats", (_req: Request, res: Response) => {
+    app.get("/api/agent/rate-guard-stats", async (_req: Request, res: Response) => {
       try {
+        const { getCrossSessionRateGuard } = await import("@evoclaw/agent");
         res.json({
           available: true,
           serviceName: "CrossSessionRateGuard",
           version: "v0.57",
-          registered: false,
-          note: "module available; stats counters not yet instrumented",
-          stats: {
-            breakerTripped: 0,
-            genuineRateLimits: 0,
-            transientLimits: 0,
-            activeProviders: 0,
-          },
+          registered: true,
+          wired: true,
+          note: "wired before provider call (skip genuine cooldown) and on RATE_LIMIT classification",
+          stats: getCrossSessionRateGuard().getStats(),
+        });
+      } catch (err) {
+        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      }
+    });
+
+    // GET /api/agent/iteration-policy-stats — IterationContextPolicy 统计
+    app.get("/api/agent/iteration-policy-stats", async (_req: Request, res: Response) => {
+      try {
+        const { getIterationContextPolicy } = await import("@evoclaw/agent");
+        res.json({
+          available: true,
+          serviceName: "IterationContextPolicy",
+          version: "v0.75",
+          registered: true,
+          wired: true,
+          note: "wired before each LLM call on a request-local message copy; system messages preserved; tool pairing repaired after truncation",
+          stats: getIterationContextPolicy().getStats(),
         });
       } catch (err) {
         res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
@@ -9805,6 +9838,7 @@ export class ProtocolAdapter {
           serviceName: "StreamingRecoveryManager",
           version: "v0.57",
           registered: false,
+          wired: true,
           note: "module available; stats counters not yet instrumented",
           stats: {
             recovered: 0,
@@ -9833,9 +9867,10 @@ export class ProtocolAdapter {
         res.json({
           available: true,
           serviceName: "ToolResultMiddleware",
-          version: "v0.57",
-          registered: false,
-          note: "singleton stats via getStats()",
+          version: "v0.75",
+          registered: true,
+          wired: true,
+          note: "transformResult() applied to every non-error tool result in llm-caller before persistence and truncation",
           stats,
           config,
         });

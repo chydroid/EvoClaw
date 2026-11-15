@@ -212,6 +212,16 @@ export class ConcurrentToolExecutor {
   private semaphore: AsyncSemaphore;
   private activeExecutions = new Map<string, { startTime: number; lastHeartbeat: number }>();
   private interrupted = false;
+  /** 运行期计数：证明执行池真的承载主链路并行批次 */
+  private stats = {
+    batches: 0,
+    executed: 0,
+    parallelized: 0,
+    sequential: 0,
+    timeouts: 0,
+    failures: 0,
+    maxObservedActive: 0,
+  };
 
   constructor(config: Partial<ConcurrentExecutorConfig> = {}) {
     this.config = { ...DEFAULT_CONCURRENT_CONFIG, ...config };
@@ -239,10 +249,12 @@ export class ConcurrentToolExecutor {
     if (!tools || tools.length === 0) return [];
 
     this.interrupted = false;
+    this.stats.batches++;
     const results: ToolExecutionResult[] = [];
 
     if (!this.config.enableSafetyClassification) {
       // 简单模式：全部并行（受信号量限制）
+      this.stats.parallelized += tools.length;
       const promises = tools.map((tool) => this.executeOne(tool, executor));
       const settled = await Promise.allSettled(promises);
       for (let i = 0; i < settled.length; i++) {
@@ -292,6 +304,11 @@ export class ConcurrentToolExecutor {
     for (const [, group] of pathScoped) {
       // 每个路径组只取第一个加入并行，其余串行
       if (group.length > 0) parallelTools.push(group[0]);
+    }
+    this.stats.parallelized += parallelTools.length;
+    this.stats.sequential += neverParallel.length;
+    for (const [, group] of pathScoped) {
+      if (group.length > 1) this.stats.sequential += group.length - 1;
     }
 
     // 并行执行 safe-parallel + 每个路径组的第一个
@@ -379,6 +396,8 @@ export class ConcurrentToolExecutor {
 
     const startTime = Date.now();
     this.activeExecutions.set(tool.id, { startTime, lastHeartbeat: startTime });
+    this.stats.executed++;
+    this.stats.maxObservedActive = Math.max(this.stats.maxObservedActive, this.activeExecutions.size);
     // AbortController：超时后标记取消，executor 若支持 signal 可据此提前终止
     const abortController = new AbortController();
 
@@ -402,6 +421,7 @@ export class ConcurrentToolExecutor {
     const timeoutPromise = new Promise<ToolExecutionResult>((resolve) => {
       timeoutHandle = setTimeout(() => {
         timedOut = true;
+        this.stats.timeouts++;
         // 标记取消：executor 若支持 signal 会据此终止后台执行
         abortController.abort();
         logger_warn(`tool ${tool.name} timed out, aborted`, { toolId: tool.id, toolName: tool.name, timeoutMs: this.config.toolTimeoutMs });
@@ -426,6 +446,7 @@ export class ConcurrentToolExecutor {
           durationMs: Date.now() - startTime,
         } as ToolExecutionResult;
       } catch (err) {
+        this.stats.failures++;
         return {
           id: tool.id,
           success: false,
@@ -504,6 +525,27 @@ export class ConcurrentToolExecutor {
     if (config.maxConcurrency && this.activeExecutions.size === 0) {
       this.semaphore = new AsyncSemaphore(config.maxConcurrency);
     }
+  }
+
+  /**
+   * 运行期统计（供 EnhancementHub 展示真实接线）。
+   */
+  getStats(): {
+    batches: number;
+    executed: number;
+    parallelized: number;
+    sequential: number;
+    timeouts: number;
+    failures: number;
+    maxObservedActive: number;
+    activeCount: number;
+    maxConcurrency: number;
+  } {
+    return {
+      ...this.stats,
+      activeCount: this.getActiveCount(),
+      maxConcurrency: this.config.maxConcurrency,
+    };
   }
 
   /**

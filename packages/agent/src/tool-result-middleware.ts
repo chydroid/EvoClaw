@@ -146,6 +146,12 @@ export class ToolResultMiddleware {
   private executionMiddlewares: ToolExecutionMiddleware[] = [];
   private resultTransforms: ToolResultTransform[] = [];
   private terminalOutputTransforms: TerminalOutputTransform[] = [];
+  /** 运行期计数：证明中间件真的被主执行链驱动 */
+  private executionStats = {
+    executions: 0,
+    resultTransformApplications: 0,
+    transformedResults: 0,
+  };
 
   constructor(config: Partial<MiddlewareConfig> = {}) {
     this.config = { ...DEFAULT_MIDDLEWARE_CONFIG, ...config };
@@ -196,6 +202,7 @@ export class ToolResultMiddleware {
     ctx: ToolCallContext,
     executor: (ctx: ToolCallContext) => Promise<ToolResultContext>,
   ): Promise<ToolResultContext> {
+    this.executionStats.executions++;
     let currentCtx = ctx;
 
     // 1. 应用请求中间件（可改写 args）
@@ -316,6 +323,30 @@ export class ToolResultMiddleware {
   }
 
   /**
+   * 仅应用结果转换 hook（不包装执行）。
+   *
+   * 主执行链在工具已经返回、错误/权限等语义判定完成之后调用此方法，
+   * 用于对进入模型上下文的字符串结果做脱敏/大小限制/格式转换。
+   * 返回新的结果值；没有转换器或未命中时原样返回。
+   */
+  transformResult(ctx: ToolResultContext): ToolResultContext {
+    this.executionStats.resultTransformApplications++;
+    if (
+      !this.config.enableResultTransform ||
+      (this.resultTransforms.length === 0 && this.terminalOutputTransforms.length === 0)
+    ) {
+      return ctx;
+    }
+    const transformed = this.applyTransforms(ctx);
+    // 只统计「内容真的改变」的结果：脱敏转换器即使未命中也会返回新对象，
+    // 否则 transformedResults 会退化为调用次数。
+    if (transformed.result !== ctx.result) {
+      this.executionStats.transformedResults++;
+    }
+    return transformed;
+  }
+
+  /**
    * 清除所有中间件。
    */
   clear(): void {
@@ -333,12 +364,16 @@ export class ToolResultMiddleware {
     executionMiddlewares: number;
     resultTransforms: number;
     terminalOutputTransforms: number;
+    executions: number;
+    resultTransformApplications: number;
+    transformedResults: number;
   } {
     return {
       requestMiddlewares: this.requestMiddlewares.length,
       executionMiddlewares: this.executionMiddlewares.length,
       resultTransforms: this.resultTransforms.length,
       terminalOutputTransforms: this.terminalOutputTransforms.length,
+      ...this.executionStats,
     };
   }
 

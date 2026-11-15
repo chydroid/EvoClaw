@@ -481,6 +481,42 @@ export class EvolutionEngine {
     track(SystemEvents.EVOLUTION_ROLLBACK, handleHotReloadEvent);
   }
 
+  /**
+   * 三触发器演化建议的 LLM 二次确认入口。
+   * 由 EvolutionTriggers 的 LlmConfirmationFn 调用（服务端接线）。
+   */
+  async confirmEvolutionSuggestion(suggestion: {
+    type: string;
+    targetSkillIds: string[];
+    reason: string;
+    proposedChange: string;
+    triggeredBy: string;
+  }): Promise<{ confirmed: boolean; reason: string }> {
+    return this.llmReflector.confirmSuggestion(suggestion);
+  }
+
+  /**
+   * 把已确认的触发器建议送入正常演化周期（评估 + 沙箱 + 发布）。
+   * 不绕过 EvolutionEngine 的 threshold/evaluator/applier 链路。
+   */
+  async submitTriggeredEvolution(suggestion: {
+    type: string;
+    targetSkillIds: string[];
+    reason: string;
+    proposedChange: string;
+    triggeredBy: string;
+    triggerMetrics?: Record<string, unknown>;
+  }): Promise<EvolutionCycle> {
+    return this.startEvolutionCycle("performance_degradation", {
+      description: suggestion.reason,
+      suggestionType: suggestion.type,
+      targetSkillIds: suggestion.targetSkillIds,
+      proposedChange: suggestion.proposedChange,
+      triggeredBy: suggestion.triggeredBy,
+      triggerMetrics: suggestion.triggerMetrics ?? {},
+    });
+  }
+
   async startEvolutionCycle(
     source: "task_failure" | "user_feedback" | "usage_pattern" | "performance_degradation" | "manual",
     input: Record<string, unknown>

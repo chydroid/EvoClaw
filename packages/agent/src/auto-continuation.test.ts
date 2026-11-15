@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
+import {
+  detectPrematureStop,
+  buildContinuationDirective,
+  isPlaceholderOnlyReply,
+} from "./auto-continuation";
 
 describe("detectPrematureStop — 识别「该继续却停下来问人」", () => {
   // 真实事故话术（来自 2026-10-07 的会话记录）
@@ -49,6 +53,32 @@ describe("detectPrematureStop — 识别「该继续却停下来问人」", () =
 
   it("「请在审批通过后让我重新确认结果」不误判（审批属正常停顿）", () => {
     expect(detectPrematureStop("⚠️ 更正：以下操作仍在等待你的审批，请在审批通过后让我重新确认结果。")).toBeNull();
+  });
+});
+
+describe("占位符回复 — 2026-11-16 邮箱任务事故", () => {
+  it("整条回复只有「[工具结果]」→ placeholder_reply", () => {
+    expect(detectPrematureStop("[工具结果]")).toBe("placeholder_reply");
+    expect(detectPrematureStop("【工具结果】")).toBe("placeholder_reply");
+    expect(detectPrematureStop("工具执行结果")).toBe("placeholder_reply");
+    expect(detectPrematureStop("[tool result]")).toBe("placeholder_reply");
+  });
+
+  it("isPlaceholderOnlyReply 只认整条占位符，不误伤正文引用", () => {
+    expect(isPlaceholderOnlyReply("[工具结果]")).toBe(true);
+    expect(isPlaceholderOnlyReply("工具已执行完毕，结果如下：共 3 封未读邮件")).toBe(false);
+    expect(isPlaceholderOnlyReply("[工具结果]\n错误：未找到邮箱账户")).toBe(false);
+  });
+
+  it("占位符续跑指令要求真正执行并禁止再次输出占位符", () => {
+    const d = buildContinuationDirective({
+      kind: "placeholder_reply",
+      userMessage: "检查我现在的邮箱 chydroid@163.com 内容并整理提示我重要信息",
+    });
+    expect(d).toContain("占位符");
+    expect(d).toContain("任务并未完成");
+    expect(d).toContain("绝对禁止只输出");
+    expect(d).toContain("chydroid@163.com");
   });
 });
 

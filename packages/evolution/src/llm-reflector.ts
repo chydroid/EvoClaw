@@ -123,6 +123,77 @@ export class LLMReflector {
   }
 
   /**
+   * 演化建议二次确认（供 EvolutionTriggers 的 LlmConfirmationFn 使用）。
+   *
+   * 借鉴 OpenSpace _llm_confirm_evolution：任何自动演化执行前必须由 LLM
+   * 复核「这个建议是否值得应用」，避免规则阈值误报导致技能被污染。
+   * LLM 不可用或输出不可解析时保守返回 confirmed=false。
+   */
+  async confirmSuggestion(suggestion: {
+    type: string;
+    targetSkillIds: string[];
+    reason: string;
+    proposedChange: string;
+    triggeredBy: string;
+  }): Promise<{ confirmed: boolean; reason: string }> {
+    const executor = this.resolveLLMExecutor();
+    if (!executor) {
+      return { confirmed: false, reason: "LLM executor unavailable — conservative reject" };
+    }
+
+    const systemPrompt =
+      "You are the evolution gatekeeper for an AI agent. Decide whether an automatically " +
+      "detected evolution suggestion should be applied. Reject anything vague, duplicated, " +
+      "unsafe, or unsupported by the stated evidence. Respond with STRICT JSON only: " +
+      '{"confirmed":true|false,"reason":"..."}';
+    const userPrompt = [
+      `type: ${suggestion.type}`,
+      `triggeredBy: ${suggestion.triggeredBy}`,
+      `targetSkillIds: ${suggestion.targetSkillIds.join(", ") || "(none)"}`,
+      `reason: ${suggestion.reason}`,
+      `proposedChange: ${(suggestion.proposedChange || "(empty)").slice(0, 4000)}`,
+    ].join("\n");
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.llmTimeoutMs);
+    if (timeout.unref) timeout.unref();
+
+    try {
+      let output: string;
+      if (typeof executor.execute === "function") {
+        const result = await executor.execute(
+          { systemPrompt, prompt: userPrompt },
+          { signal: controller.signal as AbortSignal },
+        );
+        output = result.content;
+      } else {
+        const providers = executor.getProviders().filter((p) => p.enabled);
+        if (providers.length === 0) {
+          return { confirmed: false, reason: "no enabled provider — conservative reject" };
+        }
+        output = await this.callProviderDirectly(providers[0], systemPrompt, userPrompt, controller.signal);
+      }
+
+      const jsonMatch = /\{[\s\S]*\}/.exec(output);
+      if (!jsonMatch) {
+        return { confirmed: false, reason: "confirmation output was not JSON — conservative reject" };
+      }
+      const parsed = JSON.parse(jsonMatch[0]) as { confirmed?: unknown; reason?: unknown };
+      return {
+        confirmed: parsed.confirmed === true,
+        reason: typeof parsed.reason === "string" ? parsed.reason : "",
+      };
+    } catch (err) {
+      return {
+        confirmed: false,
+        reason: `confirmation failed: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  /**
    * 交叉验证：结合 LLM 反思和内部评分
    */
   async crossValidate(

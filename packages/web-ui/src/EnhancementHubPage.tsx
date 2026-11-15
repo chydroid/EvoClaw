@@ -8,6 +8,11 @@ import React, { useEffect, useState, useCallback } from "react";
 import { PageHeader, Card, Badge, Loading, ErrorBanner } from "./shared";
 import { useTranslation } from "./i18n";
 import { errorMessage } from "./api-error";
+import {
+  deriveCapabilityState,
+  describeMetrics,
+  isHealthyServiceStatus,
+} from "./enhancement-status";
 
 interface CapabilityStatus {
   active: boolean;
@@ -196,7 +201,9 @@ const CAPABILITIES: CapabilityDef[] = [
     module: "@evoclaw/memory",
     tags: ["可视化", "借鉴"],
     apiPath: "/api/canvas-graph/snapshot",
-    statusKey: "symbolicMemoryCanvas",
+    // 画布由 MemoryHub 持有，没有独立的 symbolicMemoryCanvas 服务；
+    // 用 memoryHub 的服务状态判断能力是否在线（当前无活动画布 ≠ 能力未就绪）。
+    statusKey: "memoryHub",
   },
   {
     id: "tool-result-cache",
@@ -242,7 +249,8 @@ const CAPABILITIES: CapabilityDef[] = [
     description: "限制召回记忆总 token 数，超长单条记忆自动截断并暴露 _truncatedText，避免撑爆 prompt。",
     module: "@evoclaw/memory",
     tags: ["上下文管理", "记忆"],
-    statusKey: "recallBudget",
+    // 召回预算由 MemoryHub 的分层记忆路径执行，随 memoryHub 服务在线。
+    statusKey: "memoryHub",
   },
   // ── v0.70 新增：借鉴 OpenSpace 闭环演化引擎 ──
   {
@@ -302,6 +310,7 @@ const CAPABILITIES: CapabilityDef[] = [
     description: "基于迭代轮次的渐进式上下文裁剪：第 2 轮起 cap 单条消息，第 5 轮起 truncate 历史，首轮后剥离技能上下文（借鉴 OpenSpace grounding_agent）。",
     module: "@evoclaw/agent",
     tags: ["上下文管理", "成本控制"],
+    apiPath: "/api/agent/iteration-policy-stats",
     statusKey: "iterationContextPolicy",
   },
   // ── v0.70 新增：一线 AI Agent 能力对齐 ──
@@ -421,12 +430,12 @@ const s = {
     background: "var(--accent-bg)", color: "var(--accent)", border: "1px solid var(--accent)",
   } as React.CSSProperties,
   footer: { marginTop: "auto", paddingTop: "8px", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" } as React.CSSProperties,
-  status: (active: boolean): React.CSSProperties => ({
+  status: (active: boolean, color?: string): React.CSSProperties => ({
     display: "flex", alignItems: "center", gap: "5px", fontSize: "12px", fontWeight: 600,
-    color: active ? "var(--success)" : "var(--text-muted)",
+    color: color ?? (active ? "var(--success)" : "var(--text-muted)"),
   }),
-  dot: (active: boolean): React.CSSProperties => ({
-    width: "7px", height: "7px", borderRadius: "50%", background: active ? "var(--success)" : "var(--text-muted)",
+  dot: (active: boolean, color?: string): React.CSSProperties => ({
+    width: "7px", height: "7px", borderRadius: "50%", background: color ?? (active ? "var(--success)" : "var(--text-muted)"),
   }),
   metrics: { fontSize: "11px", color: "var(--text-muted)", textAlign: "right" as const } as React.CSSProperties,
   summary: {
@@ -448,7 +457,7 @@ async function fetchServiceStatus(): Promise<Record<string, boolean>> {
     const services = Array.isArray(data) ? data : data?.services || [];
     const map: Record<string, boolean> = {};
     for (const svc of services) {
-      if (svc?.name) map[svc.name] = svc.status === "ok" || svc.status === "healthy" || svc.status === "online";
+      if (svc?.name) map[svc.name] = isHealthyServiceStatus(svc.status);
     }
     return map;
   } catch {
@@ -497,13 +506,18 @@ export function EnhancementHubPage(): React.ReactElement {
 
   useEffect(() => { load(); }, [load]);
 
-  const activeCount = CAPABILITIES.filter((cap) => {
+  // 每张卡的状态由「服务注册表 + 指标端点」两路证据共同决定。
+  // 缺一不可：只看服务注册表会把纯模块误判为未就绪，只看指标端点
+  // 则无法区分"已接线"与"模块可用但统计未接线"。
+  const states = CAPABILITIES.map((cap) => {
     const key = cap.statusKey || cap.id;
-    if (serviceMap[key] !== undefined) return serviceMap[key];
-    // Fail-closed: 未注册的服务显示为"未就绪"而非"已激活"，
-    // 避免向后端尚未实现的能力显示虚假的绿色勾选。
-    return false;
-  }).length;
+    const registered = Object.prototype.hasOwnProperty.call(serviceMap, key)
+      ? serviceMap[key]
+      : undefined;
+    return deriveCapabilityState(registered, metricsMap[cap.id] ?? null);
+  });
+  const activeCount = states.filter((st) => st === "active").length;
+  const availableCount = states.filter((st) => st === "available").length;
 
   // Derive release rounds count from unique version values in CAPABILITIES,
   // instead of hardcoding "2" which drifts as new versions are added.
@@ -532,6 +546,14 @@ export function EnhancementHubPage(): React.ReactElement {
         {t("enhancement.intro", "本页面集中展示 EvoClaw 近期从任务完成能力维度补齐的核心能力，覆盖可靠性、上下文管理、多后端兼容、并发执行与成本控制等方面。")}
       </div>
 
+      <div style={{ ...s.intro, fontSize: "12px", lineHeight: 1.8 }}>
+        <strong>状态说明：</strong>
+        <span style={{ color: "var(--success, #2e7d32)" }}>● 已激活</span> = 服务已注册并运行，或指标端点确认已启用；
+        <span style={{ color: "var(--warning, #b26a00)" }}> ● 模块可用</span> = 代码模块存在且端点可达，但未注册为常驻服务（统计可能未接线）；
+        <span style={{ color: "var(--text-muted)" }}> ● 未启用</span> = 端点明确返回 enabled:false；
+        <span style={{ color: "var(--text-muted)" }}> ● 未检测</span> = 无服务状态与指标端点。
+      </div>
+
       <div style={s.summary}>
         <div style={s.summaryBox}>
           <div style={s.summaryNum}>{CAPABILITIES.length}</div>
@@ -540,6 +562,10 @@ export function EnhancementHubPage(): React.ReactElement {
         <div style={s.summaryBox}>
           <div style={s.summaryNum}>{activeCount}</div>
           <div style={s.summaryLabel}>{t("enhancement.active_capabilities", "已激活能力")}</div>
+        </div>
+        <div style={s.summaryBox}>
+          <div style={s.summaryNum}>{availableCount}</div>
+          <div style={s.summaryLabel}>{t("enhancement.available_capabilities", "模块可用（未注册服务）")}</div>
         </div>
         <div style={s.summaryBox}>
           <div style={s.summaryNum}>{releaseRoundCount}</div>
@@ -551,15 +577,25 @@ export function EnhancementHubPage(): React.ReactElement {
       {loading && <Loading />}
 
       <div style={s.grid}>
-        {CAPABILITIES.map((cap) => {
-          const key = cap.statusKey || cap.id;
-          // Fail-closed: 未在 /api/system/services 中报告的服务视为未就绪
-          const active = serviceMap[key] !== undefined ? serviceMap[key] : false;
+        {CAPABILITIES.map((cap, idx) => {
+          const state = states[idx] ?? "unknown";
+          const active = state === "active";
           const metrics = metricsMap[cap.id];
-          // 当 metrics 报告 enabled: false（占位响应）时，不显示指标数；
-          // 否则按字段数展示。
-          const metricsEnabled = metrics && metrics.enabled !== false;
-          const metricCount = metricsEnabled ? Object.keys(metrics).length : 0;
+          const metricsDetail = describeMetrics(state, metrics);
+          const stateLabel =
+            state === "active"
+              ? t("enhancement.status.active", "已激活")
+              : state === "available"
+                ? t("enhancement.status.available", "模块可用")
+                : state === "inactive"
+                  ? t("enhancement.status.disabled", "未启用")
+                  : t("enhancement.status.unknown", "未检测");
+          const stateColor =
+            state === "active"
+              ? "var(--success)"
+              : state === "available"
+                ? "var(--warning, #b26a00)"
+                : undefined;
 
           return (
             <div key={cap.id} style={s.card}>
@@ -577,16 +613,18 @@ export function EnhancementHubPage(): React.ReactElement {
                 ))}
               </div>
               <div style={s.footer}>
-                <div style={s.status(active)}>
-                  <span style={s.dot(active)} />
-                  {active ? t("enhancement.status.active", "已激活") : t("enhancement.status.inactive", "未就绪")}
+                <div style={s.status(active, stateColor)} title={stateLabel}>
+                  <span style={s.dot(active, stateColor)} />
+                  {stateLabel}
                 </div>
                 <div style={s.metrics}>
-                  {metricsEnabled && metricCount > 0
-                    ? t("enhancement.metrics_count", "{0} 项指标").replace("{0}", String(metricCount))
-                    : active
-                      ? t("enhancement.no_metrics", "无实时指标")
-                      : t("enhancement.service_not_registered", "服务未注册")}
+                  {metricsDetail
+                    ? metricsDetail
+                    : metrics
+                      ? t("enhancement.metrics_reachable", "端点可达")
+                      : state === "unknown"
+                        ? t("enhancement.service_not_registered", "服务未注册")
+                        : t("enhancement.no_metrics", "无实时指标")}
                 </div>
               </div>
             </div>

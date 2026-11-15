@@ -150,6 +150,13 @@ export class CrossSessionRateGuard {
   private stateDir: string;
   private cache: Map<string, CrossSessionRateLimitState> = new Map();
   private cacheLoaded = false;
+  /** 运行期计数：证明守卫真的位于 LLM 调用路径上 */
+  private stats = {
+    checks: 0,
+    skippedRequests: 0,
+    genuineRateLimits: 0,
+    transientLimits: 0,
+  };
 
   constructor(config: Partial<RateGuardConfig> = {}) {
     this.config = { ...DEFAULT_RATE_GUARD_CONFIG, ...config };
@@ -187,6 +194,11 @@ export class CrossSessionRateGuard {
 
     // 更新缓存
     this.cache.set(provider, state);
+    if (state.isGenuine) {
+      this.stats.genuineRateLimits++;
+    } else {
+      this.stats.transientLimits++;
+    }
 
     // 持久化到文件
     this.saveState(provider, state);
@@ -228,7 +240,15 @@ export class CrossSessionRateGuard {
    * 检查是否应该跳过请求（仍在冷却期）。
    */
   shouldSkipRequest(provider: string): boolean {
-    return this.getRemainingCooldown(provider) > 0;
+    this.stats.checks++;
+    this.ensureCacheLoaded();
+    const state = this.cache.get(provider);
+    // 只有「真正的配额耗尽」才跳过；短窗口瞬时限流应交给重试/退避阶梯，
+    // 否则一次 429（Retry-After 几秒）会让该 provider 被错误跳过整个窗口。
+    if (!state || !state.isGenuine) return false;
+    const skip = this.getRemainingCooldown(provider) > 0;
+    if (skip) this.stats.skippedRequests++;
+    return skip;
   }
 
   /**
@@ -266,6 +286,27 @@ export class CrossSessionRateGuard {
       this.deleteState(provider);
     }
     this.cache.clear();
+  }
+
+  /** 运行期统计（供 EnhancementHub 展示真实接线）。 */
+  getStats(): {
+    checks: number;
+    skippedRequests: number;
+    genuineRateLimits: number;
+    transientLimits: number;
+    activeProviders: number;
+    activeCooldowns: Array<{ provider: string; remainingMs: number; isGenuine: boolean }>;
+  } {
+    const active = this.getAllStates();
+    return {
+      ...this.stats,
+      activeProviders: active.length,
+      activeCooldowns: active.map((s) => ({
+        provider: s.provider,
+        remainingMs: Math.max(0, s.resetAt - Date.now()),
+        isGenuine: s.isGenuine,
+      })),
+    };
   }
 
   /**

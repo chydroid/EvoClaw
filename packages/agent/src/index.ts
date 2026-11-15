@@ -395,14 +395,19 @@ export type { BudgetConfig, PersistedOutputInfo, TurnBudgetResult, TurnMessage }
 // Schema Sanitizer — JSON Schema 清洗器（多后端兼容）
 // 借鉴 hermes-agent tools/schema_sanitizer.py：
 //   llama.cpp/OpenAI Codex/Fireworks/xAI/Anthropic 后端兼容性清洗
-export { sanitizeToolSchemas, reactiveSanitize } from "./schema-sanitizer";
-export type { ToolSchema, JsonSchema as SchemaJson, BackendType, SanitizeOptions } from "./schema-sanitizer";
+export { sanitizeToolSchemas, reactiveSanitize, getSchemaSanitizerStats, resetSchemaSanitizerStats } from "./schema-sanitizer";
+export type { ToolSchema, JsonSchema as SchemaJson, BackendType, SanitizeOptions, SchemaSanitizerStats } from "./schema-sanitizer";
 
 // Tool Argument Coercer — 工具参数类型强制转换器
 // 借鉴 hermes-agent model_tools.py _coerce_value/_coerce_json：
 //   运行时参数类型校正（string→int/number/boolean/array/object）
-export { coerceValue, coerceToolArguments } from "./tool-argument-coercer";
-export type { CoerceResult } from "./tool-argument-coercer";
+export {
+  coerceValue,
+  coerceToolArguments,
+  recordToolArgumentCoercion,
+  getToolArgumentCoercionStats,
+} from "./tool-argument-coercer";
+export type { CoerceResult, ToolArgumentCoercionStats } from "./tool-argument-coercer";
 
 // Cross-Session Rate Guard — 跨会话速率限制守卫
 // 借鉴 hermes-agent agent/nous_rate_guard.py：
@@ -628,6 +633,7 @@ export type {
 // ToolQualityManager — 工具质量跟踪 + 惩罚式排序（借鉴 OpenSpace ToolQualityManager）
 //   recordExecution / getPenalty / adjustRanking / recordLlmToolIssues / getQualityReport
 export { ToolQualityManager } from "./tool-quality-manager";
+export { toolQualityManager } from "./enhancement-runtime";
 export type {
   ToolExecutionRecord,
   ToolQualityRecord,
@@ -656,8 +662,17 @@ export type {
 
 // IterationContextPolicy — 基于迭代轮次的渐进式上下文裁剪（借鉴 OpenSpace grounding_agent）
 //   第 2 轮起 cap 单条消息；第 5 轮起 truncate 历史；首轮后剥离技能上下文
-export { IterationContextPolicy } from "./iteration-context-policy";
-export type { IterationPolicyConfig, PolicyMessage, PolicyResult } from "./iteration-context-policy";
+export {
+  IterationContextPolicy,
+  getIterationContextPolicy,
+  resetIterationContextPolicy,
+} from "./iteration-context-policy";
+export type {
+  IterationPolicyConfig,
+  IterationPolicyStats,
+  PolicyMessage,
+  PolicyResult,
+} from "./iteration-context-policy";
 
 // MessageUtils — 消息工具函数（借鉴 OpenSpace message_utils.py）
 //   cap_message_content 头尾保留 + 截断通知注入 + 分节截断常量

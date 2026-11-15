@@ -28,6 +28,13 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { SkillAutoGenerator } from "./skill-auto-generator";
+import {
+  LineageStore,
+  ensureSkillIdSidecar,
+  writeSkillIdSidecar,
+  generateSkillId,
+  type EvolutionType,
+} from "@evoclaw/skills";
 
 export interface ApplyResult {
   applied: boolean;
@@ -232,6 +239,12 @@ export class EvolutionApplier {
       } catch { /* ignore */ }
     }
 
+    this.recordEvolutionLineage(
+      skillMd,
+      candidate.type === "skill_update" ? "fix" : "derived",
+      `${cycle.source}:${candidate.id}: ${candidate.proposedChanges?.description || ""}`,
+    );
+
     this.emitApplied(cycle, candidate, "skill_updated", skillMd, `技能 ${skillId} 已应用补丁（v${currentVersion} → v${newVersion}）`);
     return {
       applied: true,
@@ -365,6 +378,43 @@ export class EvolutionApplier {
       }
     }
     return null;
+  }
+
+  /**
+   * 记录一次演化血缘：旧版本 id → 新版本 id。
+   *
+   * 原地更新 SKILL.md 后，内容身份发生变化；这里生成新的 .skill_id 并写入
+   * lineages.json，父 ID 是更新前的 sidecar。FIX 会让父版本失活，DERIVED
+   * 保留父版本激活（语义见 evolution-types.ts）。
+   */
+  private recordEvolutionLineage(
+    skillMd: string,
+    evolutionType: EvolutionType,
+    reason: string,
+  ): void {
+    try {
+      const lineageStore = this.registry.resolveService<LineageStore>("lineageStore");
+      if (!lineageStore) return;
+      const skillDir = path.dirname(skillMd);
+      const parentId = ensureSkillIdSidecar(skillDir);
+      const childId = generateSkillId();
+      if (lineageStore.getLineage(childId)) return;
+      lineageStore.addLineage({
+        skillId: childId,
+        parentIds: [parentId],
+        evolutionType,
+        contentSnapshot: fs.readFileSync(skillMd, "utf-8").slice(0, 200_000),
+        evolvedAt: Date.now(),
+        reason: reason.slice(0, 500),
+        isActive: true,
+      });
+      // sidecar 指向当前内容版本（目录改名/重启后仍能追溯）
+      writeSkillIdSidecar(skillDir, childId);
+    } catch (err) {
+      process.stderr.write(
+        `[EvolutionApplier] lineage record failed: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+    }
   }
 
   private resolveSkillManager(): {

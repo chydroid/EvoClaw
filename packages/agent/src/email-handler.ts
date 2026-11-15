@@ -208,7 +208,27 @@ export async function handleEmailOperation(
 
   const sendEmailKeywords = ["发邮件", "发送邮件", "发信", "写信", "发一封", "发e-mail", "发email", "寄信", "寄邮件"];
   const isSendEmailOp = sendEmailKeywords.some(kw => lowerMsg.includes(kw)) && /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/.test(message);
-  const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw)) || isSendEmailOp;
+
+  // ★ 2026-11-16 修复（sess_mwi1icd1_ac890223 真实事故）：
+  //   用户说「检查我现在的邮箱 chydroid@163.com 内容并整理提示我重要信息」。
+  //   旧实现只匹配固定短语（"整理邮件"/"查看邮件"…），这条自然表述一条都不命中，
+  //   于是落到 LLM；弱模型只回了占位符「[工具结果]」，任务完全没有执行。
+  //   现在改为「动作词 + 邮件对象」的组合判定，覆盖检查/查看/整理/汇总等自然说法，
+  //   同时显式排除添加/配置账号类意图（那些仍走 detectAndConfigureEmailAccount）。
+  const emailObjectPattern = /(?:邮箱|邮件|收件箱|inbox)/i;
+  const inspectVerbPattern = /(?:检查|查看|看看|看一下|整理|汇总|总结|分析|列出|列举|读取|扫描|清理|提示|报告|统计)/;
+  const isAccountConfigIntent =
+    /(?:添加|新增|配置|绑定|设置|注册|修改|删除|移除|解绑).{0,12}(?:邮箱|邮件|账号|账户)/.test(message) ||
+    /(?:邮箱|邮件|账号|账户).{0,12}(?:授权码|密码|配置|服务器|imap|smtp)/i.test(message);
+  // 长度上限防止把「粘贴一大段邮件正文让我总结」误判成收件箱操作；
+  // 真正的收件箱指令通常很短。
+  const hasInboxIntent =
+    !isAccountConfigIntent &&
+    message.length <= 300 &&
+    ((inspectVerbPattern.test(message) && emailObjectPattern.test(message)) ||
+      /(?:未读|重要邮件|邮件内容|邮件列表|收件箱)/.test(message));
+
+  const isEmailOp = emailKeywords.some(kw => lowerMsg.includes(kw)) || isSendEmailOp || hasInboxIntent;
 
   if (!isEmailOp) {
     return null;
@@ -345,7 +365,7 @@ export async function handleEmailOperation(
           tokensUsed: 0,
           duration: 0,
           permissionRequests: [],
-          toolsExecuted: false,
+          toolsExecuted: true,
         };
       } else {
         return {
@@ -393,7 +413,7 @@ export async function handleEmailOperation(
     };
   }
 
-  const accountsData = accountsResult as { success: boolean; accounts?: unknown[] };
+  const accountsData = accountsResult as { success: boolean; accounts?: Array<{ id: string; email: string }> };
   if (!accountsData?.success || !accountsData.accounts?.length) {
     return {
       reply: `📭 您还没有配置任何邮箱账号。\n\n请先提供邮箱信息，例如：\n📧 邮箱账号：yourname@163.com\n🔑 授权码：您的授权码`,
@@ -403,6 +423,29 @@ export async function handleEmailOperation(
       toolsExecuted: false,
     };
   }
+
+  // 用户明确点名某个邮箱时（"我的邮箱 xxx@163.com"），只读该账号；
+  // 不能静默改读其它账号——那会把别人的收件箱当成用户要的内容汇报。
+  const mailboxMatch = message.match(
+    /(?:我的|我现在的|当前的|这个)?\s*(?:邮箱|收件箱)\s*[:：]?\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+  );
+  const requestedEmail = mailboxMatch?.[1]?.toLowerCase();
+  const targetAccount = requestedEmail
+    ? accountsData.accounts.find((a) => a.email.toLowerCase() === requestedEmail)
+    : undefined;
+  if (requestedEmail && !targetAccount) {
+    return {
+      reply: `⚠️ 未找到邮箱账号 ${requestedEmail}。\n\n当前已配置的账号：\n${accountsData.accounts
+        .map((a) => `• ${a.email}`)
+        .join("\n")}\n\n如果你想读取其它账号，请直接使用已配置的邮箱地址；如果要添加新账号，请提供邮箱地址和授权码。`,
+      tokensUsed: 0,
+      duration: 0,
+      permissionRequests: [],
+      toolsExecuted: false,
+    };
+  }
+  const accountId = targetAccount?.id;
+  const accountLabel = targetAccount?.email || accountsData.accounts.map((a) => a.email).join("、");
 
   // Get inbox summary
   if (!deps.registeredTools.has("email")) {
@@ -428,7 +471,11 @@ export async function handleEmailOperation(
   let summaryResult: unknown;
   try {
     const summaryTool = deps.registeredTools.get("email")!;
-    summaryResult = await summaryTool.handler(since ? { action: "inbox_summary", since } : { action: "inbox_summary" });
+    summaryResult = await summaryTool.handler({
+      action: "inbox_summary",
+      ...(accountId ? { accountId } : {}),
+      ...(since ? { since } : {}),
+    });
   } catch (err) {
     return {
       reply: `❌ 获取收件箱摘要失败：${err instanceof Error ? err.message : String(err)}`,
@@ -462,7 +509,12 @@ export async function handleEmailOperation(
   if (deps.registeredTools.has("email")) {
     try {
       const inboxTool = deps.registeredTools.get("email")!;
-      const inboxResult = await inboxTool.handler(since ? { action: "list_inbox", limit: 50, since } : { action: "list_inbox", limit: 50 });
+      const inboxResult = await inboxTool.handler({
+        action: "list_inbox",
+        limit: 50,
+        ...(accountId ? { accountId } : {}),
+        ...(since ? { since } : {}),
+      });
       const inboxData = inboxResult as {
         success: boolean;
         emails?: Array<{ subject: string; from: string; date: Date | string; snippet: string; flags: string[]; categories?: string[] }>;
@@ -509,7 +561,8 @@ export async function handleEmailOperation(
   });
   let report = `📬 邮箱整理报告（${rangeLabel}）\n`;
   report += `━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
-  report += `📅 生成时间：${reportTime}\n\n`;
+  report += `📅 生成时间：${reportTime}\n`;
+  report += `📧 邮箱账号：${accountLabel}${targetAccount ? "" : "（默认尝试可用账号）"}\n\n`;
 
   // 读取失败时如实告知，绝不伪装成"空邮箱"
   if (fetchError) {
@@ -572,6 +625,6 @@ export async function handleEmailOperation(
     tokensUsed: 0,
     duration: 0,
     permissionRequests: [],
-    toolsExecuted: false,
+    toolsExecuted: true,
   };
 }
