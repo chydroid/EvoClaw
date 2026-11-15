@@ -79,9 +79,40 @@
 
 ---
 
-## 明确不做（本轮）
+## 4. web 搜索后端注册表（本轮执行）
 
-- **web_search provider 注册表化**（`agent/web_search_registry.py`）：EvoClaw 现有多引擎
-  并列抓取模型与 Hermes 插件 provider 体系不兼容，改动面大，价值取决于是否引入 web 插件架构。
-- **vault / OS 钥匙串**（`agent/vault_store.py` / `vault_keychain.py`）：全新加密落盘 +
-  浏览器 autofill 子系统（规模 L），单独立项。
+**对标**：`agent/web_search_registry.py`。
+
+**动机**：上一轮把「provider 注册表化」列为单独立项。复核后确认它是**真正的、可做的不变量**
+（配置键优先 + 能力过滤 + legacy 兜底），且 EvoClaw 的 `handleWebSearchUncached` 硬编码级联
+（skill-first + Baidu→Tavily→Bing→Google→DDG）缺这个抽象。
+
+**落地**：`apps/server/src/tools/web-search-registry.ts`
+- `WebSearchBackend` 契约：`supportsSearch/supportsExtract/isAvailable`（cheap，无网络）。
+- `resolveWebBackend`：显式配置键优先（`EVOCLAW_WEB_SEARCH_BACKEND`，对标 `web.search_backend`）→
+  能力合格且可用的唯一 provider → legacy 偏好（`LEGACY_WEB_PREFERENCE`）→ null。
+- `WebSearchRegistry` 轻量注册集合（归一化解重）。
+
+`web-tools.ts` 接线：
+- 注册 5 个引擎 adapter（tavily 键控、其余 always-available）。
+- `handleWebSearchUncached` 顶部：当 `EVOCLAW_WEB_SEARCH_BACKEND` 显式指定某引擎**且可用**时
+  只走该引擎（短接）；未配置 / 不可用 / 不识别则回落既有级联，**默认行为不变**。
+- 原内联 `trySearchTavilyAPI` 闭包复用新模块级 `trySearchTavilyOnce`（消除重复）。
+
+**安全偏差（有意为之）**：Hermes 显式配置后端即使不可用也返回以报精确错误；EvoClaw 改为
+「可用才短接，否则回落级联」——宁可继续出结果也不让一次过期 key 拒掉搜索。
+
+**测试**：`apps/server/tests/web-search-registry.test.ts`（15，含配置优先/能力过滤/legacy/归一化/去重）。
+全量 7495 passed → 7521 passed（+15 注册表 +11 已在上轮计入）。
+
+---
+
+## 明确不做 / 已归档（本轮复核）
+
+- **vault / OS 钥匙串**（`agent/vault_keychain.py` + `vault_backends/local.py`）：复核确认
+  `packages/agent/src/browser-vault.ts` 已在前几轮完整实现 local 后端（AES-256-GCM 静态加密、
+  `vault.key`/`vault.json` 0600、origin 绑定、TOTP、list 仅元数据）。真正缺失只有
+  `vault_keychain.py`（把 `.key` 交给 OS 钥匙串持有，密钥不落盘）——Node 无标准等价实现
+  （需 `keytar` 原生绑定或原生插件），**不符合本项目「只移植不变量、不搬架构」契约，归档跳过**。
+  `packages/security` 的 `SecretManager.vault` provider 仅声明未接线（纯内存、不落盘），
+  是独立改进项，非本轮范围。

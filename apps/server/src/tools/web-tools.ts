@@ -11,6 +11,7 @@ import { extractClaimsFromEvidence } from "@evoclaw/intelligence";
 import { fetchJsonFromUrl } from "./browser-tools";
 import { truncateWebText, buildTruncationFooter, storeWebText, stripInlineImages } from "./web-fetch-truncate";
 import { SearchMemo, ExtractCache, resolveWebCacheConfig, defaultExtractCacheDir, buildSearchMemoKey } from "./web-result-cache";
+import { WebSearchRegistry, resolveSearchBackendConfig } from "./web-search-registry";
 // scrapling_fetch 合并进 web_fetch(action=stealth)；其脚本执行辅助函数复用 shell-media-tools 的实现
 import { findPythonPaths, runPythonScriptAsync } from "./shell-media-tools";
 
@@ -46,6 +47,51 @@ function decodeHtmlEntities(text: string): string {
 // ── Clean snippet/title text ──
 function cleanText(text: string): string {
   return decodeHtmlEntities(text.replace(/<\/?[^>]+>/g, "").trim().slice(0, 500));
+}
+
+/** 后端名归一化：与注册表 NORMALIZE 一致，去符号小写。 */
+function normalizeBackendName(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** 单次 Tavily API 调用（注册表配置键短接用）。 */
+async function trySearchTavilyOnce(
+  q: string,
+  maxResults: number
+): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string }> {
+  const tavilyKey = process.env.TAVILY_API_KEY;
+  if (!tavilyKey || tavilyKey === "your_api_key") return { results: [] };
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    timeoutId.unref?.();
+    try {
+      const resp = await fetch("https://api.tavily.com/search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          api_key: tavilyKey,
+          query: q,
+          max_results: maxResults,
+          include_answer: false,
+          search_depth: "basic",
+        }),
+        signal: controller.signal,
+      });
+      if (!resp.ok) return { results: [] };
+      const data = await resp.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
+      if (!data.results || !Array.isArray(data.results)) return { results: [] };
+      return {
+        results: data.results
+          .filter((r) => r.url)
+          .map((r) => ({ title: r.title || "", url: r.url!, snippet: (r.content || "").slice(0, 300) })),
+      };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch {
+    return { results: [] };
+  }
 }
 
 async function trySearchBing(q: string, limit: number, ua: string, isChinese: boolean = false, freshness?: string): Promise<{ success?: boolean; results?: Array<{ title: string; url: string; snippet: string }>; error?: string; source?: string }> {
@@ -286,6 +332,31 @@ async function trySearchDDG(q: string, limit: number, ua: string): Promise<{ suc
   } catch (err: any) {
     return { success: false, error: err.name === "AbortError" ? "DuckDuckGo search timed out" : `DuckDuckGo error: ${err.message || String(err)}` };
   }
+}
+
+// ── web 搜索后端注册表（对标 hermes agent/web_search_registry.py）──
+// 只移植「选择不变量」：显式配置键优先 + 能力过滤 + legacy 偏好兜底。
+// 每个后端仅暴露廉价可用性判定（是否有 key）；EvoClaw 无 plugin provider，故不用网络。
+function buildWebSearchRegistry(): WebSearchRegistry {
+  const reg = new WebSearchRegistry();
+  const always = {
+    supportsSearch: () => true,
+    supportsExtract: () => false,
+    isAvailable: () => true,
+  };
+  reg.register({ name: "tavily", supportsSearch: always.supportsSearch, supportsExtract: always.supportsExtract, isAvailable: () => !!process.env.TAVILY_API_KEY && process.env.TAVILY_API_KEY !== "your_api_key" });
+  reg.register({ name: "baidu", ...always });
+  reg.register({ name: "bing", ...always });
+  reg.register({ name: "google", ...always });
+  reg.register({ name: "duckduckgo", ...always });
+  return reg;
+}
+
+// 惰性构造：模块第一次引用 web search 才遍历 env（保持 import 无副作用）。
+let webSearchRegistry: WebSearchRegistry | null = null;
+function getWebSearchRegistry(): WebSearchRegistry {
+  if (!webSearchRegistry) webSearchRegistry = buildWebSearchRegistry();
+  return webSearchRegistry;
 }
 
 export function registerWebTools(
@@ -745,6 +816,53 @@ except Exception as e:
     const freshness = String(params.freshness || "");
     if (!query) return { success: false, error: "Search query is required" };
 
+    // ── 配置键短接（对标 hermes web_search_registry 的「显式配置优先」）──
+    // 当 EVOCLAW_WEB_SEARCH_BACKEND 显式指定某引擎且其可用时，只走该引擎；
+    // 其余情况（未配置 / 不可用 / 不识别）回落既有级联，行为不变。
+    const configuredBackend = getWebSearchRegistry().resolveSearch(resolveSearchBackendConfig());
+    if (configuredBackend && configuredBackend.isAvailable()) {
+      const qVia = [query];
+      const ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+      let pinned: Array<{ title: string; url: string; snippet: string }> = [];
+      let pinnedSource: string | null = null;
+      const addPinned = (r: Array<{ title: string; url: string; snippet: string }>, src: string) => {
+        if (r.length > 0) { pinned = r; pinnedSource = src; }
+      };
+      switch (normalizeBackendName(configuredBackend.name)) {
+        case "tavily": {
+          const r = await trySearchTavilyOnce(qVia[0], limit);
+          if (r.results && r.results.length > 0) addPinned(r.results, "Tavily");
+          break;
+        }
+        case "baidu": {
+          const r = await trySearchBaiduHTML(qVia[0], limit, ua, freshness);
+          if (r.results && r.results.length > 0) addPinned(r.results, "Baidu");
+          break;
+        }
+        case "bing": {
+          const r = await trySearchBing(qVia[0], limit, ua, /[一-鿿]/.test(qVia[0]), freshness);
+          if (r.results && r.results.length > 0) addPinned(r.results, r.source || "Bing");
+          break;
+        }
+        case "google": {
+          const r = await trySearchGoogle(qVia[0], limit, ua, freshness);
+          if (r.results && r.results.length > 0) addPinned(r.results, "Google");
+          break;
+        }
+        case "duckduckgo": {
+          const r = await trySearchDDG(qVia[0], limit, ua);
+          if (r.results && r.results.length > 0) addPinned(r.results, "DuckDuckGo");
+          break;
+        }
+        default:
+          break; // 不识别 → 落级联
+      }
+      if (pinnedSource) {
+        console.log(`[web_search] Used configured backend ${configuredBackend.name}`);
+        return { query, source: pinnedSource, count: pinned.length, results: pinned.slice(0, limit) };
+      }
+    }
+
     const optimizeChineseQuery = (q: string): string[] => {
       const queries = [q];
       const techTerms = ["大模型", "LLM", "AI", "人工智能", "深度学习", "机器学习", "神经网络", "GPT", "Claude", "Gemini", "开源模型"];
@@ -788,42 +906,6 @@ except Exception as e:
     let allResults: Array<{ title: string; url: string; snippet: string }> = [];
     let usedSource = "";
 
-    const trySearchTavilyAPI = async (searchQuery: string, maxResults: number): Promise<{ results: Array<{ title: string; url: string; snippet: string }> }> => {
-      const tavilyKey = process.env.TAVILY_API_KEY;
-    if (!tavilyKey || tavilyKey === "your_api_key") return { results: [] };
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 12000);
-      timeoutId.unref?.();
-      try {
-        const resp = await fetch("https://api.tavily.com/search", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            api_key: tavilyKey,
-            query: searchQuery,
-            max_results: maxResults,
-            include_answer: false,
-            search_depth: "basic",
-          }),
-          signal: controller.signal,
-        });
-        if (!resp.ok) return { results: [] };
-        const data = await resp.json() as { results?: Array<{ title?: string; url?: string; content?: string }> };
-        if (!data.results || !Array.isArray(data.results)) return { results: [] };
-        return {
-          results: data.results
-            .filter((r) => r.url)
-            .map((r) => ({ title: r.title || "", url: r.url!, snippet: (r.content || "").slice(0, 300) })),
-        };
-      } finally {
-        clearTimeout(timeoutId);
-      }
-    } catch {
-      return { results: [] };
-    }
-    };
-
     for (const q of allQueries) {
       if (allResults.length >= limit) break;
 
@@ -846,7 +928,7 @@ except Exception as e:
         }
       }
 
-      const tavilyResult = await trySearchTavilyAPI(q, limit);
+      const tavilyResult = await trySearchTavilyOnce(q, limit);
       if (tavilyResult.results && tavilyResult.results.length > 0) {
         addResults(tavilyResult.results, "Tavily");
         continue;
