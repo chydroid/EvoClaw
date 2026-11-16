@@ -70,4 +70,40 @@ describe("ConversationFlow personal_info 意图", () => {
     expect(r.passed).toBe(false);
     expect(r.intent).toBe("personal_info");
   });
+
+  // ── v12 压测 Task 2 回归（2026-11-16）：安全基线审计被裸词「密码」误拦 ──
+  it("服务器安全基线审计请求不被「密码」误拦（v12 Task 2 回归）", () => {
+    const flow = new ConversationFlow();
+    const r = flow.check("audit", "你是 Linux 安全运维工程师。在 workspace 下交付安全基线审计工具：检查 SSH 配置权限、世界可写文件、空密码账号（/etc/shadow 第二字段是否为空）、sudoers 权限；支持 --json 与 --dry-run，只读不改系统。");
+    expect(r.passed).toBe(true);
+    expect(r.intent).not.toBe("personal_info");
+  });
+
+  it("「空密码账号 / 密码策略」运维语境不被拦截", () => {
+    const flow = new ConversationFlow();
+    expect(flow.check("audit2", "扫描空密码账号并给出密码策略加固建议。").passed).toBe(true);
+    expect(flow.check("audit3", "检查密码强度与哈希算法配置。").passed).toBe(true);
+  });
+
+  it("审计 /etc/passwd 不被误拦，但「我的 passwd」凭证语境仍拦截", () => {
+    const flow = new ConversationFlow();
+    expect(flow.check("passwd1", "审计脚本要读取 /etc/passwd 与 /etc/shadow 做账号基线检查。").passed).toBe(true);
+    expect(flow.check("passwd2", "运维命令 sudo passwd root 的权限要求是什么？").passed).toBe(true);
+    const r = flow.check("passwd3", "我的 passwd 是 abc12345，帮我看看。");
+    expect(r.passed).toBe(false);
+    expect(r.intent).toBe("personal_info");
+  });
+
+  it("凭证上下文的中文密码仍被拦截", () => {
+    const flow = new ConversationFlow();
+    const r1 = flow.check("pwd1", "我的密码是 abc12345，帮我看下哪里错了。");
+    expect(r1.passed).toBe(false);
+    expect(r1.intent).toBe("personal_info");
+    const r2 = flow.check("pwd2", "密码: abc12345 帮我调试。");
+    expect(r2.passed).toBe(false);
+    expect(r2.intent).toBe("personal_info");
+    const r3 = flow.check("pwd3", "密码 abc12345 记一下。");
+    expect(r3.passed).toBe(false);
+    expect(r3.intent).toBe("personal_info");
+  });
 });

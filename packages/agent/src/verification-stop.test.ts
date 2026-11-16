@@ -234,6 +234,32 @@ describe("shouldTriggerVerificationGate", () => {
       ),
     ).toBe(false);
   });
+
+  it("生产语义（不信工具意图/回复措辞）：跑过 shell_exec 但仍触发", () => {
+    expect(
+      shouldTriggerVerificationGate(
+        ["src/a.ts"],
+        ["file_write", "shell_exec"],
+        "已运行测试，全部通过",
+        0,
+        { trustVerificationIntent: false, trustReplyClaims: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("生产语义：真实通过的验证由证据账本抑制，不靠措辞", () => {
+    // 该函数本身不再看证据；调用方用 stalePaths 抑制。此处确认它不会因
+    // 文案/工具意图再次提前返回 false，语义由账本唯一决定。
+    expect(
+      shouldTriggerVerificationGate(
+        ["src/a.ts"],
+        ["file_write", "file_read"],
+        "已验证",
+        0,
+        { trustVerificationIntent: false, trustReplyClaims: false },
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("extractChangedPaths", () => {

@@ -141,7 +141,12 @@ import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
 import { retryAsync, jitteredBackoff } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
-import { getVerificationEvidenceStore, classifyVerificationCommand } from "./verification-evidence";
+import {
+  getVerificationEvidenceStore,
+  classifyVerificationCommand,
+  isVerificationExitAttributable,
+} from "./verification-evidence";
+import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 import { getErrorRecoveryExecutor, type RecoveryMessage } from "./error-recovery-executor";
@@ -2140,6 +2145,11 @@ export interface SyntaxProbeResult {
 const SYNTAX_PROBE_EXTS: ReadonlyArray<[RegExp, string]> = [
   [/\.(js|mjs|cjs)$/i, "node --check"],
   [/\.(sh|bash)$/i, "bash -n"],
+  // ★ 2026-11-16：机器可读交付物（.json）同样做确定性探针。v12 压测 Task 2
+  //   实测：模型把 --json 模式的 dry-run 诊断行打到 stdout，`> baseline.json`
+  //   得到「前导文本 + JSON」的非法文件；此前脚本探针不覆盖 .json，坏 JSON
+  //   一路收尾。JSON.parse 失败计入 syntaxBroken → 续跑让模型修正落盘。
+  [/\.json$/i, "json"],
 ];
 
 /** 判断单个文件是否需要语法探针（脚本类交付物）。 */
@@ -2153,6 +2163,18 @@ export function runScriptSyntaxProbe(p: string): string | null {
   const kind = SYNTAX_PROBE_EXTS.find(([re]) => re.test(p))?.[1];
   if (!kind) return null;
   try {
+    if (kind === "json") {
+      // 大文件跳过：探针只做「能否被消费」的合理性校验，不承担数据加载职责。
+      const stat = fs.statSync(p);
+      if (stat.size > 5 * 1024 * 1024) return null;
+      const raw = fs.readFileSync(p, "utf8").replace(/^﻿/, ""); // 容忍 UTF-8 BOM
+      try {
+        JSON.parse(raw);
+        return "";
+      } catch (err: unknown) {
+        return `JSON.parse: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
     const args = kind === "bash -n" ? ["-n", p] : ["--check", p];
     const bin = kind === "bash -n" ? "bash" : "node";
     try {
@@ -2209,13 +2231,24 @@ const CREATIVE_TASK_PATTERN =
 
 /** 路径 token 组 + 落盘动词组：「写」必须放在「写入」之后——若「写」排在最前，
  * 「写入」的「写」先命中、留下「入」半截参与后续匹配，路径 40 字窗口偏移，
- * 漏检风险回归。用普通正则字面量（反引号在 /…/ 里是普通字符，无需 String.raw）。 */
+ * 漏检风险回归。用普通正则字面量（反引号在 /…/ 里是普通字符，无需 String.raw）。
+ *
+ * ★ 2026-11-16（v13 Task 9）：交付物裸文件名（如「生成 api.md」「写入 report.json」）
+ * 不含 `/`，旧正则漏检 → 文档工程类任务被 CREATIVE_TASK_PATTERN 的「技术文档」
+ * 命中后工具全禁（27→0），模型读写皆无 → 0 交付。带常见交付扩展名的裸文件
+ * token 与绝对路径同等对待；纯创意任务（"写一篇短篇小说"）仍无 token，不受影响。 */
 const WRITE_PATH_REQUEST_RE =
-  /(?:写入|写|保存到|保存|创建|生成|输出到|放到|落盘|另存)\s*[^。\n]{0,40}?(?:`[^`]+`|\/[A-Za-z0-9_\-./]+|[A-Za-z]:\\)/;
+  /(?:写入|写|保存到|保存|创建|生成|输出到|产出|交付|放到|落盘|另存)\s*[^。\n]{0,40}?(?:`[^`]+`|\/[A-Za-z0-9_\-./]+|[A-Za-z]:\\|[A-Za-z0-9_\-.]+\.(?:md|markdown|txt|json|jsonl|csv|tsv|sh|bash|py|html|css|yml|yaml|toml|ini|conf|service|xml|svg|sql|db|sqlite|log|env))/;
 
-/** 文本是否含「写文件落路径」结构（如 `写 /abs/path/x.md`）。 */
+/** 「在 <目录> 下交付/生成…」= 明确的交付目录请求。路径在动词**之前**，
+ * 上面的「动词→token」窗口覆盖不到；v13 Task 9 的「在 …/v13-api-docs/ 下交付
+ * 文档生成器」正属此类。目录后必须是交付类动词，避免「在 /tmp 下发现了…」误判。 */
+const WRITE_TARGET_DIR_RE =
+  /(?:在|到)\s*(?:`[^`]+`|\/[A-Za-z0-9_\-./]+)\s*(?:目录)?\s*下\s*(?:交付|生成|创建|写|实现|产出)/;
+
+/** 文本是否含「写文件落路径」结构（如 `写 /abs/path/x.md` / `在 /dir/ 下交付`）。 */
 export function looksLikeWritePathRequest(text: string): boolean {
-  return WRITE_PATH_REQUEST_RE.test(text);
+  return WRITE_PATH_REQUEST_RE.test(text) || WRITE_TARGET_DIR_RE.test(text);
 }
 
 /**
@@ -4373,6 +4406,14 @@ export async function tryCallLLM(
   //   相同（或高度相似），不再续跑，避免旧循环问题。
   const MAX_AUTO_CONTINUE = 3;
 
+  // ── 交付物契约（从用户原始任务文本抽取必交文件）──
+  // 只在任务含明确交付意图时启用；对回合结束前做存在性核验，
+  // 避免「模型压根没提这些产物就宣称全部完成」的漏交（v14 diff 实证）。
+  const deliverableContract = extractRequiredDeliverables(
+    rawMessage,
+    deps.workspacePath || process.cwd(),
+  );
+
   // ── 过载自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）──
   // provider 出现瞬时过载类错误（429/5xx/超时/网络）时，不立即 failover，
   // 而是原地 jittered backoff 等待后重试（15s→60s，最多 5 个周期，
@@ -5463,8 +5504,15 @@ if (deps.contextPruningManager && !prunerNoop) {
         // ── Run-budget wrap-up notice（对标 Hermes turn_finalizer 80% 提醒）──
         // 在工具轮次达到 80% 时注入 transient 提醒，让模型知道接近上限、
         // 需要开始收尾。这是确定性注入（不调 LLM），与提示词 nudge 不同。
+        // ★ 2026-11-16 措辞对齐 Hermes RUN_BUDGET_WRAPUP_NOTICE：原文案「避免继续
+        //   调用工具」会让模型在 80% 线连**必交产物**都不写就收尾（v14 diff 类
+        //   任务实证漏交）。Hermes 的语义是「停止新的探索/验证，但完成必交写入」——
+        //   这里照此改写，并显式列出交付物契约中的必交路径。
         if (maxToolRounds > 0 && round >= Math.floor(maxToolRounds * 0.8) && round < maxToolRounds - 1) {
-          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${maxToolRounds}（${Math.round((round + 1) / maxToolRounds * 100)}%），接近上限。请基于已有结果开始收尾，避免继续调用工具。如果任务已完成，请直接输出完成状态汇报。`;
+          const requiredList = deliverableContract.length > 0
+            ? `任务要求的必交产物：${deliverableContract.map((d) => `\`${d.path}\``).join("、")}。`
+            : "";
+          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${maxToolRounds}（${Math.round((round + 1) / maxToolRounds * 100)}%），接近上限。**立即停止新的探索/调查/验证工作**，基于已有结果直接产出最终交付物（答案/文件/汇总），**只执行完成必交产物所必需的写入操作**，不要再做可选的额外工具调用。${requiredList}完成后输出完成状态汇报。`;
           // 只在当前轮次第一次达到 80% 时注入一次
           if (!wrapUpNoticeInjected) {
             pendingTransient.push({ role: "user", content: wrapUpNotice });
@@ -6319,6 +6367,8 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   - 文案声称但无对应回执且盘上不存在 → 才触发重创建（旧语义保留）。
             //   - 无文案声称（Task 7 实测 0 事件类漏报）但存在回执缺失 → 同样触发。
             let diskMissingPaths: string[] = [];
+            // 任务要求但盘上不存在的交付物（与「声称但缺失」分开，提示措辞不同）
+            let contractMissingPaths: string[] = [];
             let landingMismatch: Array<{ claimed: string; actual: string }> = [];
             // ★ 2026-11-09 方案 B：可执行产物语法探针（node --check / bash -n）。
             // 回执/声称的脚本类交付物若语法不通 → 记 syntaxBroken，续跑让模型
@@ -6335,7 +6385,17 @@ if (deps.contextPruningManager && !prunerNoop) {
                 (p) => { try { return fs.existsSync(p); } catch { return false; } },
               );
               landingMismatch = rec.landingMismatch;
-              diskMissingPaths = rec.trulyMissing;
+              // ★ 2026-11-16 交付物契约：任务显式要求的文件可能模型只字未提
+              //   （既没声称也没创建），回执对账捕获不到。这里直接从用户原始
+              //   任务文本抽取必交产物做存在性核验——漏交同样触发续跑。
+              contractMissingPaths = findMissingDeliverables(
+                deliverableContract,
+                (p) => { try { return fs.existsSync(p); } catch { return false; } },
+              );
+              diskMissingPaths = [...new Set([
+                ...rec.trulyMissing,
+                ...contractMissingPaths,
+              ])];
               const probeTargets = [...new Set([
                 ...receiptPaths.filter((p) => needsSyntaxProbe(p)),
                 ...claimedPaths.filter((p) => needsSyntaxProbe(p)),
@@ -6420,6 +6480,9 @@ if (deps.contextPruningManager && !prunerNoop) {
                 executedToolCalls.map((c) => c.name),
                 finalReply,
                 verificationNudgeCount,
+                // 生产语义：运行过验证类工具 / 回复里的验证措辞都不算证据，
+                // 由下面的证据账本（真实 exit code + 编辑失效）判定。
+                { trustVerificationIntent: false, trustReplyClaims: false },
               ) &&
               // 验证仍然有效（stalePaths === []，之后没再编辑）→ 不重复 nudge
               (stalePaths === null || stalePaths.length > 0);
@@ -6466,7 +6529,16 @@ if (deps.contextPruningManager && !prunerNoop) {
                 verificationNudgeCount++;
                 // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径
                 const nudgePaths = stalePaths && stalePaths.length > 0 ? stalePaths : changedPathsForGate;
-                const nudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount - 1);
+                const baseNudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount - 1);
+                // 管道掩盖退出码的命令不能算证据：明确告诉模型直跑检查命令。
+                const unattributed = evidenceStore.getLastUnattributedRun();
+                const nudge = baseNudge && unattributed
+                  ? baseNudge +
+                    `\n\n⚠️ 你最近的验证命令 \`${unattributed.slice(0, 200)}\` 经管道/或链串接，` +
+                    `shell 的退出码来自管道尾部，**不能证明检查本身通过**（测试全红也可能报 0）。` +
+                    `请**直接运行检查命令**，不要把检查接到 \`| tail\` / \`| grep\` 后面；` +
+                    `如果必须接管道，请先 \`set -o pipefail\` 并读取真实输出（出现 fail/FAIL/AssertionError 即视为失败）。`
+                  : baseNudge;
                 trace.addSystem(
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
                   `变更文件：${nudgePaths.join("、")}`,
@@ -6520,6 +6592,9 @@ if (deps.contextPruningManager && !prunerNoop) {
                   diskMissingPaths.length > 0
                     ? `磁盘文件核验：声称创建的文件不存在：${diskMissingPaths.join("、")}`
                     : "",
+                  contractMissingPaths.length > 0
+                    ? `交付物契约：任务要求但尚未生成的产物：${contractMissingPaths.join("、")}`
+                    : "",
                   preVerdict.notice ?? "",
                   failedTools.length > 0
                     ? `本轮失败工具：${failedTools.map((f) => `${f.name}(${f.error})`).join("、")}`
@@ -6539,8 +6614,16 @@ if (deps.contextPruningManager && !prunerNoop) {
               // ★ 2026-11-08 落点漂移指令（v9 Task 6）：文件已存在但落点 ≠ 声称路径
               //   时，直接告知真实落点——不要按声称路径重建（会再次落错），而是
               //   把文件**移动**到声称路径，或确认实际落点正确后按实际路径汇报。
-              const diskCorrection = diskMissingPaths.length > 0
-                ? `\n\n**磁盘文件核验失败**：以下声称创建的文件在磁盘上不存在，必须重新创建：\n${diskMissingPaths.map((p) => `- \`${p}\``).join("\n")}\n\n必须真正调用 file_write 工具创建这些文件，并把上面列出的路径**原样作为 path 参数传入**（例如 file_write action=create、path="/tmp/v4-monitor/monitor.sh"）。**不要用相对路径**——相对路径会解析到工作区 data/workspace/ 下，文件会写到错误位置、磁盘核验仍会失败。**文件名必须与上面完全一致**——不要创建其他文件名替代。**绝对禁止把文件内容（包括完整代码/代码块）贴在回复里**——贴在回复里不算完成，磁盘核验会判定失败；v5 实测模型多次把测试代码贴在聊天里而不调用 file_write，6 次续跑均未纠正。创建后立即用 file_read 或 \`ls -la <目录>\` 验证文件确实存在，再继续。`
+              const contractMissingSet = new Set(contractMissingPaths);
+              const claimedMissingOnly = diskMissingPaths.filter((p) => !contractMissingSet.has(p));
+              const diskCorrection = claimedMissingOnly.length > 0
+                ? `\n\n**磁盘文件核验失败**：以下声称创建的文件在磁盘上不存在，必须重新创建：\n${claimedMissingOnly.map((p) => `- \`${p}\``).join("\n")}\n\n必须真正调用 file_write 工具创建这些文件，并把上面列出的路径**原样作为 path 参数传入**（例如 file_write action=create、path="/tmp/v4-monitor/monitor.sh"）。**不要用相对路径**——相对路径会解析到工作区 data/workspace/ 下，文件会写到错误位置、磁盘核验仍会失败。**文件名必须与上面完全一致**——不要创建其他文件名替代。**绝对禁止把文件内容（包括完整代码/代码块）贴在回复里**——贴在回复里不算完成，磁盘核验会判定失败；v5 实测模型多次把测试代码贴在聊天里而不调用 file_write，6 次续跑均未纠正。创建后立即用 file_read 或 \`ls -la <目录>\` 验证文件确实存在，再继续。`
+                : undefined;
+              // ★ 2026-11-16 交付物契约：任务文本显式要求、但模型从未声称也从未
+              //   创建的产物。这与「声称了却没落盘」性质不同——模型根本没意识到
+              //   漏交，措辞要直接点名「任务要求」而不是「你声称的文件」。
+              const contractCorrection = contractMissingPaths.length > 0
+                ? `\n\n**交付物契约未满足**：任务明确要求以下产物，但磁盘上不存在（你此前的回复也未提及）：\n${contractMissingPaths.map((p) => `- \`${p}\``).join("\n")}\n\n请核对该产物是否属于必交项：若属于，立即用 file_write（绝对路径原样传入）真正创建，并按任务要求验证；若任务已说明该产物由用户提供或无需生成，则在最终回复中明确说明该文件的来源/不需要生成的理由，不要保持沉默。`
                 : undefined;
               const landingCorrection = landingMismatch.length > 0
                 ? `\n\n**落点核验**：以下文件声称已写入某路径，但实际落在了另一路径（工具回执记录的真实落点）：\n${landingMismatch.map((m) => `- 声称 \`${m.claimed}\` → 实际 \`${m.actual}\``).join("\n")}\n\n请先把文件从实际路径**移动**到声称路径（例如 shell_exec \`mv <实际> <声称>\`，注意保留目录创建），再用 file_read 按声称路径验证；若任务本就只要求实际路径的内容，则按实际路径如实汇报，不要再声称写入声称路径。**不要按声称路径重新创建同名文件**——会造成两份内容且声称路径仍与回执不一致。`
@@ -6558,6 +6641,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 correction: [
                   preVerdict.needsCorrection ? preVerdict.notice : undefined,
                   diskCorrection,
+                  contractCorrection,
                   landingCorrection,
                   syntaxCorrection,
                 ].filter(Boolean).join("\n") || undefined,
@@ -7297,24 +7381,58 @@ if (deps.contextPruningManager && !prunerNoop) {
               // ── 验证证据：把「验证类命令的成功运行」记入账本 ──
               // 成功（exitCode===0）会清空编辑记录——与 hermes 语义一致：
               // 「全量通过的验证证明工作区没问题」，之后的编辑才需重验。
+              const verifyCommand = toolName === "shell_exec"
+                ? (typeof (args as Record<string, unknown>).command === "string"
+                    ? (args as Record<string, unknown>).command as string
+                    : typeof (args as Record<string, unknown>).cmd === "string"
+                      ? (args as Record<string, unknown>).cmd as string
+                      : "")
+                : toolName === "execute_code"
+                  ? (typeof (args as Record<string, unknown>).code === "string"
+                      ? (args as Record<string, unknown>).code as string
+                      : "")
+                  : "";
               const verifyKind = toolName === "shell_exec" || toolName === "execute_code"
-                ? classifyVerificationCommand(
-                    typeof (args as Record<string, unknown>).command === "string"
-                      ? (args as Record<string, unknown>).command as string
-                      : typeof (args as Record<string, unknown>).code === "string"
-                        ? (args as Record<string, unknown>).code as string
-                        : "",
-                  )
+                ? classifyVerificationCommand(verifyCommand)
                 : null;
               if (verifyKind) {
-                const exitCode =
-                  rawResult && typeof rawResult === "object" && typeof (rawResult as Record<string, unknown>).exitCode === "number"
-                    ? (rawResult as Record<string, unknown>).exitCode as number
-                    : 0;
+                // ★ 2026-11-16（对标 hermes verification_evidence 的 unattributed run）：
+                //   形如 `node --test x.js 2>&1 | tail -20` 时，shell 的退出码来自
+                //   管道尾部（tail 恒 0）——测试全红也会以 exit 0 返回，被记成
+                //   「验证通过」并清空编辑记录，验证门从此闭嘴。v14 diff 任务
+                //   就是这样被误判为「测试通过」的。可归因失败时**不记证据**，
+                //   只登记未归因命令，让工作区保持 unverified、验证门继续要求复验。
+                const attributable = toolName !== "shell_exec"
+                  || isVerificationExitAttributable(verifyCommand);
+                if (!attributable) {
+                  evidenceStore.markUnattributedRun(verifyCommand);
+                  asyncLog(
+                    `[AgentModelExecutor] Unattributed verification run (exit status masked by pipeline): ${verifyCommand.slice(0, 160)}\n`,
+                  );
+                } else {
+                  const exitCode =
+                    rawResult && typeof rawResult === "object" && typeof (rawResult as Record<string, unknown>).exitCode === "number"
+                      ? (rawResult as Record<string, unknown>).exitCode as number
+                      : 0;
+                  evidenceStore.record(
+                    createdFiles.map((f) => f.path),
+                    `${toolName}:${verifyKind}`,
+                    exitCode,
+                  );
+                }
+              }
+              // verify_project 是真实跑 build/test/start 的项目级验证——它成功时
+              // 必须计入证据账本，否则验证门（生产语义已不信「跑过工具」）会在
+              // 模型用 verify_project 验证通过后仍反复 nudge。
+              if (
+                toolName === "verify_project" &&
+                rawResult && typeof rawResult === "object"
+              ) {
+                const verifyOk = (rawResult as Record<string, unknown>).success === true;
                 evidenceStore.record(
                   createdFiles.map((f) => f.path),
-                  `${toolName}:${verifyKind}`,
-                  exitCode,
+                  "verify_project",
+                  verifyOk ? 0 : 1,
                 );
               }
               // ── 进度反馈：工具完成时显示可读摘要 ──

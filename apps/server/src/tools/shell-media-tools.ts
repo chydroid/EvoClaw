@@ -7,7 +7,7 @@ import { getWorkspaceDir } from "@evoclaw/core";
 import type { ServiceRegistry } from "@evoclaw/core";
 import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
 import type { KernelCellResult, KernelExecuteOptions } from "@evoclaw/infrastructure";
-import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand } from "@evoclaw/security";
+import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand, shellBlockGuidance } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
 
 /**
@@ -482,18 +482,17 @@ export function registerShellMediaTools(
       // （严格档 critical 硬拦、一般档 critical 走审批、风险档仅拦不可逆操作）。
       const verdict = decideShellCommand(getActiveSecurityPolicy(), risk);
       if (verdict === "block") {
-        // 引导：换行/命令替换被硬拦后模型容易原地打转（历史评测事故：
-        // 多次尝试 heredoc 均被拦）。给出可执行替代路径——把多行脚本
-        // 写成文件再执行，或用 execute_code 工具（沙箱内无此限制）。
-        const hint = risk.rule === "newline_injection"
-          ? " 多行脚本请改用 file_write 写成脚本文件（如 .sh/.py/.js）后用 shell_exec 执行文件，或直接用 execute_code 工具执行（沙箱内支持多行代码）。"
-          : "";
+        // 恢复指引见 security 包 shellBlockGuidance：注入类硬拦在任何等级都放不开，
+        // 必须给出「写脚本文件再执行 / execute_code」的替代路径，避免模型把
+        // 「被安全策略拦」误判成「沙箱环境不可用」而原地打转或直接放弃
+        // （v12 压测 Task 2 实证：$(...) 被 command_substitution 拦后 0 交付）。
+        const hint = shellBlockGuidance(risk);
         return {
           success: false,
           error:
             `Command blocked by「${getActiveSecurityPolicy().label}」安全等级: ` +
             `${risk.reason ?? "命中高危规则"} (rule=${risk.rule ?? "unknown"})。` +
-            `如需放开，请到「安全 → 总体安全」调整等级。` + hint,
+            hint,
           command,
           // 始终回传 cwd：模型需要知道命令在哪个目录执行，
           // 否则只能靠猜来写相对路径（历史上因此拼出重复前缀）。
@@ -743,6 +742,8 @@ export function registerShellMediaTools(
             if (code === 0) {
               resolve({
                 success: true,
+                // 显式带 exitCode，避免调用方用 `?? 0` 猜测成功——证据账本要读真值。
+                exitCode: 0,
                 output: withEbusyHint(output.slice(0, 50000)),
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,

@@ -62,8 +62,12 @@ export function registerTodoTools(deps: TodoToolDeps): void {
       parameters: {
         todos: {
           type: "array",
-          description: "Task items to write.",
-          required: true,
+          // ★ 2026-11-16：`required: false` 而非 true。flat schema 走逐属性启发式
+          //   （无顶层 required 数组），标 true 会让「无参数读取当前列表」这一
+          //   文档化用法在校验层被拒（Missing required parameter "todos"）。
+          //   读取模式与写入模式的区分在 handler 内按 undefined 判定。
+          description: "Task items to write. Omit to read the current list.",
+          required: false,
           items: {
             type: "object",
             properties: {

@@ -96,6 +96,18 @@ export interface VerificationGateConfig {
   enabled?: boolean;
   /** 最大 nudge 次数 */
   maxNudges?: number;
+  /**
+   * 是否把「本轮调用过任意验证类工具」当作已验证（旧语义）。
+   * 默认 true 以兼容既有单测；生产路径应传 false —— 调用 `shell_exec` 不等于
+   * 验证成功（`echo hi`、被管道掩盖退出码的 `node --test | tail` 都会命中）。
+   * 关闭后由验证证据账本（真实 exit code + 编辑失效）判定。
+   */
+  trustVerificationIntent?: boolean;
+  /**
+   * 是否把「回复文本里的验证措辞」当作证据（旧语义）。
+   * 默认 true；生产路径应传 false —— 文案不是证据。
+   */
+  trustReplyClaims?: boolean;
 }
 
 /**
@@ -265,7 +277,10 @@ export function shouldTriggerVerificationGate(
   if (nudgeAttempts >= max) return false;
   if (!hasFileMutation(executedTools)) return false;
   if (filterVerifiablePaths(changedPaths).length === 0) return false;
-  if (hasVerificationIntent(executedTools)) return false;
-  if (replyContainsVerificationEvidence(finalReply)) return false;
+  // ★ 2026-11-16：旧语义把「跑过任意验证类工具 / 回复里写了验证措辞」当作已
+  //   验证——production 路径传 false 后交给证据账本判定。否则 `echo hi` 或
+  //   被 `| tail` 掩盖退出码的测试都能让验证门闭嘴（v14 diff 任务实证）。
+  if (config.trustVerificationIntent !== false && hasVerificationIntent(executedTools)) return false;
+  if (config.trustReplyClaims !== false && replyContainsVerificationEvidence(finalReply)) return false;
   return true;
 }

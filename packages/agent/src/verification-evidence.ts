@@ -45,6 +45,16 @@ export class VerificationEvidenceStore {
   private lastEditAt: number | null = null;
   private editedPaths: string[] = [];
   private nextId = 1;
+  /**
+   * 最近一条「退出码不可归因」的验证命令（hermes verification_evidence 的
+   * `_UNATTRIBUTED_RUNS` 语义）。
+   *
+   * 形如 `node --test x.js 2>&1 | tail -20`：shell 的退出码来自管道尾部
+   * （tail 恒 0），无法区分检查命令自身是否失败。这类运行**绝不能**记成
+   * 通过证据——否则测试全红也会把工作区标记成「已验证」、让验证门闭嘴。
+   * 记录命令文本仅供 nudge 精确提示「请直接运行检查，不要接管道」。
+   */
+  private unattributedRun: string | null = null;
 
   /**
    * 记录一次验证运行。
@@ -63,8 +73,22 @@ export class VerificationEvidenceStore {
     if (exitCode === 0) {
       this.lastEditAt = null;
       this.editedPaths = [];
+      this.unattributedRun = null;
     }
     return event;
+  }
+
+  /**
+   * 记录一条「退出码不可归因」的验证运行（不记为通过证据）。
+   * 调用方应**跳过** `record()`，让工作区保持 unverified，验证门继续要求复验。
+   */
+  markUnattributedRun(command: string): void {
+    this.unattributedRun = command;
+  }
+
+  /** 最近一条不可归因的验证命令（供验证门 nudge 提示），无则 null。 */
+  getLastUnattributedRun(): string | null {
+    return this.unattributedRun;
   }
 
   /**
@@ -91,8 +115,14 @@ export class VerificationEvidenceStore {
    */
   getStalePaths(): string[] | null {
     if (this.events.length === 0) return null; // 从未验证
-    if (this.lastEditAt === null) return []; // 验证有效
     const lastEvent = this.events[this.events.length - 1];
+    // ★ 2026-11-16 修复：失败的验证（exitCode !== 0）永远不能证明工作区没问题。
+    //   旧实现只比较时间戳，一旦失败事件时间戳晚于最后一次编辑（不同毫秒），
+    //   就误判为「验证有效」并让验证门闭嘴。必须显式排除失败事件。
+    if (lastEvent.exitCode !== 0) {
+      return this.editedPaths.length > 0 ? [...this.editedPaths] : null;
+    }
+    if (this.lastEditAt === null) return []; // 验证有效
     if (this.lastEditAt < lastEvent.timestamp) return []; // 编辑发生在验证之前
     return [...this.editedPaths];
   }
@@ -116,6 +146,7 @@ export class VerificationEvidenceStore {
     this.events = [];
     this.lastEditAt = null;
     this.editedPaths = [];
+    this.unattributedRun = null;
     this.nextId = 1;
   }
 }
@@ -160,4 +191,33 @@ export function classifyVerificationCommand(command: string): string | null {
     if (keywords.some((kw) => lower.includes(kw))) return kind;
   }
   return null;
+}
+
+/**
+ * 验证命令的退出码是否**可归因**（即 shell 的退出状态就是检查命令自身的结果）。
+ *
+ * 对标 hermes `verification_evidence` 对 `_UNATTRIBUTED_RUNS` 的处理：一条命令
+ * 只要经管道/`;`/`||` 串接，shell 的退出码就来自（或可能来自）检查之外的片段，
+ * 不能当作「检查通过」的证据。典型事故：
+ *
+ *   node --test x.js 2>&1 | tail -20   # tail 恒 0 → 测试全红也报「通过」
+ *   node --test x.js; echo done        # echo 的 0 覆盖测试失败
+ *   node --test x.js || true           # 失败被吞掉
+ *
+ * `&&` 链是安全的：左侧失败会短路并原样传播退出码（`cd x && node --test`
+ * 仍能反映测试结果），所以不视为不可归因。
+ *
+ * 返回 false 时调用方必须**跳过** `record()`，只调 `markUnattributedRun()`。
+ */
+export function isVerificationExitAttributable(command: string): boolean {
+  if (!command) return false;
+  // 管道：`a | b`（排除 `||`）——退出码来自管道尾部
+  if (/(^|[^|])\|([^|]|$)/.test(command)) return false;
+  // 或链：`a || b`——检查失败会被吞掉
+  if (/\|\|/.test(command)) return false;
+  // 注：`a; b` 顺序分隔同样可能掩盖检查退出码，但 `;` 也大量出现在
+  // execute_code 的内联脚本里（JS/Python 语句分隔符），逐字符解析引号
+  // 状态成本高且易误伤。此处保守只处理实际高频事故（管道/或链）；
+  // `;` 场景由验证门的「复验」行为兜底，不做 fail-closed。
+  return true;
 }

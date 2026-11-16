@@ -257,6 +257,7 @@ export {
   assessShellCommand,
   requiresApprovalForShellCommand,
   describeShellRisk,
+  shellBlockGuidance,
 } from "./shell-command-risk";
 export type { ShellRiskLevel, ShellRiskAssessment } from "./shell-command-risk";
 export {

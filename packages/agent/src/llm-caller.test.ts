@@ -2904,6 +2904,41 @@ describe("runScriptSyntaxProbe — 确定性探针实现（真实 tmp 文件）"
     const r = runScriptSyntaxProbe(path.join(tmpDir, "not-there.js"));
     expect(typeof r).toBe("string");
   });
+
+  it("合法 .json → 返回空串（通过）；含 BOM 也通过", () => {
+    const good = path.join(tmpDir, "data.json");
+    fs.writeFileSync(good, '{"a":1,"b":[1,2,3]}\n', "utf-8");
+    expect(runScriptSyntaxProbe(good)).toBe("");
+    const bom = path.join(tmpDir, "bom.json");
+    fs.writeFileSync(bom, "﻿" + '{"ok":true}', "utf-8");
+    expect(runScriptSyntaxProbe(bom)).toBe("");
+  });
+
+  it("非法 .json（前导诊断文本 + JSON，模拟 > 重定向污染）→ 返回 JSON.parse 错误", () => {
+    const p = path.join(tmpDir, "baseline.json");
+    fs.writeFileSync(
+      p,
+      "===== DRY-RUN =====\n[dry-run] 将执行: x\n[{\"check\":\"a\",\"status\":\"planned\"}]\n",
+      "utf-8",
+    );
+    const r = runScriptSyntaxProbe(p);
+    expect(typeof r).toBe("string");
+    expect(r).toContain("JSON.parse");
+  });
+
+  it("非法 .json（字面量 \\n 分隔导致 token 非法）→ 判坏", () => {
+    const p = path.join(tmpDir, "bad.json");
+    fs.writeFileSync(p, '[{"a":1},\\n {"b":2}]\n', "utf-8");
+    const r = runScriptSyntaxProbe(p);
+    expect(typeof r).toBe("string");
+    expect(r).toContain("JSON.parse");
+  });
+
+  it(".json 需要探针（needsSyntaxProbe 覆盖大小写）", () => {
+    expect(needsSyntaxProbe("/w/metrics.json")).toBe(true);
+    expect(needsSyntaxProbe("/w/SCHEMA.JSON")).toBe(true);
+    expect(needsSyntaxProbe("/w/events.jsonl")).toBe(false); // NDJSON 不按整体 JSON 校验
+  });
 });
 
 // ─── 创造性任务分类器回归（v10 Task 4 产品缺陷）─────────────────────────
@@ -2954,6 +2989,26 @@ describe("judgeCreativeTask / looksLikeWritePathRequest — 创造性任务分�
     expect(judgeCreativeTask("好的，请继续", "为我写一个时间旅行故事的初稿")).toBe(true);
     // 当前消息带写路径 → 即便上一条是 creative 也不判（当前消息的写路径请求优先）
     expect(judgeCreativeTask("把上面的故事写 /tmp/story.md", "为我写一个时间旅行故事的初稿")).toBe(false);
+  });
+
+  it("★ v13 Task 9 回归：「在 <目录> 下交付 + 生成 api.md」不得判创造性", () => {
+    const prompt =
+      "你是技术文档工程师。在 /home/chy/EvoClaw/data/workspace/v13-api-docs/ 下交付文档生成器：" +
+      "读取 src/source.js 生成 api.md 与 README.md。";
+    expect(looksLikeWritePathRequest(prompt)).toBe(true);
+    expect(judgeCreativeTask(prompt)).toBe(false);
+  });
+
+  it("裸交付物文件名（生成 api.md / 写入 report.json）识别为落盘请求", () => {
+    expect(looksLikeWritePathRequest("设计 RESTful API 并生成 api.md")).toBe(true);
+    expect(looksLikeWritePathRequest("把统计结果写入 report.json")).toBe(true);
+    expect(looksLikeWritePathRequest("产出 CHANGELOG.md 与 stat.json")).toBe(true);
+  });
+
+  it("技术术语 Node.js 不被当成交付物文件 token（纯创意仍判创造性）", () => {
+    const s = "为我写一篇关于 Node.js 24 运行时特性的科普文章";
+    expect(looksLikeWritePathRequest(s)).toBe(false);
+    expect(judgeCreativeTask(s)).toBe(true);
   });
 
   it("非 creative 且无写路径 → 不判创造性（普通工具任务）", () => {

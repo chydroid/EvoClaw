@@ -72,6 +72,51 @@ export { tryCallLLM, callLLMOnce, parseStreamingResponse, buildOpenAITools } fro
 export { HumanApprovalManager } from "./human-approval";
 export type { PendingApproval, ApprovalConfig, TrustRule, RiskLevel } from "./human-approval";
 
+/**
+ * 判断消息是否为「技能安装请求」。
+ *   any: 是否触发安装快速路径；compound: 是否含多步指示词（应交给 LLM 完整流程）。
+ *
+ * installKeywords: "安装技能"、"下载技能"、"安装 weather 技能"。
+ * installRequest: "帮我安装一个翻译技能"。
+ * installSpecificSkill: "安装 weather"（弱信号，仅凭动词 + 拉丁词）。
+ * batchInstall: "批量安装"、"一键下载"。
+ * findAndInstallSkill: "查找可以查股市行情的技能并安装"（查找 + 技能 + 安装）。
+ *
+ * ★ 2026-10-28 修复（v5 Task 7 事故）：installSpecificSkill 去掉「配置」——"logging 配置 max-size"
+ *   这类名词性搭配会被误判为"安装 max-size"技能请求，整个 docker-compose 任务被技能安装助手
+ *   劫持（0 token、0 工具调用，只返回技能列表）。"配置 weather 技能"仍由 installKeywords 兜住。
+ * ★ 2026-11-16 修复（v14 Round5 Task18 事故）："不得添加 profile 未要求的不安全指令" 中的
+ *   「添加 profile」被 installSpecificSkill 误判成「安装 profile 技能」，整个 CSP 响应头交付任务
+ *   被劫持（0 token、0 LLM 调用，只返回「未找到技能 profile」）。installSpecificSkill 是弱信号，
+ *   当消息本身是代码交付/技术任务（交付/实现/编写 + 脚本/文件/CLI，或 CommonJS/无第三方依赖/
+ *   fixtures/代码块/命令行参数）时不得据此走快速路径。强信号（安装…技能、批量、查找并安装）不受影响。
+ * ★ 2026-10-27 修复：复合多步任务不走快速路径——"用 skill_list 搜索…安装一个技能…然后用 skill_manage
+ *   执行" 会命中 installKeywords，0-token 只返回技能列表而不安装/执行；含多步指示词时交给 LLM。
+ */
+export function classifySkillInstallIntent(message: string): { any: boolean; compound: boolean } {
+  const installKeywords = /(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*(?:技能|skill|skills?)/i;
+  const installRequest = /(?:给我|帮我|需要|想要|如果).*?(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*.*?(?:技能|skill|skills?)/i;
+  const installSpecificSkill = /(?:安装|下载|添加|装)\s+([a-zA-Z][\w\-]{1,})/i;
+  const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
+  const findAndInstallSkill = /(?:查找?|找一下|搜索|查一下|看看|有没有).{0,30}?(?:技能|skill).{0,15}?(?:并\s*)?(?:安装|下载|添加|装(?:上|一下)?)/i;
+
+  // 强信号：显式提到「技能 / skill」并有安装类动词（允许动词与技能之间有名词，
+  // 如「安装 weather 技能」——installKeywords 因中间隔词匹配不到）。
+  const explicitSkillWord = /(?:技能|skill|skills?)/i.test(message);
+  const installVerb = /(?:安装|下载|添加|装)/i.test(message);
+  const strongSignal = installKeywords.test(message) || installRequest.test(message)
+    || batchInstall.test(message) || findAndInstallSkill.test(message)
+    || (explicitSkillWord && installVerb);
+
+  // 技术交付任务信号：出现即为代码交付，不得被「动词 + 拉丁词」弱信号劫持。
+  const technicalDeliveryTask = /(?:交付|实现|编写|开发|创建|生成|重构|修复).{0,16}?(?:脚本|模块|文件|工具|函数|服务|CLI|程序|代码|库)|无第三方依赖|CommonJS|node\s+--test|fixtures[\/\\]|[A-Za-z0-9_-]+\.(?:js|ts|mjs|cjs|json|py|sh|go|sql|yaml|yml|md)\b|```|--(?:out|input|root|policy|profile)\b/i.test(message);
+
+  // 弱信号仅在非技术交付任务时有效。
+  const any = strongSignal || (installSpecificSkill.test(message) && !technicalDeliveryTask);
+  const compoundIndicators = /(?:然后|接着|之后|其次|最后|首先|再|之后用|然后用|执行一次|执行一个)/;
+  return { any, compound: any && compoundIndicators.test(message) };
+}
+
 export class AgentModelExecutor {
   private config: ModelConfig;
   private providers: ProviderConfig[] = [];
@@ -2578,28 +2623,10 @@ export class AgentModelExecutor {
       executeSkill(skillId: string, params: Record<string, unknown>): Promise<unknown>;
     }>("skillManager");
 
-    // installKeywords: detects "安装技能", "下载技能", "安装 weather", etc.
-    const installKeywords = /(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*(?:技能|skill|skills?)/i;
-    const installRequest = /(?:给我|帮我|需要|想要|如果).*?(?:安装|下载|添加|配置|装)\s*(?:一下|一个)?\s*.*?(?:技能|skill|skills?)/i;
-    // ★ 2026-10-28 修复（v5 Task 7 事故）：去掉「配置」——"logging 配置 max-size"
-    //   这类名词性搭配会被误判为"安装 max-size"技能请求，整个 docker-compose
-    //   任务被技能安装助手劫持（0 token、0 工具调用，只返回技能列表）。
-    //   "配置 weather 技能"类请求仍由 installKeywords（配置…技能）兜住。
-    const installSpecificSkill = /(?:安装|下载|添加|装)\s+([a-zA-Z][\w\-]{1,})/i;
-    const batchInstall = /(?:全部|批量|一键|所有)\s*(?:安装|下载)/i;
-    // findAndInstallSkill: "查找可以查询股市行情的技能并安装"、"找一个能翻译的技能装上"
-    // 必须同时包含"查找类动词+技能+安装类动词"，避免误匹配普通"找技能"浏览请求
-    const findAndInstallSkill = /(?:查找?|找一下|搜索|查一下|看看|有没有).{0,30}?(?:技能|skill).{0,15}?(?:并\s*)?(?:安装|下载|添加|装(?:上|一下)?)/i;
-    // ★ 2026-10-27 修复：复合多步任务不走 skill install 快速路径。
-    //   Task 6 压测中，"用 skill_list 搜索...安装一个合适的技能...然后用 skill_manage 执行"
-    //   被 installKeywords 匹配到"安装一个合适的技能"，走了 0-token 快速路径，
-    //   只返回技能列表但未安装/执行。当消息包含多步操作指示词时，走 LLM 完整流程。
-    const skillInstallCompoundIndicators = /(?:然后|接着|之后|其次|最后|首先|再|之后用|然后用|执行一次|执行一个)/;
-    const isSkillInstallCompound = (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message))
-      && skillInstallCompoundIndicators.test(message);
-    if (isSkillInstallCompound) {
+    const skillInstallIntent = classifySkillInstallIntent(message);
+    if (skillInstallIntent.compound) {
       asyncLog(`[AgentModelExecutor] Skill install compound task detected — skipping early path, going to LLM\n`);
-    } else if (installKeywords.test(message) || installRequest.test(message) || installSpecificSkill.test(message) || batchInstall.test(message) || findAndInstallSkill.test(message)) {
+    } else if (skillInstallIntent.any) {
       asyncLog(`[AgentModelExecutor] Skill install request detected: "${message}"\n`);
       const skillInstallerDeps: SkillInstallerDeps = { registry: this.registry, workspacePath: this.workspacePath };
       const installResult = await handleSkillInstallFn(skillInstallerDeps, message, skillManager, startTime, sessionId);

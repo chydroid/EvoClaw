@@ -16,6 +16,8 @@ export { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from 
 export type { DurableTask, DurableTaskStatus, ResumeDriver, DeliverFn } from "./durable-task-runner";
 export { reconcileCompletionTruthfulness, claimsCompletion, hasActionIntent } from "./completion-truthfulness";
 export type { ReconcileInput, ReconcileResult, PendingPermission } from "./completion-truthfulness";
+export { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
+export type { DeliverableSpec } from "./deliverable-contract";
 export { detectPrematureStop, buildContinuationDirective } from "./auto-continuation";
 export type { PrematureStopKind, ContinuationContext } from "./auto-continuation";
 export { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS, ARCHIVE_TAG } from "./session-archive";

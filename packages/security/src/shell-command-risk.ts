@@ -200,6 +200,32 @@ export function requiresApprovalForShellCommand(assessment: ShellRiskAssessment)
   return assessment.level === "critical";
 }
 
+/** 命令注入类规则 ID（任何安全等级都硬拦，调低等级无法放开） */
+const INJECTION_RULE_IDS = new Set(INJECTION_RULES.map((r) => r.id));
+
+/**
+ * 硬拦命令的可执行恢复指引（拼在 shell_exec 的 blocked 错误之后）。
+ *
+ * 关键不变式：注入类（换行 / 反引号 / $() 替换）在**任何**安全等级下都硬拦，
+ * 所以绝不能对它们提示「调低安全等级可放开」——那会误导模型反复重试内联命令
+ * 或直接把「被拦截」误判成「沙箱环境不可用」而放弃（v12 压测 Task 2 实证：
+ * 模型反复用 $(...) 内联命令被 command_substitution 拦，最终 0 交付）。
+ * 改为给出真正可用的路径：写脚本文件再执行，或改用 execute_code。
+ * 硬线地板（删根/写盘/fork bomb 等）则明确「无法放开」，不提供绕过指引。
+ */
+export function shellBlockGuidance(assessment: ShellRiskAssessment): string {
+  if (INJECTION_RULE_IDS.has(assessment.rule ?? "")) {
+    return " 命令注入特征（换行 / 反引号 / $() 命令替换）在任何安全等级下都会硬拦，" +
+      "调低「总体安全」等级无法放开，请勿反复重试内联命令。" +
+      "改用可执行路径：把命令写成脚本文件（用 file_write 生成 .sh/.py/.js）后" +
+      "再用 shell_exec 只执行该文件；或直接改用 execute_code 工具（沙箱内支持多行代码与命令替换）。";
+  }
+  if (assessment.hardlineReason) {
+    return " 该命令命中无条件高危模式（如删根 / 写盘 / fork bomb 等），任何安全等级都不会执行，也无法通过审批放开。";
+  }
+  return "如需放开，请到「安全 → 总体安全」调整等级。";
+}
+
 /** 给审批界面/工具返回用的中文说明 */
 export function describeShellRisk(assessment: ShellRiskAssessment): string {
   switch (assessment.level) {

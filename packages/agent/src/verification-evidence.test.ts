@@ -1,9 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   VerificationEvidenceStore,
   getVerificationEvidenceStore,
   resetVerificationEvidenceStore,
   classifyVerificationCommand,
+  isVerificationExitAttributable,
 } from "./verification-evidence";
 
 // ═══════════════════════════════════════════════════════════
@@ -88,6 +89,69 @@ describe("classifyVerificationCommand", () => {
     expect(classifyVerificationCommand("echo hello")).toBeNull();
     expect(classifyVerificationCommand("git status")).toBeNull();
     expect(classifyVerificationCommand("")).toBeNull();
+  });
+});
+
+describe("失败事件不得伪装成「已验证」", () => {
+  it("编辑后发生一次失败验证（跨毫秒）→ 仍需复验", () => {
+    const s = new VerificationEvidenceStore();
+    let t = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => t);
+    try {
+      s.markEdited(["a.ts"]);
+      t += 5; // 失败事件时间戳晚于最后一次编辑
+      s.record(["a.ts"], "pnpm test", 1);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    expect(s.getStalePaths()).toEqual(["a.ts"]);
+  });
+});
+
+describe("isVerificationExitAttributable（退出码可归因判定）", () => {
+  it("直跑检查命令 → 可归因", () => {
+    expect(isVerificationExitAttributable("pnpm test")).toBe(true);
+    expect(isVerificationExitAttributable("node --test diff.test.js")).toBe(true);
+    expect(isVerificationExitAttributable("cd x && node --test y.js")).toBe(true);
+    expect(isVerificationExitAttributable("pytest -q 2>&1")).toBe(true);
+  });
+
+  it("接管道 → 不可归因（tail 恒 0，掩盖检查失败）", () => {
+    expect(isVerificationExitAttributable("node --test x.js 2>&1 | tail -20")).toBe(false);
+    expect(isVerificationExitAttributable("pnpm test | grep PASS")).toBe(false);
+    expect(isVerificationExitAttributable("vitest run 2>&1 | tail -5")).toBe(false);
+  });
+
+  it("或链吞掉失败 → 不可归因", () => {
+    expect(isVerificationExitAttributable("node --test x.js || true")).toBe(false);
+    expect(isVerificationExitAttributable("pnpm test || echo failed")).toBe(false);
+  });
+
+  it("空命令 → 不可归因（fail-closed）", () => {
+    expect(isVerificationExitAttributable("")).toBe(false);
+  });
+});
+
+describe("未归因运行（unattributed run）", () => {
+  it("markUnattributedRun 不影响证据有效性，成功验证后清空", () => {
+    const s = new VerificationEvidenceStore();
+    s.markEdited(["a.js"]);
+    s.markUnattributedRun("node --test a.js | tail");
+    expect(s.getLastUnattributedRun()).toBe("node --test a.js | tail");
+    // 未归因运行没有 record()，工作区仍是「从未有可信验证」→ null（调用方据此 nudge）
+    expect(s.getStalePaths()).toBeNull();
+    expect(s.getState().editedPaths).toEqual(["a.js"]);
+    // 之后一次真实成功的干净验证会清空编辑记录与未归因标记
+    s.record(["a.js"], "node --test a.js", 0);
+    expect(s.getStalePaths()).toEqual([]);
+    expect(s.getLastUnattributedRun()).toBeNull();
+  });
+
+  it("clear() 同时清空未归因标记", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("pnpm test | tail");
+    s.clear();
+    expect(s.getLastUnattributedRun()).toBeNull();
   });
 });
 

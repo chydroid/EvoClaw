@@ -3,6 +3,7 @@ import {
   assessShellCommand,
   requiresApprovalForShellCommand,
   describeShellRisk,
+  shellBlockGuidance,
 } from "./shell-command-risk";
 
 describe("assessShellCommand — safe（保持自动化能力）", () => {
@@ -216,5 +217,41 @@ describe("不误伤：正常开发命令不得被判为需审批", () => {
 
   it("含 'kill' 字样的普通命令不被误判", () => {
     expect(["killall", "pkill -f node"].every((c) => assessShellCommand(c).level === "critical")).toBe(true);
+  });
+});
+
+describe("shellBlockGuidance — 硬拦恢复指引", () => {
+  it("命令替换（$()）命中既判 blocked 又给替代路径，且不提示放宽等级", () => {
+    const a = assessShellCommand("echo $(whoami)");
+    expect(a.level).toBe("blocked");
+    expect(a.rule).toBe("command_substitution");
+    const g = shellBlockGuidance(a);
+    expect(g).toContain("execute_code");
+    expect(g).toContain("file_write");
+    // 核心：不能给出「调低等级即可放开」的错误引导（否则模型会反复重试内联命令/放弃）
+    expect(g).not.toContain("调整等级");
+    expect(g).toContain("任何安全等级");
+  });
+
+  it("反引号同样给替代路径", () => {
+    const a = assessShellCommand("echo `whoami`");
+    expect(a.level).toBe("blocked");
+    expect(a.rule).toBe("backtick_substitution");
+    const g = shellBlockGuidance(a);
+    expect(g).toContain("execute_code");
+    expect(g).not.toContain("调整等级");
+  });
+
+  it("非注入、非硬线的普通拦截仍提示可调整等级", () => {
+    // 构造一个「严格档需要审批/拦截」的普通 case：critical 但非注入非硬线。
+    const a = { level: "critical" as const, rule: "fs_format", reason: "格式化磁盘" };
+    expect(shellBlockGuidance(a)).toContain("调整等级");
+  });
+
+  it("硬线地板命中提示无法放开", () => {
+    const a = { level: "blocked" as const, hardlineReason: "rm -rf /etc" };
+    const g = shellBlockGuidance(a);
+    expect(g).toContain("高危模式");
+    expect(g).not.toContain("调整等级");
   });
 });
