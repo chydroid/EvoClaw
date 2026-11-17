@@ -1747,11 +1747,43 @@ export function computeDynamicToolLimitCached(
  * 4. 过滤掉常见的系统路径（/proc, /sys, /dev 等）
  */
 /**
+ * 剥离 EvoClaw 自己追加的合成 footer，只保留模型正文。
+ *
+ * 这些 footer 是系统用回执/核验结果生成的，不是模型的完成声明：
+ *   - `📋 **任务状态**（系统自动追加…）`：列出所有 createdFiles 回执（含已删临时文件）
+ *   - `**⚠️ 任务未完成**` / `**⚠️ 落点更正**`：上一轮核验的结论
+ *   - `**⚠️ 更正**`：完成声明对账的更正
+ * 若把它们喂回「声称路径提取」，会形成自我强化的误报（v15 Task 3：
+ * run_flow.sh 创建后被模型主动删除，状态 footer 仍列出它 → 误报缺失）。
+ */
+const SYNTHETIC_FOOTER_MARKERS: RegExp[] = [
+  /\n-{3,}\s*\n\s*📋\s*\*\*任务状态\*\*/,
+  /\n-{3,}\s*\n\s*\*\*⚠️ 任务未完成\*\*/,
+  /\n-{3,}\s*\n\s*\*\*⚠️ 落点更正\*\*/,
+  /\n-{3,}\s*\n\s*\*\*⚠️ 更正\*\*/,
+];
+function stripSyntheticFooters(reply: string): string {
+  let cut = -1;
+  for (const re of SYNTHETIC_FOOTER_MARKERS) {
+    const m = re.exec(reply);
+    if (m && (cut < 0 || m.index < cut)) cut = m.index;
+  }
+  return cut >= 0 ? reply.slice(0, cut) : reply;
+}
+
+/**
  * 从回复中提取被声称创建/写入的文件路径（供磁盘核验使用）。
  * 导出仅供测试（回归用例见 llm-caller.test.ts）。
  */
 export function extractClaimedFilePaths(reply: string, baseDir?: string): string[] {
   if (!reply) return [];
+  // ★ 2026-11-17 压测修复（v15 Task 3）：只分析**模型自己写的正文**。
+  //   EvoClaw 会在回复尾部追加若干合成 footer（任务状态/落点更正/任务未完成），
+  //   其中「创建文件：…」清单直接来自回执，包含模型创建后又删除的临时脚本
+  //   （run_flow.sh）。一旦 footer 被再次喂进本函数，这些已删除的临时文件会被
+  //   当成「声称存在」→ 触发虚假「⚠️ 任务未完成」，与模型正文「已确认不存在」
+  //   自相矛盾。footer 不是模型声明，必须在提取前剥离。
+  reply = stripSyntheticFooters(reply);
   const paths = new Set<string>();
   const hasBase = typeof baseDir === "string" && baseDir.length > 0;
 
@@ -1781,8 +1813,14 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   for (const m of reply.matchAll(backtickPathRe)) {
     const p = m[1].trim();
     if (!isCandidateFilePath(p)) continue;
-    const before = reply.slice(Math.max(0, (m.index ?? 0) - 30), m.index ?? 0);
+    const at = m.index ?? 0;
+    const before = reply.slice(Math.max(0, at - 30), at);
     if (runtimeWriteTargetRe.test(before)) continue;
+    // 否定/删除语境：模型明确说该文件不存在、已删除，属于清理记录而非创建声明。
+    const after = reply.slice(at + m[0].length, at + m[0].length + 40);
+    if (/(?:不存在|已删除|已移除|已清理|未创建|未生成|未找到|没有创建|没有生成)/.test(before + after)) continue;
+    // 命令调用语境（`bash /path/script.sh`）是历史执行记录，不是当前交付声明。
+    if (/(?:^|[\s`])(?:bash|sh|zsh|node|npx|python3?|npm|pnpm|yarn|git|cat|head|tail|wc|chmod|rm|mv|cp|ls|test|source)\s+$/.test(before)) continue;
     paths.add(p);
   }
 

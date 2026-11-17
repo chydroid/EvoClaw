@@ -2493,6 +2493,30 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).toContain("/tmp/v4-x/data.json");
   });
 
+  it("★ v15 Task 3 实录：系统状态 footer 中的已删除临时文件不算声称", () => {
+    // 模型创建临时脚本 run_flow.sh 跑通后主动删除；收尾时系统追加的
+    // 「📋 任务状态」footer 仍从回执列出它。footer 不是模型声明，
+    // 若参与提取会触发虚假「⚠️ 任务未完成」。
+    const reply = [
+      "`run_flow.sh` 已确认不存在（交付目录只剩四个目标文件）。现在重跑完整流程取真实退出码：",
+      "---",
+      "📋 **任务状态**（系统自动追加——回复未包含完成状态汇报）",
+      "- 工具调用：23 次成功",
+      "- 创建文件：`/tmp/v15-backup/backup.sh`、`/tmp/v15-backup/run_flow.sh` 等",
+    ].join("\n");
+    expect(extractClaimedFilePaths(reply)).toEqual([]);
+  });
+
+  it("否定/删除语境的绝对路径不视为声称创建", () => {
+    const reply = "已删除临时脚本 `/tmp/v15-backup/run_flow.sh`。";
+    expect(extractClaimedFilePaths(reply)).not.toContain("/tmp/v15-backup/run_flow.sh");
+  });
+
+  it("命令调用语境的绝对路径不视为交付声明", () => {
+    const reply = "运行 bash `/tmp/v15-backup/run_flow.sh` 返回 0。";
+    expect(extractClaimedFilePaths(reply)).not.toContain("/tmp/v15-backup/run_flow.sh");
+  });
+
   it("★ 复测 Task 7 实录：完成声明引导行 + bullet 清单条目行", () => {
     const reply =
       "主人，三个监控文件已经全部完成并验证通过：\n" +
