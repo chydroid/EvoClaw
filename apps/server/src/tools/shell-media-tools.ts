@@ -5,7 +5,7 @@ import { spawn, spawnSync } from "child_process";
 import { getCurrentToolCallContext, type AgentModelExecutor } from "@evoclaw/agent";
 import { getWorkspaceDir } from "@evoclaw/core";
 import type { ServiceRegistry } from "@evoclaw/core";
-import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript } from "@evoclaw/infrastructure";
+import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownloadScript, killChildProcessTree } from "@evoclaw/infrastructure";
 import type { KernelCellResult, KernelExecuteOptions } from "@evoclaw/infrastructure";
 import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand, shellBlockGuidance } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
@@ -178,6 +178,19 @@ function resolvePythonBin(): string {
   return cachedPythonBin;
 }
 
+/** 超时/异常时终止子进程及其全部后代（复用 infrastructure 的进程树击杀 +
+ *  幸存者复查）。背景（v16 压测 Task 6 实证）：只 kill 顶层 bash 会把递归
+ *  测试、后台任务留成孤儿——递归 fork 直接演变成 fork 炸弹耗尽整机内存。
+ *  POSIX 下配合 spawn 的 detached:true（子进程成为进程组组长）更可靠；
+ *  Windows 由 taskkill /T 覆盖。fire-and-forget：结果仅记日志。 */
+function killDescendants(child: import("child_process").ChildProcess, label: string): void {
+  void killChildProcessTree(child, { force: true }).then((r) => {
+    if (!r.success || (r.survivors?.length ?? 0) > 0) {
+      console.warn(`[shell-tools] ${label} tree kill incomplete: killed=${r.killedPids.length} survivors=${r.survivors?.length ?? 0}`);
+    }
+  }).catch(() => { /* 进程已退出，忽略 */ });
+}
+
 /** 异步执行 Python 脚本，返回 stdout（替代 execSync 避免阻塞事件循环）。
  *  错误对象携带 stderr/stdout/code 属性，兼容原 execSync 错误处理代码。
  *  （导出：web-tools / video-tools 的下载类 action 复用本实现） */
@@ -194,19 +207,18 @@ export function runPythonScriptAsync(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";
     let stderr = "";
     let settled = false;
 
-    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        try { child.kill("SIGTERM"); } catch { /* ignore */ }
-        sigkillTimer = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* ignore */ } }, 5000);
-        sigkillTimer.unref();
+        // SIGTERM → 5s 后 SIGKILL + 幸存者复查，全在 killChildProcessTree 内部
+        killDescendants(child, "runPythonScriptAsync");
         const err = new Error(`Python script timed out after ${timeoutMs}ms`) as Error & { stderr: string };
         err.stderr = stderr;
         reject(err);
@@ -239,7 +251,6 @@ export function runPythonScriptAsync(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
         if (code === 0) {
           resolve(stdout);
         } else {
@@ -256,7 +267,6 @@ export function runPythonScriptAsync(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
         (err as Error & { stderr: string }).stderr = stderr;
         reject(err);
       }
@@ -663,6 +673,9 @@ export function registerShellMediaTools(
           env: { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
           stdio: ["ignore", "pipe", "pipe"],
           windowsHide: true,
+          // POSIX：子进程成为进程组组长，超时时 killDescendants 才能整组击杀
+          // 后代进程（只 kill bash 会留下孤儿——v16 压测 fork 炸弹实证）。
+          detached: process.platform !== "win32",
         });
 
         let stdout = "";
@@ -706,15 +719,11 @@ export function registerShellMediaTools(
 
         // 超时计时器
         let resolved = false;
-        let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
         const timer = setTimeout(() => {
           if (!resolved) {
             resolved = true;
-            child.kill("SIGTERM");
-            sigkillTimer = setTimeout(() => {
-              try { child.kill("SIGKILL"); } catch {}
-            }, 5000);
-            sigkillTimer.unref();
+            // SIGTERM → 5s 后 SIGKILL + 幸存者复查，全在 killChildProcessTree 内部
+            killDescendants(child, "shell_exec");
             const partial = stdout.slice(-2000);
             const progressSeconds = Math.floor((Date.now() - startTime) / 1000);
             console.log(`[shell_exec] TIMEOUT after ${timeoutSec}s, partial output: ${stdout.length} chars`);
@@ -735,7 +744,6 @@ export function registerShellMediaTools(
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
-            if (sigkillTimer) clearTimeout(sigkillTimer);
             const output = stdout.trim();
             const errorOutput = stderr.trim();
             console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars`);
