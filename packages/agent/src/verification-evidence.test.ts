@@ -127,6 +127,23 @@ describe("isVerificationExitAttributable（退出码可归因判定）", () => {
     expect(isVerificationExitAttributable("pnpm test || echo failed")).toBe(false);
   });
 
+  it("顺序分隔 + 恒 0 收尾命令 → 不可归因（v16 Task 4 实证）", () => {
+    expect(isVerificationExitAttributable("python3 test_redact.py; echo \"test-exit=$?\"")).toBe(false);
+    expect(isVerificationExitAttributable("pnpm test; true")).toBe(false);
+    expect(isVerificationExitAttributable("node --test x.js ; printf done")).toBe(false);
+    expect(isVerificationExitAttributable("vitest run; exit 0")).toBe(false);
+  });
+
+  it("顺序分隔但收尾是真实检查 → 仍可归因", () => {
+    expect(isVerificationExitAttributable("cd x; node --test y.js")).toBe(true);
+    expect(isVerificationExitAttributable("cd x; npm run build")).toBe(true);
+  });
+
+  it("引号内的分号（内联脚本）不参与收尾判定", () => {
+    expect(isVerificationExitAttributable("node -e 'if (a) { b(); } ; check()'")).toBe(true);
+    expect(isVerificationExitAttributable("python3 -c \"import x; x.run()\"")).toBe(true);
+  });
+
   it("空命令 → 不可归因（fail-closed）", () => {
     expect(isVerificationExitAttributable("")).toBe(false);
   });

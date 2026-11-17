@@ -226,15 +226,37 @@ export function resolveVerificationExitCode(rawResult: unknown): number | null {
   return typeof exitCode === "number" && Number.isFinite(exitCode) ? exitCode : null;
 }
 
+/** 取最后一个顶层 `;` 之后的命令片段；单/双引号与反引号内的 `;` 不算分隔符。 */
+function lastTopLevelSegment(command: string): string {
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+    if (ch === ";") start = i + 1;
+  }
+  return command.slice(start);
+}
+
+// 恒返回 0 的收尾命令：`检查; echo "test-exit=$?"` 的退出码来自 echo，
+// 检查失败会被完全掩盖（v16 Task 4 实证：test_redact.py 2 失败仍记 exit 0）。
+const STATUS_SENTINEL = /^\s*(?:echo|printf|true)(?:\s|$)|^\s*:\s|^\s*exit\s+0(?:\s|$)/;
+
 export function isVerificationExitAttributable(command: string): boolean {
   if (!command) return false;
   // 管道：`a | b`（排除 `||`）——退出码来自管道尾部
   if (/(^|[^|])\|([^|]|$)/.test(command)) return false;
   // 或链：`a || b`——检查失败会被吞掉
   if (/\|\|/.test(command)) return false;
-  // 注：`a; b` 顺序分隔同样可能掩盖检查退出码，但 `;` 也大量出现在
-  // execute_code 的内联脚本里（JS/Python 语句分隔符），逐字符解析引号
-  // 状态成本高且易误伤。此处保守只处理实际高频事故（管道/或链）；
-  // `;` 场景由验证门的「复验」行为兜底，不做 fail-closed。
+  // 顺序分隔 + 状态哨兵：`python3 test.py; echo "exit=$?"` 的 shell 退出码
+  // 恒 0。只判「最后一个顶层片段是 echo/printf/true/:」这一明确形态，
+  // `cd x; node --test y` 这类仍可归因；引号内的 `;`（内联脚本语句分隔符）
+  // 由 lastTopLevelSegment 跳过，避免误伤 execute_code 风格命令。
+  if (STATUS_SENTINEL.test(lastTopLevelSegment(command))) return false;
   return true;
 }
