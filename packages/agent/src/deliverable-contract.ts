@@ -24,7 +24,7 @@ const DELIVERABLE_EXTENSIONS = [
   "js", "mjs", "cjs", "jsx", "ts", "tsx", "py", "rb", "sh", "bash", "go", "rs",
   "java", "kt", "sql", "json", "jsonl", "md", "txt", "csv", "tsv", "yaml", "yml",
   "toml", "xml", "html", "htm", "css", "scss", "diff", "patch", "docx", "xlsx",
-  "pptx", "pdf", "zip", "tar", "gz", "png", "svg",
+  "pptx", "pdf", "zip", "tar", "gz", "png", "svg", "prom",
 ];
 
 const EXT_ALT = DELIVERABLE_EXTENSIONS.map((e) => e.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
@@ -34,13 +34,15 @@ const EXT_ALT = DELIVERABLE_EXTENSIONS.map((e) => e.replace(/[.*+?^${}()|[\]\\]/
  *  `（` 紧跟在路径后，若不接受它，`fixtures/config.json` 无法整体成 token，会退化成
  *  只匹配裸 `config.json`，导致夹具 basename 漏登记。 */
 const FILE_TOKEN_RE = new RegExp(
-  `(?:^|[\\s\`"'（(、,，:：；;|])([A-Za-z0-9_./\\\\-]+\\.(?:${EXT_ALT}))(?=$|[\\s\`"'（()）、,，:：；;。.!?|])`,
+  // 前置分隔符含全角右括号 `）`：中文任务常用「1）foo.js」列举交付物，
+  // 若不接受 `）`，这类 token 整体匹配不到，契约会漏掉真实产物。
+  `(?:^|[\\s\`"'（(、,，:：；;|）])([A-Za-z0-9_./\\\\-]+\\.(?:${EXT_ALT}))(?=$|[\\s\`"'（()）、,，:：；;。.!?|])`,
   "gi",
 );
 
 /** 任务包含交付意图（否则不启用契约检查） */
 const DELIVERY_SIGNAL_RE =
-  /交付|产出|交付物|生成|创建|写入|导出|输出文件|落盘|deliverables?|artifacts?|create|generate|write|produce|export/i;
+  /交付|产出|交付物|必交|生成|创建|写入|导出|输出文件|落盘|deliverables?|artifacts?|create|generate|write|produce|export/i;
 
 /** 第一个绝对目录（POSIX 或 Windows 盘符） */
 const ABS_DIR_RE = /(?:^|[\s`"'（(])((?:\/|[A-Za-z]:[\\/])[\w.\\/-]*[\\/])/g;
@@ -50,7 +52,41 @@ const FIXTURE_PATH_RE = /(^|[\\/])fixtures?[\\/]|^fixtures?[\\/]/i;
 
 /** 交付意图（子句级）：裸文件名只有在含该词的子句里才算交付物 */
 const DELIVERY_TOKEN_RE =
-  /交付|产出|生成|创建|写入|导出|输出|落盘|构建|deliver|create|generate|write|produce|export|artifact/i;
+  /交付|产出|必交|生成|创建|写入|导出|输出|落盘|构建|deliver|create|generate|write|produce|export|artifact/i;
+
+/**
+ * 占位符目录段（OUTDIR / BACKUP_DIR / DEST …）。
+ * 任务描述里的命令行用法常出现 `OUTDIR/manifest.json` 这类**参数占位**，
+ * 它们不是交付物；若误当必交文件，回合结束会反复提示「契约未满足」。
+ * 仅对含路径分隔符的 token 生效，裸文件名（README.md）不受影响。
+ */
+const PLACEHOLDER_DIR_SEGMENT_RE = /^[A-Z][A-Z0-9_]{1,}$/;
+function hasPlaceholderDir(raw: string): boolean {
+  const segments = raw.split(/[\\/]/).filter(Boolean);
+  if (segments.length < 2) return false;
+  return segments.slice(0, -1).some((s) => PLACEHOLDER_DIR_SEGMENT_RE.test(s));
+}
+
+/** 夹具目录提及（fixtures/ 或 fixture/） */
+const FIXTURE_MENTION_RE = /(?:^|[\\/\s])fixtures?[\\/]/gi;
+
+/**
+ * token 是否出现在同一子句内、某个 `fixtures/...` 提及之后。
+ * 例：「夹具 fixtures/data/（a.txt、sub/c.txt）由我提供」——sub/c.txt 是
+ * 夹具子路径，不是交付物；但它带路径分隔符，旧逻辑会直接信任并误报缺失。
+ */
+function afterFixtureMention(text: string, index: number): boolean {
+  FIXTURE_MENTION_RE.lastIndex = 0;
+  let lastEnd = -1;
+  let m: RegExpExecArray | null;
+  while ((m = FIXTURE_MENTION_RE.exec(text)) !== null) {
+    const end = m.index + m[0].length;
+    if (end > index) break;
+    lastEnd = end;
+  }
+  if (lastEnd < 0) return false;
+  return !CLAUSE_BOUNDARY_RE.test(text.slice(lastEnd, index));
+}
 
 /**
  * 广为人知的技术/库名——它们长得像文件名，但几乎从不作为交付物。
@@ -126,10 +162,17 @@ export function extractRequiredDeliverables(
     // 裸文件名（无路径分隔符）的两道防线：技术名黑名单 + 交付意图子句邻近。
     // 带路径的 token 直接信任（`fixtures/x.json` 另由夹具规则排除）。
     const isBare = !/[\\/]/.test(raw);
+    // token 在原文中的起始位置：m[0] = 前置分隔符 + token（尾部是 lookahead）
+    const tokenIndex = m.index + (m[0].length - raw.length);
+    // 命令行占位目录（OUTDIR/backup.tar.gz）不是交付物。
+    if (hasPlaceholderDir(raw)) continue;
+    // 夹具目录提及之后的同子句 token 是输入（含子路径 sub/c.txt）。
+    if (afterFixtureMention(text, tokenIndex)) {
+      fixtureBasenames.add(path.basename(raw).toLowerCase());
+      continue;
+    }
     if (isBare) {
       if (NON_DELIVERABLE_BARE.has(raw.toLowerCase())) continue;
-      // token 在原文中的起始位置：m[0] = 前置分隔符 + token（尾部是 lookahead）
-      const tokenIndex = m.index + (m[0].length - raw.length);
       if (!clauseHasDeliveryIntent(text, tokenIndex)) continue;
     }
     tokens.push(raw);

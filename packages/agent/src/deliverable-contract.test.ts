@@ -66,6 +66,36 @@ describe("extractRequiredDeliverables", () => {
     const specs = extractRequiredDeliverables(msg, "/tmp/ws");
     expect(specs.map((s) => s.path)).toEqual(["/tmp/ws/report.md"]);
   });
+
+  it("命令行占位目录（OUTDIR/BACKUP_DIR）不算交付物", () => {
+    // v15 Task 3 实测：命令行用法里的 OUTDIR/backup.tar.gz 被误当必交文件，
+    // 回合结束反复提示契约未满足。
+    const msg = "在 /tmp/task/ 下交付 backup.sh 与 restore.sh；运行 backup.sh SRC OUTDIR，写出 OUTDIR/manifest.json 与 OUTDIR/backup.tar.gz。";
+    const specs = extractRequiredDeliverables(msg, "/tmp/ws");
+    expect(specs.map((s) => s.path)).toEqual([
+      "/tmp/task/backup.sh",
+      "/tmp/task/restore.sh",
+    ]);
+  });
+
+  it("fixtures/ 提及之后的同子句子路径也是输入（sub/c.txt 不算交付物）", () => {
+    // v15 Task 3 实测：夹具目录后括号内列出 sub/c.txt，带路径分隔符被直接信任。
+    const msg = "在 /tmp/task/ 下交付 out.md；夹具 fixtures/data/（a.txt、sub/c.txt）由我提供，禁止修改。";
+    const specs = extractRequiredDeliverables(msg, "/tmp/ws");
+    expect(specs.map((s) => s.path)).toEqual(["/tmp/task/out.md"]);
+  });
+
+  it("支持 .prom 产物", () => {
+    const msg = "交付 metrics.py 与 metrics.prom。";
+    const specs = extractRequiredDeliverables(msg, "/tmp/ws");
+    expect(specs.map((s) => s.path)).toEqual(["/tmp/ws/metrics.py", "/tmp/ws/metrics.prom"]);
+  });
+
+  it("中文序号「1）file」后的 token 也能识别", () => {
+    const msg = "在 /tmp/task/ 下生成：1）report.json（内容由脚本生成）。";
+    const specs = extractRequiredDeliverables(msg, "/tmp/ws");
+    expect(specs.map((s) => s.path)).toEqual(["/tmp/task/report.json"]);
+  });
 });
 
 describe("findMissingDeliverables", () => {

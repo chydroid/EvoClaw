@@ -145,6 +145,7 @@ import {
   getVerificationEvidenceStore,
   classifyVerificationCommand,
   isVerificationExitAttributable,
+  resolveVerificationExitCode,
 } from "./verification-evidence";
 import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
@@ -5229,6 +5230,11 @@ if (deps.contextPruningManager && !prunerNoop) {
       }
 
       let finalReply = "";
+      // 最后一条**文本**回复所在的轮次（空 content 的工具轮不更新）。
+      // 用于轮次预算耗尽时判断 finalReply 是否已经过期（v15 Task 3 实测：
+      // 模型在 0 轮说了句「现在写产物」，之后 20+ 轮全是工具调用，预算耗尽
+      // 后把 0 轮那句当成最终回复发给用户）。
+      let finalReplyRound = -1;
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
       // 本回合**真正执行过**搜索类工具（区别于「尝试调用」）：
@@ -6084,6 +6090,7 @@ if (deps.contextPruningManager && !prunerNoop) {
 
         if (assistantMsg.content) {
           finalReply = assistantMsg.content;
+          finalReplyRound = round;
           finalReply = finalReply.replace(/<minimax:tool_call>[\s\S]*?<\/minimax:tool_call>/g, "").trim();
           finalReply = finalReply.replace(/<invoke\s+name="[^"]*">[\s\S]*?<\/invoke>/g, "").trim();
           finalReply = finalReply.replace(/<parameter\s+name="[^"]*">[\s\S]*?<\/parameter>/g, "").trim();
@@ -7404,16 +7411,15 @@ if (deps.contextPruningManager && !prunerNoop) {
                 //   只登记未归因命令，让工作区保持 unverified、验证门继续要求复验。
                 const attributable = toolName !== "shell_exec"
                   || isVerificationExitAttributable(verifyCommand);
-                if (!attributable) {
+                // ★ 2026-11-17（v15 Task 3）：缺少 exitCode（超时 / spawn 失败 /
+                //   execute_code 异常早退）与管道掩盖等价——不能按 0 记成通过。
+                const exitCode = resolveVerificationExitCode(rawResult);
+                if (!attributable || exitCode === null) {
                   evidenceStore.markUnattributedRun(verifyCommand);
                   asyncLog(
-                    `[AgentModelExecutor] Unattributed verification run (exit status masked by pipeline): ${verifyCommand.slice(0, 160)}\n`,
+                    `[AgentModelExecutor] Unattributed verification run (${attributable ? "missing exit code" : "exit status masked by pipeline"}): ${verifyCommand.slice(0, 160)}\n`,
                   );
                 } else {
-                  const exitCode =
-                    rawResult && typeof rawResult === "object" && typeof (rawResult as Record<string, unknown>).exitCode === "number"
-                      ? (rawResult as Record<string, unknown>).exitCode as number
-                      : 0;
                   evidenceStore.record(
                     createdFiles.map((f) => f.path),
                     `${toolName}:${verifyKind}`,
@@ -7949,7 +7955,17 @@ if (deps.contextPruningManager && !prunerNoop) {
           } catch (err) { process.stderr.write(`[AgentModelExecutor] Skill fallback error:` + " " + err + "\n"); /* best-effort */ }
         }
 
-        if (!finalReply && round === maxToolRounds - 1) {
+        // ★ 2026-11-17（v15 Task 3）：finalReply 可能是很多轮之前的旧文本——
+        //   模型先说「现在写产物」然后连续 20+ 轮只调工具，预算耗尽时旧文本
+        //   会被当成最终回复（用户看到的是开工前的话）。文本回复比末轮早
+        //   两轮以上即视为过期，走末轮总结兜底。
+        const staleFinalReply = finalReplyRound >= 0 && finalReplyRound < round - 1;
+        if ((!finalReply || staleFinalReply) && round === maxToolRounds - 1) {
+          if (staleFinalReply) {
+            asyncLog(
+              `[AgentModelExecutor] Stale final reply (round ${finalReplyRound}, now ${round}); requesting end-of-budget summary\n`,
+            );
+          }
           try {
             const summaryMessages = [
               ...conversationMessages,

@@ -209,6 +209,23 @@ export function classifyVerificationCommand(command: string): string | null {
  *
  * 返回 false 时调用方必须**跳过** `record()`，只调 `markUnattributedRun()`。
  */
+/**
+ * 从工具原始结果中读取**可信**的退出码。
+ *
+ * ★ 2026-11-17 压测修复（v15 Task 3）：旧接线用 `exitCode ?? 0` 兜底，于是
+ *   shell_exec 超时/进程启动失败（结果里没有 exitCode）会被当成 exit 0 记入
+ *   证据账本，清空编辑记录、让验证门误以为工作区已验证。缺少退出码与
+ *   「退出码被管道掩盖」等价：无法归因，必须按未验证处理（fail-closed）。
+ *
+ * 返回 null 表示结果中没有可用的数字退出码，调用方应 markUnattributedRun()
+ * 而不是 record()。
+ */
+export function resolveVerificationExitCode(rawResult: unknown): number | null {
+  if (!rawResult || typeof rawResult !== "object") return null;
+  const exitCode = (rawResult as { exitCode?: unknown }).exitCode;
+  return typeof exitCode === "number" && Number.isFinite(exitCode) ? exitCode : null;
+}
+
 export function isVerificationExitAttributable(command: string): boolean {
   if (!command) return false;
   // 管道：`a | b`（排除 `||`）——退出码来自管道尾部
