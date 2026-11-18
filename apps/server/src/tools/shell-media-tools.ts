@@ -1378,6 +1378,8 @@ export function registerShellMediaTools(
             // P1：env 清洗 —— 只传运行必需项 + RPC token，不继承 .env 密钥
             env: buildProgrammaticEnv(rpcToken),
             windowsHide: true,
+            // 进程组组长：看门狗超时时才能整树击杀后代
+            detached: process.platform !== "win32",
           });
         } catch (err: unknown) {
           try { fs.unlinkSync(scriptFile); } catch { /* best-effort */ }
@@ -1465,9 +1467,9 @@ export function registerShellMediaTools(
           }
         };
 
-        // 超时看门狗
+        // 超时看门狗：整树击杀（SIGKILL + 幸存者复查）
         const timeoutTimer = setTimeout(() => {
-          child?.kill("SIGKILL");
+          if (child) killDescendants(child, "programmatic-host");
         }, timeoutSec * 1000);
         timeoutTimer.unref?.();
 

@@ -22,7 +22,7 @@ import { execFileSync, spawn } from "child_process";
 import { atomicWriteFileSync, getWorkspaceDir } from "@evoclaw/core";
 import type { AgentModelExecutor } from "@evoclaw/agent";
 import type { ServiceRegistry } from "@evoclaw/core";
-import { generateVideoDownloadScript } from "@evoclaw/infrastructure";
+import { generateVideoDownloadScript, killChildProcessTree } from "@evoclaw/infrastructure";
 import { validateDownloadUrl } from "./image-tools";
 // video_download 合并进本文件的 video 复合工具；其脚本执行辅助函数复用 shell-media-tools 的实现
 import { findPythonPaths, runPythonScriptAsync } from "./shell-media-tools";
@@ -303,7 +303,7 @@ async function generateLocalSlideshow(
     ];
 
     // stdout 设为 ignore 避免管道缓冲区填满导致背压死锁；仅采集 stderr
-    const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["ignore", "ignore", "pipe"] });
+    const ffmpeg = spawn("ffmpeg", ffmpegArgs, { stdio: ["ignore", "ignore", "pipe"], detached: process.platform !== "win32" });
 
     let stderr = "";
     ffmpeg.stderr.on("data", (data) => {
@@ -312,20 +312,15 @@ async function generateLocalSlideshow(
 
     // 60s 超时：先 SIGTERM，2s 后仍未退出则 SIGKILL
     let killed = false;
-    let forceTimer: ReturnType<typeof setTimeout> | undefined;
     const killTimer = setTimeout(() => {
       killed = true;
-      try { ffmpeg.kill("SIGTERM"); } catch { /* ignore */ }
-      forceTimer = setTimeout(() => {
-        try { ffmpeg.kill("SIGKILL"); } catch { /* ignore */ }
-      }, 2000);
-      forceTimer.unref?.();
+      // SIGTERM → 2s 后 SIGKILL + 幸存者复查，全在 killChildProcessTree 内部
+      void killChildProcessTree(ffmpeg, { gracePeriodMs: 2000 }).catch(() => { /* 已退出 */ });
     }, 60_000);
     killTimer.unref?.();
 
     ffmpeg.on("close", (code) => {
       clearTimeout(killTimer);
-      if (forceTimer) clearTimeout(forceTimer);
       if (killed) {
         reject(new Error("FFmpeg timed out after 60s"));
         return;
@@ -352,7 +347,6 @@ async function generateLocalSlideshow(
 
     ffmpeg.on("error", (err) => {
       clearTimeout(killTimer);
-      if (forceTimer) clearTimeout(forceTimer);
       reject(new Error(`FFmpeg spawn error: ${err.message}`));
     });
   });

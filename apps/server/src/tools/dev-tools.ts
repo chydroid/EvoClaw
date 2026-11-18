@@ -17,6 +17,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { spawn } from "child_process";
 import type { AgentModelExecutor } from "@evoclaw/agent";
+import { killChildProcessTree } from "@evoclaw/infrastructure";
 
 /** 异步运行命令，捕获 stdout/stderr，超时控制 */
 function runCommand(
@@ -31,21 +32,18 @@ function runCommand(
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       shell: false,
+      // 进程组组长：超时时才能整树击杀后代（只 kill 顶层会留下孤儿）
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";
     let stderr = "";
     let settled = false;
-    let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
-
     const timer = setTimeout(() => {
       if (!settled) {
         settled = true;
-        try { child.kill("SIGTERM"); } catch { /* ignore */ }
-        sigkillTimer = setTimeout(() => {
-          try { child.kill("SIGKILL"); } catch { /* ignore */ }
-        }, 5000);
-        sigkillTimer.unref();
+        // SIGTERM → 5s 后 SIGKILL + 幸存者复查，全在 killChildProcessTree 内部
+        void killChildProcessTree(child).catch(() => { /* 已退出 */ });
         resolve({ stdout, stderr, code: null, timedOut: true });
       }
     }, options.timeoutMs);
@@ -76,7 +74,6 @@ function runCommand(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
         resolve({ stdout, stderr, code, timedOut: false });
       }
     });
@@ -85,7 +82,6 @@ function runCommand(
       if (!settled) {
         settled = true;
         clearTimeout(timer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
         resolve({ stdout, stderr: stderr + " (spawn error)", code: -1, timedOut: false });
       }
     });
