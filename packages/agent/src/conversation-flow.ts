@@ -79,7 +79,15 @@ const INTENT_RULES: IntentRule[] = [
     patterns: [
       /(ignore|disregard|forget)\s+(previous|prior|above|all)\s+(instructions?|rules?|prompts?)/i,
       /(忽略|无视|忘记)(之前|上面|所有)(的)?(指令|规则|提示)/,
-      /\b(system\s+prompt|系统提示词|jailbreak|越狱|DAN)\b/i,
+      // ★ 2026-11-18（v17 压测 Task 6 误拦）：\bDAN\b 裸词（大小写不敏感）会命中
+      //   任务文本里的人名「Dan」——「Dan "C"」位于 init 阶段直接整会话被拒
+      //   （0 token，与 v12「密码」裸词误拦同族）。改为要求越狱语境组合：
+      //   「DAN」与提示注入动词（mode/jailbreak）同现，或明确写 jailbreak/越狱。
+      // ★ 顺带修复（自检发现的历史缺口）：原 \b(...|系统提示词|越狱)\b 对中文分支
+      //   **从不匹配**——\b 需要 \w 与非 \w 交界，CJK 字符两侧皆非 \w，词界永不成立。
+      //   英文词保留 \b，中文词改裸匹配（词义本身就是越狱语境，无误拦面）。
+      /\b(system\s+prompt|jailbreak)\b|系统提示词|越狱/i,
+      /\bDAN\s+(mode|jailbreak)/i,
       /\b(you\s+are\s+now|现在你是|pretend\s+to\s+be|扮演)\b/i,
       /\b(override|覆盖|绕过|bypass)\s+(safety|安全|filter|过滤)\b/i,
     ],

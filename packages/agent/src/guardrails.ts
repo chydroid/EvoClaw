@@ -1,6 +1,10 @@
 // EvoClaw Guardrails System — Three-layer safety gate (input / output / tool)
 // Inspired by OpenClaw 2026.4.5 & OpenAI Agents SDK guardrails
 
+// ★ 2026-11-18（v17 压测 Task 3）：读取安全等级做删除类规则降级。
+//   静态 import（与 human-approval.ts 同模式）：security 不依赖 agent，无循环。
+import { getActiveSecurityPolicy } from "@evoclaw/security";
+
 // ─── Severity & Action Types ────────────────────────────────────────────────
 
 export type Severity = "low" | "medium" | "high";
@@ -51,6 +55,12 @@ export interface ToolRule {
   severity: Severity;
   action: GuardrailAction;
   description: string;
+  /**
+   * ★ 2026-11-18（v17 压测）：可降级标记。risky 安全档下（approveRiskyOperations=false、
+   * 允许操作所有文件），带此标记的规则从 block 降级为 log，放行操作交由
+   * HITL 审批 / PermissionManager / 破坏性命令检测兜底。仅删除类规则使用。
+   */
+  deletable?: boolean;
 }
 
 // ─── Config ─────────────────────────────────────────────────────────────────
@@ -293,10 +303,15 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     // "permission_status" / "confirm" 家族工具名 → 查审批状态的工具被误拦，
     // 模型失去审批检查通道。lookaround 保证只拦真删除类工具名
     // （file_delete / rm / truncate_file 仍命中；permission_status 放行）。
+    // ★ 2026-11-18（v17 压测 Task 3）：deletable=true 规则标记——risky 安全档下
+    //   本规则降级为 log（见 ToolGuardrail.check），放行删除类操作，改由
+    //   HITL 审批（file_delete: critical）与 PermissionManager 兜底。
+    //   硬拦导致「要求删除文件」的巡检/审计/重构类任务无法交付 removed 分类。
     toolPattern: /(?<![a-z0-9])(?:delete|remove|unlink|rmdir|rm|truncate|wipe|destroy)(?![a-z0-9])/i,
     argPattern: /./, // any args — the tool name itself is dangerous
     severity: "high",
     action: "block",
+    deletable: true,
     description: "Tool: file deletion operation",
   },
   {
@@ -313,6 +328,11 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*\b(?:rm|del|format|nc|ncat)\b[^`]*`|\$\([^)]*\b(?:rm|del|format|nc|ncat)\b[^)]*\))/i,
     severity: "high",
     action: "block",
+    // ★ 2026-11-18（v17 压测 Task 3）：deletable=true——risky 档下降级为 log。
+    //   操作符后的 rm/del 属删除类（nc/ncat 反弹 shell 不属于，但同规则内
+    //   无法按分支区分，risky 档下统一放行；nc/ncat 由 shell 层
+    //   isDestructiveCommand / ShellGuard 依据 shell.blockAtOrAbove 兜底）。
+    deletable: true,
     description: "Tool: shell injection pattern in arguments",
   },
   {
@@ -635,6 +655,18 @@ export class ToolGuardrail {
     this.defaultSeverity = defaultSeverity;
   }
 
+  /**
+   * ★ 2026-11-18（v17 压测 Task 3）：当前是否处于 risky 安全档。
+   * risky 档（approveRiskyOperations=false）允许删除类操作，删除规则降级为 log。
+   */
+  private static isRiskySecurityLevel(): boolean {
+    try {
+      return getActiveSecurityPolicy().approveRiskyOperations === false;
+    } catch {
+      return false;
+    }
+  }
+
   check(toolName: string, args: Record<string, unknown>): GuardrailResult {
     const triggeredRules: string[] = [];
     let highestSeverity: Severity | undefined;
@@ -672,6 +704,17 @@ export class ToolGuardrail {
 
         if (!argMatched) {
           continue;
+        }
+
+        // ★ 2026-11-18（v17 压测 Task 3）：risky 安全档下，删除类规则降级为 log。
+        //   risky 档语义是「允许访问与操作所有文件，除极端危险命令外无需审批」，
+        //   与本规则的 block 硬拦矛盾——「要求删除文件」的巡检/审计/重构类任务
+        //   无法完成 removed 分类。降级后删除操作交由 HITL 审批
+        //   （file_delete: critical）与 shell 层破坏性命令检测兜底。
+        //   懒 require：guardrails 保持零模块级内部依赖；security 不可用时保守 block。
+        if (rule.deletable && rule.action === "block" && ToolGuardrail.isRiskySecurityLevel()) {
+          rule.action = "log";
+          delete rule.deletable; // 只降一次，避免每次 check 重复查询
         }
 
         triggeredRules.push(rule.id);

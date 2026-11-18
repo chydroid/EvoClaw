@@ -230,3 +230,47 @@ describe("guardrails tool-file-deletion（回归）", () => {
     expect(r.triggeredRules).not.toContain("tool-file-deletion");
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ★ v17 压测 Task 3 回归（2026-11-18）：risky 安全档下删除类规则硬拦
+//   「要求删除文件」的巡检/审计任务无法完成 removed 分类。
+//   修复：deletable=true 的规则在 approveRiskyOperations=false 时降级为 log。
+//   注意：测试环境默认 normal 档（approveRiskyOperations=true）→ 仍 block；
+//   risky 档降级行为用 mock getActiveSecurityPolicy 验证。
+// ═══════════════════════════════════════════════════════════
+describe("guardrails 删除规则安全等级感知（v17 回归）", () => {
+  it("normal 档（默认）：file_delete / shell rm 仍硬拦", () => {
+    const mgr = new GuardrailsManager();
+    expect(mgr.checkToolCall("file_delete", { path: "x" }).passed).toBe(false);
+    expect(mgr.checkToolCall("shell_exec", { command: "echo ok; rm file.txt" }).passed).toBe(false);
+  });
+
+  it("risky 档：删除类规则降级为 log，放行由 HITL 兜底", async () => {
+    const security = await import("@evoclaw/security");
+    const { setActiveSecurityLevel } = security as { setActiveSecurityLevel: (l: "risky") => unknown };
+    try {
+      setActiveSecurityLevel("risky");
+      const mgr = new GuardrailsManager();
+      const r1 = mgr.checkToolCall("file_delete", { path: "x" });
+      expect(r1.passed).toBe(true);
+      expect(r1.triggeredRules).toContain("tool-file-deletion");
+      const r2 = mgr.checkToolCall("shell_exec", { command: "echo ok; rm file.txt" });
+      expect(r2.passed).toBe(true);
+    } finally {
+      (security as { setActiveSecurityLevel: (l: "normal") => unknown }).setActiveSecurityLevel("normal");
+    }
+  });
+
+  it("risky 档不豁免非删除规则（path traversal 仍拦）", async () => {
+    const security = await import("@evoclaw/security");
+    const { setActiveSecurityLevel } = security as { setActiveSecurityLevel: (l: "risky") => unknown };
+    try {
+      setActiveSecurityLevel("risky");
+      const mgr = new GuardrailsManager();
+      const r = mgr.checkToolCall("file_read", { path: "../../../etc/shadow" });
+      expect(r.passed).toBe(false);
+    } finally {
+      (security as { setActiveSecurityLevel: (l: "normal") => unknown }).setActiveSecurityLevel("normal");
+    }
+  });
+});
