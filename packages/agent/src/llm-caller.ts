@@ -16,6 +16,12 @@ import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
+import {
+  checkTruncation,
+  buildContinuationNudge,
+  mergeTruncatedParts,
+  type TruncationAction,
+} from "./turn-truncation";
 import { SubdirectoryHintTracker } from "./subdirectory-hints";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
@@ -1072,6 +1078,12 @@ export interface CallLLMOnceResult {
   responseMs?: number;
   /** provider 原始 usage 对象（未解析）——供 normalizeUsage 提取缓存命中 token。 */
   usageDetails?: unknown;
+  /** ★ hermes 对齐 R10：流正常结束但 finish_reason==="length"（max_tokens 截断）。
+   *  主循环据此调 checkTruncation 决定回灌续写 nudge 或中止。此前该信号只在
+   *  streamReadError 分支被消费，正常 length 截断完全不进恢复路径（死区）。 */
+  truncatedByLength?: boolean;
+  /** ★ hermes 对齐 R10：流内重复看门狗已中断（REPETITION_LOOP_INTERRUPTED）。 */
+  runawayDetected?: boolean;
 }
 
 export interface ParseStreamingResponseResult {
@@ -3679,7 +3691,7 @@ export async function parseStreamingResponse(
             // 文本增量统一走 handleTextDelta（清洗推理标签 → 看门狗 →
             // token/status 事件下发），与 Anthropic text_delta 共用同一逻辑。
             // 返回 true 表示触发重复看门狗中断，跳出当前行循环。
-            if (handleTextDelta(choice.delta.content)) break;
+            if (handleTextDelta(choice.delta.content)) { runawayInterrupted = true; break; }
           }
 
           if (choice.delta.tool_calls) {
@@ -3861,6 +3873,8 @@ export async function parseStreamingResponse(
     promptTokens: promptTokens || 0,
     responseMs: streamResponseMs,
     usageDetails: streamUsageDetails,
+    truncatedByLength: finishReason === "length",
+    runawayDetected: runawayInterrupted,
   };
   }; // end doParse
 
