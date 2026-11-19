@@ -60,6 +60,7 @@ export type FailoverReason =
   | "multimodal_tool_content_unsupported" // Provider 拒绝 tool 消息列表内容（transient，降级为文本）
   | "thinking_signature"        // Anthropic thinking 块签名无效（transient，剥离后重试）
   | "long_context_tier"         // Anthropic 长上下文层级门控（transient，需压缩）
+  | "output_cap"                // ★ hermes 对齐 R10：max_tokens 超过 provider 输出上限（transient，clamp 后原地重试；误分类为 context_overflow 会导致压缩死循环——压缩改不了 max_tokens）
   | "aborted";                   // ★ 2026-10-30：用户/系统主动取消（非 provider 错误，non-transient）
 
 // ── Transient Classification ──────────────────────────────
@@ -95,7 +96,8 @@ export function isTransientReason(reason: FailoverReason | null | undefined): bo
     reason === "invalid_encrypted_content" ||
     reason === "multimodal_tool_content_unsupported" ||
     reason === "thinking_signature" ||
-    reason === "long_context_tier"
+    reason === "long_context_tier" ||
+    reason === "output_cap"
   );
 }
 
@@ -154,7 +156,8 @@ export function shouldAllowCooldownProbeForReason(
     reason === "invalid_encrypted_content" ||
     reason === "multimodal_tool_content_unsupported" ||
     reason === "thinking_signature" ||
-    reason === "long_context_tier"
+    reason === "long_context_tier" ||
+    reason === "output_cap"
   );
 }
 
@@ -182,7 +185,8 @@ export function shouldUseTransientCooldownProbeSlot(
     reason === "invalid_encrypted_content" ||
     reason === "multimodal_tool_content_unsupported" ||
     reason === "thinking_signature" ||
-    reason === "long_context_tier"
+    reason === "long_context_tier" ||
+    reason === "output_cap"
   );
 }
 

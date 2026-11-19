@@ -26,6 +26,8 @@ export enum LLMErrorType {
   PAYLOAD_TOO_LARGE = "payload_too_large",
   /** 聚合器（如 OpenRouter）账户数据/隐私策略阻止（non-transient） */
   PROVIDER_POLICY = "provider_policy",
+  /** ★ hermes 对齐 R10：max_tokens 超过 provider 输出上限（transient，clamp 后原地重试） */
+  OUTPUT_CAP = "output_cap",
 }
 
 export interface ClassifiedError {
@@ -48,6 +50,8 @@ export interface ClassifiedError {
   shouldStripThinking?: boolean;
   /** 是否应将 tool 消息列表内容降级为纯文本后重试（fix-1） */
   shouldFlattenToolContent?: boolean;
+  /** ★ hermes 对齐 R10：output_cap 错误时从错误文本解析出的 provider 输出上限（token 数） */
+  parsedOutputCap?: number;
 }
 
 const CONTEXT_OVERFLOW_PATTERNS = [
@@ -437,6 +441,28 @@ export function classifyLLMError(
     };
   }
 
+  // ── ★ hermes 对齐 R10（is_output_cap_error 语义移植）：output-cap 门 ──
+  // 必须在 CONTEXT_OVERFLOW 之前：OpenAI 式 "max_tokens is too large... reduce
+  // the length" 会同时命中 /reduce.the.length/i 与 /token.limit/i → 被误判成
+  // context_overflow → 触发压缩。但压缩改不了 max_tokens，同一错误会反复进压
+  // 缩器形成死循环（hermes model_metadata.py 注释明言的陷阱）。
+  // 判别：错误把 max_tokens 当作 cap/range/limit 描述（而非描述输入超长）→
+  // output_cap。resolveFailoverReason 已先行识别一部分，这里补通用词表。
+  if (isOutputCapError(statusCode, combinedText)) {
+    return {
+      type: LLMErrorType.OUTPUT_CAP,
+      retryable: true,
+      shouldCompact: false,
+      shouldRotateAuth: false,
+      shouldSkipProvider: false,
+      backoffMs: applyBackoffJitter(500),
+      message: "Output cap (max_tokens) exceeds provider limit. Clamping max_tokens before retry.",
+      reason: "output_cap",
+      isTransient: true,
+      parsedOutputCap: parseAvailableOutputTokens(combinedText) ?? undefined,
+    };
+  }
+
   for (const pattern of CONTEXT_OVERFLOW_PATTERNS) {
     if (pattern.test(lower)) {
       return {
@@ -681,6 +707,83 @@ export function isContextOverflowError(statusCode?: number, errorText?: string):
   const lower = errorText.toLowerCase();
   return CONTEXT_OVERFLOW_PATTERNS.some((p) => p.test(lower));
 }
+
+// ── ★ hermes 对齐 R10（model_metadata.py is_output_cap_error 语义移植）──────
+//
+// output-cap 400：请求里的 max_tokens 超过 provider 的输出上限。
+// Hermes 注释明言的陷阱：若把这类 400 误分类为 context_overflow，
+// 会触发压缩——但压缩改不了 max_tokens，同一错误反复进压缩器形成死循环。
+//
+// 判别式（hermes _OUTPUT_CAP_SIGNALS / _INPUT_OVERFLOW_SIGNALS 语义）：
+//   cap 信号 = 错误把 max_tokens 描述为上限/范围/超限（且通常给出合法范围）
+//   input 信号 = 错误描述「输入/上下文/prompt 超长」（这才是真 overflow）
+// 命中 cap 信号且不含 input 信号 → output_cap。
+
+/** max_tokens 被当作上限描述的信号（cap/range/limit 语义）。 */
+const OUTPUT_CAP_SIGNALS = [
+  /max_tokens.{0,40}(too large|too big|exceed|exceeds|invalid|must be|should be|is greater than|above|over)/i,
+  /max_tokens.{0,40}(less than|at most|no more than|maximum of|up to|max\.? of)\s*\d+/i,
+  /max_tokens.is higher than/i,
+  /max_completion_tokens.{0,40}(exceed|invalid|must be|too large)/i,
+  /max_output_tokens.{0,40}(exceed|invalid|must be|too large)/i,
+  /(output|completion).{0,20}token.{0,20}(limit|cap|maximum)/i,
+  /max_tokens.is too large/i,
+];
+
+/** 描述输入/上下文超长的信号（真 overflow，非 output-cap）。 */
+const INPUT_OVERFLOW_SIGNALS = [
+  /input.{0,30}(too long|exceeds|too many)/i,
+  /context.{0,30}(length|window|exceed|full)/i,
+  /prompt.{0,30}(too long|exceeds)/i,
+  /maximum context length/i,
+];
+
+/**
+ * 判断是否为 output-cap 错误（max_tokens 超上限）。
+ * 必须先于 CONTEXT_OVERFLOW 判定调用（同一文本可能同时含
+ * "reduce the length" 类词——那是让减小 max_tokens，不是让压缩上下文）。
+ */
+export function isOutputCapError(statusCode?: number, errorText?: string): boolean {
+  if (!errorText) return false;
+  // output-cap 几乎都是 400（部分 provider 用 422）
+  if (statusCode !== undefined && statusCode !== 400 && statusCode !== 422) return false;
+  const lower = errorText.toLowerCase();
+  // 明确描述输入超长 → 真 overflow，不是 output-cap
+  if (INPUT_OVERFLOW_SIGNALS.some((p) => p.test(lower))) return false;
+  return OUTPUT_CAP_SIGNALS.some((p) => p.test(lower));
+}
+
+/**
+ * 从错误文本解析 provider 声明的输出上限数字
+ * （hermes parse_available_output_tokens_from_error 语义移植，覆盖常见措辞）：
+ *   - "max_tokens must be less than 65536"
+ *   - "max_tokens is too large: 1000000. Maximum is 32768"
+ *   - "max_tokens can be up to 8192"
+ *   - "maximum output tokens is 16384"
+ */
+export function parseAvailableOutputTokens(errorText?: string): number | null {
+  if (!errorText) return null;
+  const patterns = [
+    /maximum is (\d{3,})/i,
+    /max(?:imum)?(?:\.|:)?\s*(?:is|of|allowed)?\s*(\d{3,})/i,
+    /less than or equal to (\d{3,})/i,
+    /at most (\d{3,})/i,
+    /up to (\d{3,})/i,
+    /no more than (\d{3,})/i,
+    /must be (?:less than|below|under|at most|max(?:imum)?)\s*(\d{3,})/i,
+    /(\d{3,})\s*tokens?\b/i,
+  ];
+  for (const p of patterns) {
+    const m = errorText.match(p);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      // 合理性：输出上限至少 64，至多 10M（滤掉误抓的 HTTP 状态码/请求 id）
+      if (n >= 64 && n <= 10_000_000) return n;
+    }
+  }
+  return null;
+}
+
 
 export function isRateLimitError(statusCode?: number, errorText?: string): boolean {
   if (statusCode === 429) return true;

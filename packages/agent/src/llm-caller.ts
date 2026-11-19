@@ -119,7 +119,8 @@ import type { ChatContent } from "@evoclaw/plugin-sdk";
 import type { ModelConfig, ProviderConfig, ToolDefinition, AgentProgressCallback } from "./types";
 import type { ClassifiedError } from "./error-classifier";
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
-import { classifyLLMError, LLMErrorType, formatClassifiedErrorForUser } from "./error-classifier";
+import { classifyLLMError, LLMErrorType, formatClassifiedErrorForUser, parseAvailableOutputTokens } from "./error-classifier";
+import { clampOutputCap } from "./turn-overflow";
 import { stampFailure, terminalFailureCopy, type TerminalFailureEvidence } from "./turn-failure-copy";
 import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
@@ -5790,6 +5791,45 @@ if (deps.contextPruningManager && !prunerNoop) {
             } catch (guardErr) {
               process.stderr.write(`[LLMCaller] rate guard record failed: ${guardErr instanceof Error ? guardErr.message : String(guardErr)}\n`);
             }
+          }
+
+          // ── ★ hermes 对齐 R10：output-cap clamp 原地重试 ──
+          // max_tokens 超过 provider 输出上限（400 + cap 措辞）。压缩救不了
+          // 这个错误（压缩改的是输入，不是 max_tokens）——解析 provider 声明的
+          // 上限数字，clamp 到 min(provider_available, local_available) - 64
+          // （hermes _clamp_output_cap），同 provider 原地重试一次。
+          // 每错误文本最多 clamp 一次（TurnRetryState 一次性守卫语义），
+          // 解析不出上限则沿用 provider 现有 maxTokens 防御性减半。
+          if (classified.type === LLMErrorType.OUTPUT_CAP) {
+            const clampKey = `output_cap:${provider.id}`;
+            if (getErrorRecoveryExecutor().checkAndMark(clampKey)) {
+              const providerCap =
+                classified.parsedOutputCap ?? parseAvailableOutputTokens(classified.message);
+              const oldMax = provider.maxTokens ?? 4096;
+              const inputEstimate = estimateMessagesTokens(
+                callMessages.map((m) => ({ role: String(m.role), content: typeof m.content === "string" ? m.content : "" })),
+              );
+              const contextLength = resolveContextWindow({
+                model: provider.model,
+                provider: provider.provider || provider.name,
+              }).limit;
+              const newMax = providerCap
+                ? clampOutputCap(providerCap, inputEstimate, contextLength)
+                : Math.max(256, Math.floor(oldMax / 2));
+              provider.maxTokens = newMax;
+              asyncLog(
+                `[LLMCaller] Output cap detected for "${provider.name}" — clamping max_tokens ${oldMax} → ${newMax}` +
+                `${providerCap ? ` (provider-declared cap ${providerCap})` : " (no cap parsed, halved defensively)"} and retrying in place\n`,
+              );
+              consecutiveErrors = 0;
+              continue;
+            }
+            // 已 clamp 过仍报 cap → 跳过该 provider（避免无限循环）
+            process.stderr.write(
+              `[LLMCaller] Output cap persists after clamp for "${provider.name}" — failing over\n`,
+            );
+            turnExitReason = "output_cap_exhausted";
+            break;
           }
 
           // ── SchemaSanitizer 反应式清洗：provider 报 grammar/组合器/enum 不兼容 ──
