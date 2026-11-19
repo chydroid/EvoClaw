@@ -191,3 +191,46 @@ describe("getVerificationEvidenceStore 单例", () => {
     expect(s2.getStalePaths()).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ★ 2026-11-19（v18 压测 Task 1）测试红门：getLastFailedAttributable
+// 故障签名——模型跑了自测、测试红（可归因 exit≠0）、仍声称全绿收尾。
+// 门语义：最后一条可归因验证是失败且其后无成功覆盖 → 返回失败事实；
+// 一旦有成功验证入账 → 失败事实失效（返回 null）。
+// ═══════════════════════════════════════════════════════════
+describe("VerificationEvidenceStore > 测试红门（getLastFailedAttributable）", () => {
+  it("从未验证 → null", () => {
+    const s = new VerificationEvidenceStore();
+    expect(s.getLastFailedAttributable()).toBeNull();
+  });
+
+  it("唯一验证失败 → 返回失败事实（命令+退出码）", () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "python3 test_a.py", 1);
+    const f = s.getLastFailedAttributable();
+    expect(f).not.toBeNull();
+    expect(f!.command).toBe("python3 test_a.py");
+    expect(f!.exitCode).toBe(1);
+  });
+
+  it("失败后成功验证覆盖 → 失效（返回 null）", () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "python3 test_a.py", 1);
+    s.record(["a.py"], "python3 test_a.py", 0);
+    expect(s.getLastFailedAttributable()).toBeNull();
+  });
+
+  it("成功后再次失败 → 再次返回失败事实", () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "python3 test_a.py", 0);
+    s.record(["a.py"], "python3 test_a.py", 2);
+    expect(s.getLastFailedAttributable()!.exitCode).toBe(2);
+  });
+
+  it("clear 后 → null", () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "python3 test_a.py", 1);
+    s.clear();
+    expect(s.getLastFailedAttributable()).toBeNull();
+  });
+});

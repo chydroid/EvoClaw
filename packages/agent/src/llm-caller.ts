@@ -5308,6 +5308,11 @@ if (deps.contextPruningManager && !prunerNoop) {
       let autoContinueCount = 0;
       // 验证门 nudge 计数：模型在变更文件后未验证就声称完成时，回灌验证指令的轮数
       let verificationNudgeCount = 0;
+      // ★ 2026-11-19（v18 Task 1）测试红门：nudge 计数 + 已处理命令集合。
+      //   同一条失败命令只 nudge 一次（模型修完后再次跑测试是新命令/或成功），
+      //   防止「测试红 → nudge → 模型不修 → 再 nudge」的无限循环。
+      let testRedGateNudgeCount = 0;
+      const testRedGateHandledCommands = new Set<string>();
       // 2026-10-25 P2：Kanban worker 终止门计数（对标 hermes kanban_stop.py）
       let kanbanStopNudgeCount = 0;
       // 思考轨迹实例见 provider 循环外（跨 failover 复用同一份）
@@ -6531,6 +6536,20 @@ if (deps.contextPruningManager && !prunerNoop) {
               ) &&
               // 验证仍然有效（stalePaths === []，之后没再编辑）→ 不重复 nudge
               (stalePaths === null || stalePaths.length > 0);
+            // ── 测试红门（★ 2026-11-19，v18 压测 Task 1）───────────────
+            // 故障签名：模型跑了自测套件、退出码可归因且 ≠0（测试红），却
+            // 在回复里声称测试全绿并收尾。验证门只防「未验证就收尾」，防不了
+            // 「验证失败仍收尾」。此处：最后可归因验证是失败 + 模型正在收尾
+            // （shouldContinue）→ 注入 transient nudge，要求先让测试变绿
+            // （修实现或修断言——断言值必须由实现函数导出复算，不得硬编码
+            // 与实现矛盾的正误值），或如实汇报失败。同一失败只 nudge 一次，
+            // 避免与不可修复失败的死循环（熔断上限 2 次）。
+            const lastFailedVerify = evidenceStore.getLastFailedAttributable();
+            const testRedGateTriggered =
+              lastFailedVerify !== null &&
+              shouldContinue &&
+              testRedGateNudgeCount < 2 &&
+              !testRedGateHandledCommands.has(lastFailedVerify.command);
             // ── Kanban 终止门（对标 hermes kanban_stop.py）──
             // Kanban worker 必须以终端 board 工具结束（kanban_complete / kanban_block /
             // kanban_request_review / kanban_request_changes），而非仅文字叙述。
@@ -6545,7 +6564,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               !sessionCalledKanbanTerminal(conversationMessages);
             const kanbanShouldContinue = kanbanStopTriggered;
 
-            const effectiveShouldContinue = shouldContinue || verificationGateTriggered || kanbanShouldContinue;
+            const effectiveShouldContinue = shouldContinue || verificationGateTriggered || kanbanShouldContinue || testRedGateTriggered;
 
             if (effectiveShouldContinue) {
               if (kanbanStopTriggered) {
@@ -6601,6 +6620,35 @@ if (deps.contextPruningManager && !prunerNoop) {
                 });
                 conversationMessages.push(assistantMsg);
                 pendingTransient.push({ role: "user", content: nudge! });
+                if (finalReply) {
+                  lastReplyBackup = finalReply;
+                  pendingVerificationReply = finalReply;
+                }
+                finalReply = "";
+                continue;
+              }
+
+              if (testRedGateTriggered && !verificationGateTriggered && !kanbanStopTriggered) {
+                testRedGateNudgeCount++;
+                const failed = lastFailedVerify!;
+                testRedGateHandledCommands.add(failed.command);
+                const testRedNudge =
+                  `\n\n**测试红门**：你最近运行的验证命令 \`${failed.command.slice(0, 200)}\` 退出码为 ${failed.exitCode}（失败），` +
+                  `但你正准备收尾。失败的验证**不能作为完成依据**——请先让测试变绿：\n` +
+                  `- 若是实现代码有错 → 修实现；\n` +
+                  `- 若是测试断言值写错 → 重新独立复算正确值后修正断言。**断言期望值必须由实现函数的口径导出或独立手工复算**，不得保留与实现矛盾的正误值；\n` +
+                  `- 修完立即重跑同一测试命令确认退出码 0，再收尾。\n` +
+                  `若测试失败属于不可修复的环境问题（依赖缺失等），请在最终回复中如实说明失败原因与未解决项，不要声称测试通过。`;
+                trace.addSystem(
+                  `测试红门 #${testRedGateNudgeCount}（验证失败后声称完成）`,
+                  `失败命令：${failed.command.slice(0, 160)}（exit=${failed.exitCode}）`,
+                );
+                asyncLog(
+                  `[AgentModelExecutor] Test-red gate #${testRedGateNudgeCount} ` +
+                  `— last attributable verification failed (exit=${failed.exitCode}); nudging agent to fix before finishing\n`,
+                );
+                conversationMessages.push(assistantMsg);
+                pendingTransient.push({ role: "user", content: testRedNudge });
                 if (finalReply) {
                   lastReplyBackup = finalReply;
                   pendingVerificationReply = finalReply;

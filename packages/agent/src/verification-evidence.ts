@@ -74,6 +74,9 @@ export class VerificationEvidenceStore {
       this.lastEditAt = null;
       this.editedPaths = [];
       this.unattributedRun = null;
+      // ★ 2026-11-19（v18 Task 1）：成功验证覆盖更早的失败——「测试红门」
+      //   只看最后一条可归因事件，成功事件入账后失败事实自然失效（隐含
+      //   在 getLastFailedAttributable 的扫描里），此处无需额外状态。
     }
     return event;
   }
@@ -130,6 +133,28 @@ export class VerificationEvidenceStore {
   /** 最后一条验证事件（供调试/轨迹） */
   getLastEvent(): VerificationEvent | null {
     return this.events[this.events.length - 1] ?? null;
+  }
+
+  /**
+   * ★ 2026-11-19（v18 压测 Task 1）：最后一条**可归因失败**的验证事件。
+   *
+   * v18 故障签名：模型跑了自测套件、测试红了（exitCode≠0 可归因——退出码
+   * 未被管道掩盖），却在回复里声称「测试全绿」直接收尾。旧语义只防
+   * 「变更后未验证就收尾」（验证门），不防「验证了、验证失败、仍收尾」——
+   * 失败事件进了账本但没人拦。
+   *
+   * 返回语义与 getStalePaths() 对齐：
+   * - null   → 从无可归因验证事件（或从未验证）
+   * - 对象   → 最后一次可归因验证是失败，且其后没有成功的可归因验证覆盖
+   *            （成功即清空，与 record() 清空 editedPaths 同语义）
+   */
+  getLastFailedAttributable(): { command: string; exitCode: number } | null {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const ev = this.events[i];
+      if (ev.exitCode === 0) return null; // 最近的成功验证已覆盖一切更早的失败
+      return { command: ev.command, exitCode: ev.exitCode };
+    }
+    return null;
   }
 
   /** 当前状态快照 */
