@@ -1094,6 +1094,10 @@ export interface ParseStreamingResponseResult {
   responseMs?: number;
   /** provider 原始 usage 对象（未解析）——供 normalizeUsage 提取缓存命中 token。 */
   usageDetails?: unknown;
+  /** ★ hermes 对齐 R10：流正常结束但 finish_reason==="length"（max_tokens 截断） */
+  truncatedByLength?: boolean;
+  /** ★ hermes 对齐 R10：流内重复看门狗已中断 */
+  runawayDetected?: boolean;
 }
 
 // ── Tool cache types ──
@@ -6116,8 +6120,6 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   abort_*  → 用户文案收尾（沿用 hermes 语义：不 failed 标志的软中止）。
         const resultHadContent = !!(assistantMsg.content && assistantMsg.content.trim());
         const lengthTruncated = result.truncatedByLength === true;
-        // 已部分交付的正文（本 turn 此前轮次的累计正文）——用于「首条响应截断」判定
-        const partialDelivered = finalReply || (finalReplyRound >= 0 ? "" : "");
         if (lengthTruncated || result.runawayDetected === true) {
           const truncation = checkTruncation({
             content: assistantMsg.content ?? "",
@@ -6130,7 +6132,7 @@ if (deps.contextPruningManager && !prunerNoop) {
             runawayRepetition: result.runawayDetected === true,
             overflowTerminal: false, // 溢出终态由错误分类器的 CONTEXT_OVERFLOW 路径处理
             lengthContinueRetries: lengthContinueCount,
-            partialText: partialDelivered || (resultHadContent ? (assistantMsg.content ?? "") : ""),
+            partialText: (resultHadContent ? (assistantMsg.content ?? "") : finalReply),
           });
 
           if (truncation.action === "continue") {

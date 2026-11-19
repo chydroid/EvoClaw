@@ -392,6 +392,11 @@ export class ErrorRecoveryExecutor {
     this.fallbackActivated = true;
   }
 
+  /** ★ hermes 对齐 R10：一次性动作守卫透传（output-cap clamp 等使用）。 */
+  checkAndMark(action: string): boolean {
+    return this.turnState.checkAndMark(action);
+  }
+
   /**
    * 根据失败原因执行恢复动作。
    *
