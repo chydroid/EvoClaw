@@ -4194,6 +4194,7 @@ const response = await nativeFetch(apiURL, {
 
     let data = await response.json() as {
       choices?: Array<{
+        finish_reason?: string;
         message?: {
           role?: string;
           content?: string | null;
@@ -4301,6 +4302,8 @@ const response = await nativeFetch(apiURL, {
       // 原始 usage 透传：normalizeUsage 由此提取 cache_read_input_tokens /
       // prompt_tokens_details.cached_tokens（provider 侧缓存命中真值）。
       usageDetails: data.usage ?? undefined,
+      truncatedByLength: data.choices?.[0]?.finish_reason === "length",
+      runawayDetected: false,
     };
   } catch (err: unknown) {
     clearTimeout(timeoutId);
@@ -4461,6 +4464,11 @@ export async function tryCallLLM(
   //   没有第二次续跑就交还用户。加入循环守卫：若模型连续两次 yield 内容
   //   相同（或高度相似），不再续跑，避免旧循环问题。
   const MAX_AUTO_CONTINUE = 3;
+
+  // ★ hermes 对齐 R10：length 截断续写上限（hermes turn_truncation
+  //   MAX_LENGTH_CONTINUE_RETRIES=4 同值；turn-truncation.ts 内部也用此值，
+  //   此处常量仅供日志展示，判定权威在 checkTruncation）
+  const MAX_LENGTH_CONTINUE_RETRIES = 4;
 
   // ── 交付物契约（从用户原始任务文本抽取必交文件）──
   // 只在任务含明确交付意图时启用；对回合结束前做存在性核验，
@@ -5323,6 +5331,9 @@ if (deps.contextPruningManager && !prunerNoop) {
           .map((c) => ({ name: c.name, args: JSON.stringify(c.arguments).slice(0, 200) }));
       // 自动续跑计数：模型"该继续却停下来问人"时回灌指令让其继续的轮数
       let autoContinueCount = 0;
+      // ★ hermes 对齐 R10：length 截断续写计数（checkTruncation 的
+      //   lengthContinueRetries 输入；上限 4 与 hermes turn_truncation 一致）
+      let lengthContinueCount = 0;
       // 验证门 nudge 计数：模型在变更文件后未验证就声称完成时，回灌验证指令的轮数
       let verificationNudgeCount = 0;
       // ★ 2026-11-19（v18 Task 1）测试红门：nudge 计数 + 已处理命令集合。
@@ -6095,6 +6106,69 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
 
         const assistantMsg = result.message;
+
+        // ── ★ hermes 对齐 R10：length 截断恢复链路（turn_truncation 接线）──
+        // 此前 finish_reason==="length"（max_tokens 截断）在正常结束的流上完全
+        // 不进恢复路径（streaming-recovery 只在 streamReadError 分支消费），且
+        // needsContinuation 判决被丢弃；checkTruncation 全套策略（thinking 耗尽/
+        // 重复主导/窗口填满/续写上限）是死码。现在统一在主循环消费：
+        //   continue → 回灌续写 nudge（transient，不写 history，缓存安全）；
+        //   abort_*  → 用户文案收尾（沿用 hermes 语义：不 failed 标志的软中止）。
+        const resultHadContent = !!(assistantMsg.content && assistantMsg.content.trim());
+        const lengthTruncated = result.truncatedByLength === true;
+        // 已部分交付的正文（本 turn 此前轮次的累计正文）——用于「首条响应截断」判定
+        const partialDelivered = finalReply || (finalReplyRound >= 0 ? "" : "");
+        if (lengthTruncated || result.runawayDetected === true) {
+          const truncation = checkTruncation({
+            content: assistantMsg.content ?? "",
+            hasToolCalls: !!(assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0),
+            promptTokens: result.promptTokens || lastPromptTokens || 0,
+            contextLength: resolveContextWindow({
+              model: provider.model,
+              provider: provider.provider || provider.name,
+            }).limit,
+            runawayRepetition: result.runawayDetected === true,
+            overflowTerminal: false, // 溢出终态由错误分类器的 CONTEXT_OVERFLOW 路径处理
+            lengthContinueRetries: lengthContinueCount,
+            partialText: partialDelivered || (resultHadContent ? (assistantMsg.content ?? "") : ""),
+          });
+
+          if (truncation.action === "continue") {
+            // 工具轮截断：工具调用完整则照常执行（在下一轮自然续写），
+            // 只在无工具调用且截断在正文中时才回灌续写 nudge。
+            if (!assistantMsg.tool_calls?.length) {
+              lengthContinueCount++;
+              conversationMessages.push(assistantMsg);
+              pendingTransient.push({
+                role: "user",
+                content: buildContinuationNudge(),
+              });
+              asyncLog(
+                `[AgentModelExecutor] Length truncation (round ${round}, retry ${lengthContinueCount}/${MAX_LENGTH_CONTINUE_RETRIES}) — nudging continuation for session "${sessionId}"\n`,
+              );
+              continue;
+            }
+            // 有工具调用：先执行工具（下方主流程），截断的正文仍记 finalReply
+          } else {
+            // abort_*：软中止——把 partial 内容与用户文案一并收尾。
+            process.stderr.write(
+              `[AgentModelExecutor] Turn truncation abort (${truncation.action}) for session "${sessionId}": ${truncation.failureReason ?? "n/a"}\n`,
+            );
+            turnExitReason = truncation.failureReason ?? truncation.action;
+            const merged = mergeTruncatedParts(
+              [finalReply, assistantMsg.content ?? ""].filter(Boolean),
+            );
+            return {
+              reply: truncation.userMessage + (merged ? `\n\n---\n${merged}` : ""),
+              tokensUsed: totalTokensUsed,
+              duration: Date.now() - startTime,
+              permissionRequests: pendingPermissions,
+              toolsExecuted: anyToolExecuted,
+              files: createdFiles,
+              thinkingTrace: trace.isEmpty ? undefined : trace.toJSON(),
+            };
+          }
+        }
 
         // 成功路径（无 classifiedError）：有内容或有工具调用 = 混合证据 fail-open，
         // 确定性空响应计数清零；空成功（无内容无工具调用）不清零、继续累计——
