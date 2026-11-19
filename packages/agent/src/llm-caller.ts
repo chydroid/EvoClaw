@@ -6552,8 +6552,19 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   从不留下可归因结果」是掩盖失败的行为签名：连续 ≥3 次
             //   unattributed + 模型正在收尾 → 同样触发红门 nudge。
             const unattributedStreak = evidenceStore.getUnattributedStreak();
+            // ★ 2026-11-19（v19 Task 1/2/4 实证）第三个红门盲区：红门 AND 在
+            //   shouldContinue 之后，但「自信收尾 + 掩码式验证」的会话恰恰
+            //   premature=null / needsCorrection=false / failedTools=0（退出码
+            //   被 | tail / ; echo 掩盖，shell 包装层 success=true）→
+            //   shouldContinue=false → 红门从未被求值，streak≥3 照样静默收尾。
+            //   红门独立于 shouldContinue 求值：只要模型在收尾轮且账本显示
+            //   （a）最后可归因验证失败 或（b）连续未归因验证 ≥3 → 触发。
+            //   hasWorkContext + shell 历史（hasVerificationHistory）排除纯闲聊误触。
+            const hasVerificationHistory =
+              executedToolCalls.some((c) => c.name === "shell_exec");
             const testRedGateTriggered =
-              shouldContinue &&
+              hasWorkContext &&
+              hasVerificationHistory &&
               testRedGateNudgeCount < 2 &&
               !testRedGateHandledCommands.has("__unattributed_streak__") &&
               (lastFailedVerify !== null ||
