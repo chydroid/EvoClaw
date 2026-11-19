@@ -7,6 +7,8 @@ import {
   isSslCertError,
   isModelNotFoundError,
   isUpstreamRateLimitError,
+  isOutputCapError,
+  parseAvailableOutputTokens,
   estimateTokensFromText,
   estimateMessagesTokens,
   LLMErrorType,
@@ -177,6 +179,57 @@ describe("isContextOverflowError", () => {
 
   it("should return false for empty message", () => {
     expect(isContextOverflowError(undefined, "")).toBe(false);
+  });
+});
+
+// ── ★ hermes 对齐 R10：output-cap 分类（is_output_cap_error 语义移植）──────
+describe("isOutputCapError", () => {
+  it("OpenAI 式 max_tokens too large（含 reduce the length 措辞）是 output-cap 而非 overflow", () => {
+    // 该文本同时命中 /reduce.the.length/i——若先走 CONTEXT_OVERFLOW 会触发压缩死循环
+    const msg = "Invalid request: max_tokens is too large: 1000000. This model supports at most 32768 output tokens. Please reduce the length of max_tokens.";
+    expect(isOutputCapError(400, msg)).toBe(true);
+  });
+
+  it("max_tokens must be less than N 是 output-cap", () => {
+    expect(isOutputCapError(400, "max_tokens must be less than 65536")).toBe(true);
+  });
+
+  it("真输入超长不是 output-cap（input overflow 信号优先）", () => {
+    expect(isOutputCapError(400, "This model's maximum context length is 8192 tokens. However, your messages resulted in 9000 tokens.")).toBe(false);
+  });
+
+  it("非 400/422 状态码不判 output-cap", () => {
+    expect(isOutputCapError(500, "max_tokens is too large")).toBe(false);
+  });
+
+  it("classifyLLMError 把 output-cap 归为 OUTPUT_CAP（不触发压缩）", () => {
+    const r = classifyLLMError(400, "max_tokens is too large: 1000000. Maximum is 32768.");
+    expect(r.type).toBe(LLMErrorType.OUTPUT_CAP);
+    expect(r.shouldCompact).toBe(false);
+    expect(r.retryable).toBe(true);
+    expect(r.parsedOutputCap).toBe(32768);
+  });
+});
+
+describe("parseAvailableOutputTokens", () => {
+  it("解析 'Maximum is N'", () => {
+    expect(parseAvailableOutputTokens("max_tokens is too large: 1000000. Maximum is 32768")).toBe(32768);
+  });
+
+  it("解析 'must be less than N'", () => {
+    expect(parseAvailableOutputTokens("max_tokens must be less than 65536")).toBe(65536);
+  });
+
+  it("解析 'up to N'", () => {
+    expect(parseAvailableOutputTokens("max_tokens can be up to 8192")).toBe(8192);
+  });
+
+  it("无数字返回 null", () => {
+    expect(parseAvailableOutputTokens("something failed")).toBeNull();
+  });
+
+  it("滤掉过小数字（HTTP 状态码类）", () => {
+    expect(parseAvailableOutputTokens("error 400 near max_tokens")).toBeNull();
   });
 });
 

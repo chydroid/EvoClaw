@@ -20,6 +20,9 @@
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
+import { execFileSync } from "node:child_process";
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import * as path from "node:path";
 import type { EventBus } from "@evoclaw/core";
 import type {
   SubagentRegistry,
@@ -62,6 +65,15 @@ export interface DelegateRunResult {
   error?: string;
   /** 子会话 ID（subsession_ 前缀） */
   sessionId: string;
+  /** ★ hermes 对齐 R10（async_delegation_recovery_hints 语义）：异常死亡时
+   *  的取证提示——子代理 transcript 尾部 + 父 workspace git 状态一行。
+   *  父代理无需开文件侦查即可决定续跑还是重派。 */
+  failureHints?: {
+    /** 子代理 transcript 最后若干行（bounded，防撑爆结果消息） */
+    transcriptTail: string;
+    /** git 状态一行（branch@sha + 未提交数；不可用时为占位说明） */
+    gitStatus: string;
+  };
 }
 
 /** 派发响应中的运行摘要 */
@@ -485,6 +497,7 @@ export class DelegateEngine {
     let tokensUsed = 0;
     let status: DelegateRunStatus = "completed";
     let error: string | undefined;
+    let failureHints: DelegateRunResult["failureHints"] | undefined;
     let schemaValid: boolean | undefined;
     let schemaErrors: string[] | undefined;
     const start = Date.now();
@@ -535,6 +548,14 @@ export class DelegateEngine {
       } else {
         status = "error";
         error = err instanceof Error ? err.message : String(err);
+        // ★ hermes 对齐 R10（async_delegation_recovery_hints 语义）：异常死亡
+        // 附取证 hints——父代理据此自决定续跑/重派，无需开文件侦查。
+        try {
+          failureHints = {
+            transcriptTail: readTranscriptTail(childSessionId),
+            gitStatus: gitStatusLine(),
+          };
+        } catch { /* 取证是 best-effort，失败不掩盖原错误 */ }
       }
     }
 
