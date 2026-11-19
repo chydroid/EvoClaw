@@ -1,0 +1,87 @@
+[
+  {
+    "input": "hello world ok",
+    "maxWidth": 14,
+    "want": "hello world ok"
+  },
+  {
+    "input": "汉字abc",
+    "maxWidth": 7,
+    "want": "汉字abc"
+  },
+  {
+    "input": "汉字abc",
+    "maxWidth": 6,
+    "want": "汉字ab"
+  },
+  {
+    "input": "汉字abc",
+    "maxWidth": 5,
+    "want": "汉字a"
+  },
+  {
+    "input": "汉字abc",
+    "maxWidth": 4,
+    "want": "汉字"
+  },
+  {
+    "input": "汉字abc",
+    "maxWidth": 3,
+    "want": "汉"
+  },
+  {
+    "input": "café́",
+    "maxWidth": 4,
+    "want": "café́"
+  },
+  {
+    "input": "café́",
+    "maxWidth": 3,
+    "want": "caf"
+  },
+  {
+    "input": "한국어",
+    "maxWidth": 5,
+    "want": "한국"
+  },
+  {
+    "input": "한국어",
+    "maxWidth": 2,
+    "want": "한"
+  },
+  {
+    "input": "🇨🇳",
+    "maxWidth": 2,
+    "want": "🇨🇳"
+  },
+  {
+    "input": "🇨🇳",
+    "maxWidth": 1,
+    "want": ""
+  },
+  {
+    "input": "👨‍👩‍👧",
+    "maxWidth": 2,
+    "want": "👨‍👩‍👧"
+  },
+  {
+    "input": "👨‍👩‍👧",
+    "maxWidth": 1,
+    "want": ""
+  },
+  {
+    "input": "a👨‍👩‍👧b",
+    "maxWidth": 4,
+    "want": "a👨‍👩‍👧b"
+  },
+  {
+    "input": "a👨‍👩‍👧b",
+    "maxWidth": 3,
+    "want": "a"
+  },
+  {
+    "input": "…",
+    "maxWidth": 1,
+    "want": "…"
+  }
+]
