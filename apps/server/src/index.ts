@@ -596,6 +596,7 @@ export class EvoClawServer {
       executor: this.agentModelExecutor,
       eventBus: this.eventBus,
       subagentRegistry: this.subagentRegistry,
+      sessionsDir: path.resolve(__dirname, "..", "..", "..", "data", "sessions"),
     });
     this.registry.registerService("delegateEngine", this.delegateEngine);
 

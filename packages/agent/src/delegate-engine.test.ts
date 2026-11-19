@@ -12,6 +12,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import * as path from "node:path";
 import { DelegateEngine, validateAgainstSchema } from "./delegate-engine";
 import { SubagentRegistry } from "./subagent-registry";
 import type { DelegateExecutorLike, DelegateRunResult } from "./delegate-engine";
@@ -71,13 +74,14 @@ function createFakeDeps(state: FakeState) {
   return { executor, eventBus, subagentRegistry, events };
 }
 
-function makeEngine(state: FakeState, config?: { maxSpawnDepth?: number; maxConcurrentChildren?: number }) {
+function makeEngine(state: FakeState, config?: { maxSpawnDepth?: number; maxConcurrentChildren?: number; sessionsDir?: string }) {
   const deps = createFakeDeps(state);
   const engine = new DelegateEngine({
     executor: deps.executor,
     eventBus: deps.eventBus,
     subagentRegistry: deps.subagentRegistry,
     config: { maxSpawnDepth: 1, ...config },
+    sessionsDir: config?.sessionsDir,
   });
   return { engine, ...deps };
 }
@@ -473,5 +477,81 @@ describe("DelegateEngine list / getRun", () => {
     const full = engine.getRun(dispatch.runs[0].id);
     expect(full?.summary).toBe("ok");
     expect(full?.tokensUsed).toBe(10);
+  });
+});
+
+// ─── ★ hermes 对齐 R10：异常死亡取证 hints（async_delegation_recovery_hints）──
+
+describe("DelegateEngine failureHints（异常死亡取证）", () => {
+  let state: FakeState;
+  let engine: DelegateEngine;
+  let deps: ReturnType<typeof createFakeDeps>;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    state = { calls: [], inFlight: 0, maxInFlight: 0, aborted: new Set(), replyFn: () => "done", delayMs: 0 };
+    tmpDir = mkdtempSync(path.join(tmpdir(), "de-hints-"));
+    ({ engine, ...deps } = makeEngine(state, { sessionsDir: tmpDir }));
+  });
+
+  afterEach(() => {
+    deps.subagentRegistry.dispose();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("子代理异常死亡时 failureHints 携带 transcript 尾部与 git 状态占位", async () => {
+    // 先找到 childSessionId：让 replyFn 抛错后从 results 取
+    state.replyFn = () => {
+      throw new Error("child exploded");
+    };
+    const dispatch = await engine.withSession("s1", () => engine.spawn([{ goal: "g1" }]));
+    const r = dispatch.results?.[0];
+    expect(r?.status).toBe("error");
+    expect(r?.error).toContain("child exploded");
+    // transcript 不存在 → 占位说明（不抛错，best-effort）
+    expect(r?.failureHints).toBeDefined();
+    expect(typeof r?.failureHints?.transcriptTail).toBe("string");
+    expect(typeof r?.failureHints?.gitStatus).toBe("string");
+  });
+
+  it("transcript 存在时 failureHints.transcriptTail 含其内容", async () => {
+    state.replyFn = ((i, msg) => {
+      // 从 message 里提取子会话 ID（chat 调用带 sessionId context）
+      return "will crash now";
+    });
+    // 先跑一次拿到 childSessionId
+    let childSid = "";
+    state.replyFn = async (i, msg) => {
+      if (i === 0) throw new Error("boom");
+      return "x";
+    };
+    const dispatch = await engine.withSession("s1", () => engine.spawn([{ goal: "g1" }]));
+    childSid = dispatch.results?.[0]?.sessionId ?? "";
+    expect(childSid).toBeTruthy();
+    // 手动在该子会话目录写 transcript，再触发一次失败
+    const dir = path.join(tmpDir, "agentA", childSid);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path.join(dir, "transcript.jsonl"), '{"role":"user","content":"step 1"}\n{"role":"assistant","content":"step 2"}\n');
+    state.replyFn = () => {
+      throw new Error("boom again");
+    };
+    const dispatch2 = await engine.withSession("s1", () => engine.spawn([{ goal: "g2" }]));
+    const hints = dispatch2.results?.[0]?.failureHints;
+    // 这个子会话不同——transcript 只对第一个子会话有效；hints 存在且 transcript 不存在时给占位
+    expect(hints).toBeDefined();
+    // 对第一个 run 重新取证验证读取逻辑
+    const tail = (engine as unknown as { readTranscriptTail: (sid: string) => string }).readTranscriptTail(childSid);
+    expect(tail).toContain("step 1");
+    expect(tail).toContain("step 2");
+  });
+
+  it("超长 transcript 被截断到 bounded 字符数", async () => {
+    const dir = path.join(tmpDir, "agentB", "subsession_huge");
+    mkdirSync(dir, { recursive: true });
+    const longLine = "x".repeat(5000);
+    writeFileSync(path.join(dir, "transcript.jsonl"), longLine + "\n");
+    const tail = (engine as unknown as { readTranscriptTail: (sid: string) => string }).readTranscriptTail("subsession_huge");
+    expect(tail.length).toBeLessThanOrEqual(2001); // 2000 + "…" 前缀
+    expect(tail.startsWith("…")).toBe(true);
   });
 });

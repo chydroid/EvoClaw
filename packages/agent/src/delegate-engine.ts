@@ -113,6 +113,8 @@ export interface DelegateEngineDeps {
   config?: DelegateEngineConfig;
   /** 子代理工作目录（默认 process.cwd()） */
   workspace?: string;
+  /** ★ hermes 对齐 R10：会话根目录（transcript 取证用，形如 data/sessions） */
+  sessionsDir?: string;
 }
 
 /** AgentModelExecutor 的最小执行面 */
@@ -490,6 +492,59 @@ export class DelegateEngine {
    *   3. output_schema 校验 + 一次有界纠正重试
    *   4. markDone / markError / kill + 事件 + 后台结果回投
    */
+
+  // ── ★ hermes 对齐 R10（async_delegation_recovery_hints 语义）：死亡取证 ──
+
+  /** recovery hints: transcript 尾部最大字符数（hermes bounded 2000 同值） */
+  static readonly FAILURE_HINT_MAX_CHARS = 2000;
+  /** recovery hints: transcript 尾部最大行数（hermes last 20 lines 同值） */
+  static readonly FAILURE_HINT_MAX_LINES = 20;
+
+  /**
+   * 读取子会话 transcript 尾部（最后 N 行，bounded 字符数）。
+   * transcript 布局：sessionsDir/<agentId>/<sessionId>/transcript.jsonl。
+   * agentId 未知时全局扫（子会话 ID 全局唯一前缀 subsession_）。
+   */
+  private readTranscriptTail(sessionId: string): string {
+    try {
+      const sessionsDir = this.deps.sessionsDir;
+      if (!sessionsDir || !existsSync(sessionsDir)) return "(transcript 不可读: sessionsDir 缺失)";
+      let transcriptPath: string | null = null;
+      // 优先按唯一 sessionId 直接找（避免全量遍历）
+      for (const agentDir of readdirSync(sessionsDir)) {
+        const candidate = path.join(sessionsDir, agentDir, sessionId, "transcript.jsonl");
+        if (existsSync(candidate)) { transcriptPath = candidate; break; }
+      }
+      if (!transcriptPath) return "(transcript 不存在)";
+      const raw = readFileSync(transcriptPath, "utf-8");
+      const lines = raw.split("\n").filter((l) => l.trim());
+      const tail = lines.slice(-DelegateEngine.FAILURE_HINT_MAX_LINES);
+      let text = tail.join("\n");
+      if (text.length > DelegateEngine.FAILURE_HINT_MAX_CHARS) {
+        text = "…" + text.slice(-DelegateEngine.FAILURE_HINT_MAX_CHARS);
+      }
+      return text || "(transcript 为空)";
+    } catch (e) {
+      return `(transcript 读取失败: ${e instanceof Error ? e.message : String(e)})`;
+    }
+  }
+
+  /**
+   * git 状态一行（branch@sha + 未提交文件数），hermes 语义。
+   * 非 git 目录 / git 不可用时返回占位说明。
+   */
+  private gitStatusLine(): string {
+    try {
+      const sha = execFileSync("git", ["rev-parse", "--short", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim();
+      const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { encoding: "utf8", timeout: 5000 }).trim();
+      const dirty = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8", timeout: 5000 });
+      const dirtyCount = dirty.split("\n").filter((l) => l.trim()).length;
+      return `${branch}@${sha} (${dirtyCount} uncommitted)`;
+    } catch {
+      return "(非 git 目录或 git 不可用)";
+    }
+  }
+
   private async executeChild(prepared: PreparedRun, item: DelegateTaskItem): Promise<DelegateRunResult> {
     const { record, childSessionId, role, steerQueue } = prepared;
 
@@ -552,8 +607,8 @@ export class DelegateEngine {
         // 附取证 hints——父代理据此自决定续跑/重派，无需开文件侦查。
         try {
           failureHints = {
-            transcriptTail: readTranscriptTail(childSessionId),
-            gitStatus: gitStatusLine(),
+            transcriptTail: this.readTranscriptTail(childSessionId),
+            gitStatus: this.gitStatusLine(),
           };
         } catch { /* 取证是 best-effort，失败不掩盖原错误 */ }
       }
@@ -575,6 +630,7 @@ export class DelegateEngine {
       tokensUsed,
       error,
       sessionId: childSessionId,
+      ...(failureHints ? { failureHints } : {}),
     };
     record.status = status;
     record.result = result;
