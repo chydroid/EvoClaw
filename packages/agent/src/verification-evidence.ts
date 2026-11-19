@@ -55,6 +55,15 @@ export class VerificationEvidenceStore {
    * 记录命令文本仅供 nudge 精确提示「请直接运行检查，不要接管道」。
    */
   private unattributedRun: string | null = null;
+  /**
+   * ★ 2026-11-19（v18 复跑 Task 3 实证）：连续不可归因验证运行计数。
+   * 模型用 `python3 test.py; echo "rc=$?"` / `| tail` 反复跑红测试（6 次全败）
+   * 却能收尾——每次退出码都被 echo/tail 掩盖，账本没有失败事件，测试红门
+   * 静默。「反复跑验证却从不留下可归因结果」本身就是掩盖失败的行为签名：
+   * 连续 ≥3 次 unattributed → getUnattributedStreak() 命中 → 红门 nudge。
+   * 一次可归因运行（无论成败）即清零。
+   */
+  private unattributedStreak = 0;
 
   /**
    * 记录一次验证运行。
@@ -70,6 +79,7 @@ export class VerificationEvidenceStore {
       timestamp: Date.now(),
     };
     this.events.push(event);
+    this.unattributedStreak = 0; // 可归因运行清零连续未归因计数
     if (exitCode === 0) {
       this.lastEditAt = null;
       this.editedPaths = [];
@@ -87,11 +97,21 @@ export class VerificationEvidenceStore {
    */
   markUnattributedRun(command: string): void {
     this.unattributedRun = command;
+    this.unattributedStreak++;
   }
 
   /** 最近一条不可归因的验证命令（供验证门 nudge 提示），无则 null。 */
   getLastUnattributedRun(): string | null {
     return this.unattributedRun;
+  }
+
+  /**
+   * ★ 连续不可归因验证运行计数（v18 复跑 Task 3 实证的红门盲区）：
+   * ≥3 表示模型反复跑验证却从不留下可归因结果——典型的退出码掩盖
+   * （`; echo rc=$?` / `| tail`）。调用方（测试红门）应据此 nudge。
+   */
+  getUnattributedStreak(): number {
+    return this.unattributedStreak;
   }
 
   /**
@@ -172,6 +192,7 @@ export class VerificationEvidenceStore {
     this.lastEditAt = null;
     this.editedPaths = [];
     this.unattributedRun = null;
+    this.unattributedStreak = 0;
     this.nextId = 1;
   }
 }

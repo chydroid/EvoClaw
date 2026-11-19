@@ -234,3 +234,41 @@ describe("VerificationEvidenceStore > 测试红门（getLastFailedAttributable�
     expect(s.getLastFailedAttributable()).toBeNull();
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ★ 2026-11-19（v18 复跑 Task 3）连续未归因计数：getUnattributedStreak
+// 故障签名——模型用 `python3 test.py; echo "rc=$?"` / `| tail` 反复跑红测试
+// （6 次全败），每次退出码被掩盖 → 账本无失败事件 → 测试红门静默。
+// 语义：连续 unattributed 计数累加；任何可归因 record() 清零；clear() 清零。
+// ═══════════════════════════════════════════════════════════
+describe("VerificationEvidenceStore > 连续未归因计数（getUnattributedStreak）", () => {
+  it("连续 markUnattributedRun 累加", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("python3 test.py; echo rc=$?");
+    s.markUnattributedRun("python3 test.py | tail");
+    s.markUnattributedRun("python3 test.py; echo done");
+    expect(s.getUnattributedStreak()).toBe(3);
+  });
+
+  it("可归因 record()（无论成败）清零", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("a; echo 1");
+    s.markUnattributedRun("b | tail");
+    s.record(["a.py"], "python3 test_a.py", 1); // 失败但可归因 → 清零
+    expect(s.getUnattributedStreak()).toBe(0);
+  });
+
+  it("clear() 清零", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("a; echo 1");
+    s.markUnattributedRun("b; echo 2");
+    s.clear();
+    expect(s.getUnattributedStreak()).toBe(0);
+  });
+
+  it("从未 unattributed → 0", () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "python3 test_a.py", 0);
+    expect(s.getUnattributedStreak()).toBe(0);
+  });
+});

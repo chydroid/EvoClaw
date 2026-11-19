@@ -6545,11 +6545,19 @@ if (deps.contextPruningManager && !prunerNoop) {
             // 与实现矛盾的正误值），或如实汇报失败。同一失败只 nudge 一次，
             // 避免与不可修复失败的死循环（熔断上限 2 次）。
             const lastFailedVerify = evidenceStore.getLastFailedAttributable();
+            // ★ 2026-11-19（v18 复跑 Task 3 实证）第二个红门盲区：模型用
+            //   `python3 test.py; echo "rc=$?"` / `| tail` 反复跑红测试（6 次
+            //   全败）——每次退出码都被掩盖（unattributed），账本无失败事件，
+            //   旧条件（只看 getLastFailedAttributable）静默。「反复跑验证却
+            //   从不留下可归因结果」是掩盖失败的行为签名：连续 ≥3 次
+            //   unattributed + 模型正在收尾 → 同样触发红门 nudge。
+            const unattributedStreak = evidenceStore.getUnattributedStreak();
             const testRedGateTriggered =
-              lastFailedVerify !== null &&
               shouldContinue &&
               testRedGateNudgeCount < 2 &&
-              !testRedGateHandledCommands.has(lastFailedVerify.command);
+              !testRedGateHandledCommands.has("__unattributed_streak__") &&
+              (lastFailedVerify !== null ||
+                unattributedStreak >= 3);
             // ── Kanban 终止门（对标 hermes kanban_stop.py）──
             // Kanban worker 必须以终端 board 工具结束（kanban_complete / kanban_block /
             // kanban_request_review / kanban_request_changes），而非仅文字叙述。
@@ -6630,22 +6638,36 @@ if (deps.contextPruningManager && !prunerNoop) {
 
               if (testRedGateTriggered && !verificationGateTriggered && !kanbanStopTriggered) {
                 testRedGateNudgeCount++;
-                const failed = lastFailedVerify!;
-                testRedGateHandledCommands.add(failed.command);
-                const testRedNudge =
-                  `\n\n**测试红门**：你最近运行的验证命令 \`${failed.command.slice(0, 200)}\` 退出码为 ${failed.exitCode}（失败），` +
-                  `但你正准备收尾。失败的验证**不能作为完成依据**——请先让测试变绿：\n` +
-                  `- 若是实现代码有错 → 修实现；\n` +
-                  `- 若是测试断言值写错 → 重新独立复算正确值后修正断言。**断言期望值必须由实现函数的口径导出或独立手工复算**，不得保留与实现矛盾的正误值；\n` +
-                  `- 修完立即重跑同一测试命令确认退出码 0，再收尾。\n` +
-                  `若测试失败属于不可修复的环境问题（依赖缺失等），请在最终回复中如实说明失败原因与未解决项，不要声称测试通过。`;
+                // 两种触发形态：可归因失败（lastFailedVerify）或连续未归因
+                // （streak——模型反复用 echo/tail 掩盖退出码）。文案分别给出
+                // 精确行为指令；handled 哨兵区分两者避免重复 nudge 同一形态。
+                const streakOnly = lastFailedVerify === null;
+                testRedGateHandledCommands.add(streakOnly ? "__unattributed_streak__" : lastFailedVerify!.command);
+                const testRedNudge = streakOnly
+                  ? `\n\n**测试红门**：你连续 ${unattributedStreak} 次运行验证命令，但每次的退出码都被掩盖` +
+                    `（命令末尾接了 \`; echo\` / \`| tail\` 等恒真片段，或管道吞掉了退出码）——账本里没有任何可信的验证结果。\n` +
+                    `如果你在掩盖失败的测试：停下。请**直接运行检查命令本身**（如 \`python3 test_x.py\`、\`node --test x.test.js\`），` +
+                    `不要接任何管道或 echo 后缀，让退出码如实传达：\n` +
+                    `- 测试全绿 → 直接以该命令的退出码 0 作为完成依据收尾；\n` +
+                    `- 测试红 → 修实现或独立复算修正断言（期望值必须由实现口径导出），重跑至退出码 0。\n` +
+                    `掩盖退出码不能让失败消失——账本会在收尾时拦下它。`
+                  : `\n\n**测试红门**：你最近运行的验证命令 \`${lastFailedVerify!.command.slice(0, 200)}\` 退出码为 ${lastFailedVerify!.exitCode}（失败），` +
+                    `但你正准备收尾。失败的验证**不能作为完成依据**——请先让测试变绿：\n` +
+                    `- 若是实现代码有错 → 修实现；\n` +
+                    `- 若是测试断言值写错 → 重新独立复算正确值后修正断言。**断言期望值必须由实现函数的口径导出或独立手工复算**，不得保留与实现矛盾的正误值；\n` +
+                    `- 修完立即重跑同一测试命令确认退出码 0，再收尾。\n` +
+                    `若测试失败属于不可修复的环境问题（依赖缺失等），请在最终回复中如实说明失败原因与未解决项，不要声称测试通过。`;
                 trace.addSystem(
-                  `测试红门 #${testRedGateNudgeCount}（验证失败后声称完成）`,
-                  `失败命令：${failed.command.slice(0, 160)}（exit=${failed.exitCode}）`,
+                  `测试红门 #${testRedGateNudgeCount}（${streakOnly ? `连续 ${unattributedStreak} 次未归因验证` : "验证失败后声称完成"}）`,
+                  streakOnly
+                    ? `最近未归因命令：${(evidenceStore.getLastUnattributedRun() ?? "").slice(0, 160)}`
+                    : `失败命令：${lastFailedVerify!.command.slice(0, 160)}（exit=${lastFailedVerify!.exitCode}）`,
                 );
                 asyncLog(
                   `[AgentModelExecutor] Test-red gate #${testRedGateNudgeCount} ` +
-                  `— last attributable verification failed (exit=${failed.exitCode}); nudging agent to fix before finishing\n`,
+                  (streakOnly
+                    ? `— unattributed verification streak=${unattributedStreak}; nudging agent to run checks without exit-code masking\n`
+                    : `— last attributable verification failed (exit=${lastFailedVerify!.exitCode}); nudging agent to fix before finishing\n`),
                 );
                 conversationMessages.push(assistantMsg);
                 pendingTransient.push({ role: "user", content: testRedNudge });
@@ -7524,11 +7546,39 @@ if (deps.contextPruningManager && !prunerNoop) {
                 // ★ 2026-11-17（v15 Task 3）：缺少 exitCode（超时 / spawn 失败 /
                 //   execute_code 异常早退）与管道掩盖等价——不能按 0 记成通过。
                 const exitCode = resolveVerificationExitCode(rawResult);
-                if (!attributable || exitCode === null) {
+                if (!attributable) {
                   evidenceStore.markUnattributedRun(verifyCommand);
                   asyncLog(
-                    `[AgentModelExecutor] Unattributed verification run (${attributable ? "missing exit code" : "exit status masked by pipeline"}): ${verifyCommand.slice(0, 160)}\n`,
+                    `[AgentModelExecutor] Unattributed verification run (exit status masked by pipeline): ${verifyCommand.slice(0, 160)}\n`,
                   );
+                } else if (exitCode === null) {
+                  // ★ 2026-11-19（v18 复跑 Task 2 实证）：shell_exec 超时**不抛异常**，
+                  //   走成功路径返回 {timedOut:true, error:"命令执行超时"} 且无
+                  //   exitCode。旧接线把这类超时一概 markUnattributedRun → 账本
+                  //   空白 → 测试红门静默 → 模型反复重试挂死命令（RDS 死循环
+                  //   实证：烧掉 1.17M tokens 后转后台续跑，后台同样挂死）。
+                  //   「验证命令超时」对检查命令本身是**可归因的失败事实**
+                  //   （异常就是它的结果）：记 exitCode=-1 入账，测试红门 nudge
+                  //   「先定位挂死/死循环再重试」。其他缺码情形（spawn 失败等）
+                  //   维持未归因。管道掩盖的命令（!attributable）超时仍不归因——
+                  //   退出码本来就不是检查命令自己的。
+                  const timedOut = (rawResult as Record<string, unknown> | null)?.timedOut === true
+                    || String((rawResult as Record<string, unknown> | null)?.error ?? "").includes("超时");
+                  if (timedOut) {
+                    evidenceStore.record(
+                      createdFiles.map((f) => f.path),
+                      `${toolName}:${verifyKind}:timeout`,
+                      -1,
+                    );
+                    asyncLog(
+                      `[AgentModelExecutor] Verification command TIMED OUT — recorded as attributable failure: ${verifyCommand.slice(0, 160)}\n`,
+                    );
+                  } else {
+                    evidenceStore.markUnattributedRun(verifyCommand);
+                    asyncLog(
+                      `[AgentModelExecutor] Unattributed verification run (missing exit code): ${verifyCommand.slice(0, 160)}\n`,
+                    );
+                  }
                 } else {
                   evidenceStore.record(
                     createdFiles.map((f) => f.path),
