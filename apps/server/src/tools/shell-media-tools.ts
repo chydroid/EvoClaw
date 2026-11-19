@@ -662,7 +662,29 @@ export function registerShellMediaTools(
       const cmdForRun = process.platform === "win32"
         ? `chcp 65001 >nul & ${effectiveCommand}`
         : effectiveCommand;
-      const shellArgs = process.platform === "win32" ? ["/c", cmdForRun] : ["-c", cmdForRun];
+      // ── PIPESTATUS 捕获（2026-11-19，hermes base_session_env.py 移植）──
+      // 痛点（v18/v19 压测反复实证）：`pnpm test | tail -20` 全红时 tail 报 0，
+      // 证据账本把退出码判为「被管道掩盖」，验证门反复 nudge「不要接管道」，
+      // 模型收不了尾。
+      // hermes 方案：把捕获指令拼进 **eval 字符串内部**——eval 会重置外部
+      // 的 $? 与 PIPESTATUS（实测：eval 后下一行 PIPESTATUS 已清空），捕获
+      // 必须发生在 eval 参数内。单命令双赋值 `rc=$? ps=("${PIPESTATUS[@]}")`
+      // 同样必须（`;` 分隔的第二个赋值命令会重置数组）。
+      // 捕获后 printf 标记行到 stdout 尾部，Node 侧解析并剥除；顶层退出码
+      // 仍是命令自身的 rc（exit $__evo_rc），对上层完全透明。
+      // 仅 POSIX 生效；Windows cmd 无 PIPESTATUS，走原路径。
+      let pipelineStatusCapture: number[] | null = null;
+      const shellArgs = process.platform === "win32"
+        ? ["/c", cmdForRun]
+        : ["-c", (() => {
+            const escaped = cmdForRun.replace(/'/g, `'\\''`);
+            return (
+              `eval '${escaped}\n` +
+              `__evo_rc=$? __evo_ps=("\${PIPESTATUS[@]}")'\n` +
+              `printf '__EVO_PS__<%s>\\n' "\${__evo_ps[*]}"\n` +
+              `exit $__evo_rc`
+            );
+          })()];
 
       // ── 使用 spawn 实现异步执行 + 进度反馈 ──
       return new Promise((resolve) => {
@@ -744,14 +766,32 @@ export function registerShellMediaTools(
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
-            const output = stdout.trim();
+            // ── 解析 PIPESTATUS 标记行（POSIX 包装路径才有）并从输出中剥除 ──
+            // 模型不该看到 __EVO_PS__ 行——它是账本侧的元数据，不是命令输出。
+            let displayStdout = stdout;
+            if (process.platform !== "win32") {
+              const m = /__EVO_PS__<([0-9,\s]*)>/.exec(stdout);
+              if (m) {
+                pipelineStatusCapture = m[1]
+                  .split(/[\s,]+/)
+                  .filter((s) => s.length > 0)
+                  .map((s) => parseInt(s, 10))
+                  .filter((n) => Number.isFinite(n));
+                displayStdout = stdout.replace(/__EVO_PS__<[0-9,\s]*>\n?/, "");
+              }
+            }
+            const output = displayStdout.trim();
             const errorOutput = stderr.trim();
-            console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars`);
+            console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars${pipelineStatusCapture ? `, pipestatus: [${pipelineStatusCapture.join(",")}]` : ""}`);
             if (code === 0) {
               resolve({
                 success: true,
                 // 显式带 exitCode，避免调用方用 `?? 0` 猜测成功——证据账本要读真值。
                 exitCode: 0,
+                // ★ 2026-11-19（hermes PIPESTATUS 移植）：管道各段退出码，
+                // 供证据账本做管道首段归因（`pnpm test | tail` 全红不再被
+                // tail 的 0 掩盖）。仅 POSIX 包装路径非空。
+                pipelineStatus: pipelineStatusCapture ?? undefined,
                 output: withEbusyHint(output.slice(0, 50000)),
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,
@@ -761,6 +801,7 @@ export function registerShellMediaTools(
               resolve({
                 success: false,
                 exitCode: code,
+                pipelineStatus: pipelineStatusCapture ?? undefined,
                 error: withEbusyHint((errorOutput.slice(0, 10000) || output.slice(0, 10000))),
                 output: withEbusyHint(output.slice(0, 50000)),
                 command,

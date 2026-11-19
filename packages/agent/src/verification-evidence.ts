@@ -80,10 +80,15 @@ export class VerificationEvidenceStore {
     };
     this.events.push(event);
     this.unattributedStreak = 0; // 可归因运行清零连续未归因计数
+    // ★ 2026-11-19（对标 hermes last_unattributed_run 的 since 清除语义）：
+    //   任何可归因运行（无论成败）都取代更早的未归因记录——之后模型已用
+    //   直跑方式留下了可信结果，旧的「你的验证被管道掩盖了」提示就是误导。
+    //   hermes 语义：evidence 记录时间 ≥ since 时 last_unattributed_run 返回
+    //   None；这里等价于 record() 即清空 unattributedRun。
+    this.unattributedRun = null;
     if (exitCode === 0) {
       this.lastEditAt = null;
       this.editedPaths = [];
-      this.unattributedRun = null;
       // ★ 2026-11-19（v18 Task 1）：成功验证覆盖更早的失败——「测试红门」
       //   只看最后一条可归因事件，成功事件入账后失败事实自然失效（隐含
       //   在 getLastFailedAttributable 的扫描里），此处无需额外状态。
@@ -295,7 +300,10 @@ const STATUS_SENTINEL = /^\s*(?:echo|printf|true)(?:\s|$)|^\s*:\s|^\s*exit\s+0(?
 
 export function isVerificationExitAttributable(command: string): boolean {
   if (!command) return false;
-  // 管道：`a | b`（排除 `||`）——退出码来自管道尾部
+  // ★ 2026-11-19（hermes PIPESTATUS 语义移植）：shell_exec 现在经 eval 包装
+  //   捕获 bash PIPESTATUS 数组（pipelineStatus）。接线侧（llm-caller）在
+  //   数组真实存在且检查命令在管道首段时按 pipelineStatus[0] 归因；本函数
+  //   自身看不到执行结果，对管道命令保守判 false（fail-closed 基线不变）。
   if (/(^|[^|])\|([^|]|$)/.test(command)) return false;
   // 或链：`a || b`——检查失败会被吞掉
   if (/\|\|/.test(command)) return false;
@@ -305,4 +313,63 @@ export function isVerificationExitAttributable(command: string): boolean {
   // 由 lastTopLevelSegment 跳过，避免误伤 execute_code 风格命令。
   if (STATUS_SENTINEL.test(lastTopLevelSegment(command))) return false;
   return true;
+}
+
+/**
+ * ★ 2026-11-19（hermes `_segment_status` 口径移植）：检查命令是否位于命令
+ * 最后一个顶层片段的**最后一条管道的首段**。是的话，PIPESTATUS[0] 仍可信
+ * 地反映检查命令自身的退出码——`node --test x.js | tail -20` 从「不可归因」
+ * 升级为「可归因，取管道首段退出码」。
+ *
+ * 「检查命令」的判定：管道首段本身须被 classifyVerificationCommand 判为
+ * 验证类——`cat run.log | grep vitest` 的首段是 cat，PIPESTATUS[0] 是 cat
+ * 的退出码而非检查的，不算（hermes 口径：check 须 lead 最后一条管道）。
+ *
+ * `||` / `; echo` 等其他掩盖形态不受此升级影响（PIPESTATUS 只覆盖管道）。
+ * 引号内的 `|` 不算管道分隔（与 lastTopLevelSegment 同一套引号扫描）。
+ */
+export function pipelineLeadsLastPipe(command: string): boolean {
+  if (!command) return false;
+  const seg = lastTopLevelSegment(command);
+  // 或链掩盖形态不适用（PIPESTATUS 只解释纯管道）
+  if (/\|\|/.test(seg)) return false;
+  // 引号感知地找最后一个顶层 `|`
+  let quote: string | null = null;
+  let lastPipe = -1;
+  for (let i = 0; i < seg.length; i++) {
+    const ch = seg[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+    if (ch === "|") {
+      if (seg[i + 1] === "|") return false; // `||` 防御
+      lastPipe = i;
+    }
+  }
+  if (lastPipe === -1) return false;
+  const head = seg.slice(0, lastPipe).trim();
+  if (head.length === 0) return false; // `| tail`（无首段）不可归因
+  // 首段须是验证命令本身——否则 PIPESTATUS[0] 是无关命令的退出码
+  return classifyVerificationCommand(head) !== null;
+}
+
+/**
+ * ★ 2026-11-19（hermes PIPESTATUS 捕获移植）：从 shell_exec 原始结果里读取
+ * 捕获到的**管道首段退出码**（`pipelineStatus: number[]`，由 bash eval 包装
+ * 的 PIPESTATUS 数组写入）。
+ *
+ * 归因口径（hermes `_segment_status`）：检查命令在最后一条管道首段时，用
+ * pipelineStatus[0] 作为检查命令自身的退出码——`pnpm test | tail -20` 全红
+ * 时 tail 报 0，但 pipelineStatus[0] 如实记录测试失败。数组为空/缺失/含
+ * 非数字时返回 null（fail-closed：退回旧的掩盖判定）。
+ */
+export function resolvePipelineHeadExitCode(rawResult: unknown): number | null {
+  if (!rawResult || typeof rawResult !== "object") return null;
+  const ps = (rawResult as { pipelineStatus?: unknown }).pipelineStatus;
+  if (!Array.isArray(ps) || ps.length === 0) return null;
+  const head = ps[0];
+  return typeof head === "number" && Number.isFinite(head) ? head : null;
 }

@@ -179,6 +179,14 @@ export function runPy(dir, scriptBody, args = [], timeoutMs = 60000) {
   } finally { try { fs.rmSync(tmp, { force: true }); } catch {} }
 }
 
+/**
+ * Python 读文件片段（v19 Task 2 教训）：裸 `open()` 默认 universal newlines 会把 \r\n→\n
+ * 翻译，CSV/换行敏感交付物会被错杀。统一用此片段替代裸 open(path).read()。
+ * 用法：脚本内 `text = ${pyReadTextLiteral('sys.argv[2]')}` 等拼入 argv 路径表达式。
+ */
+export const pyReadTextLiteral = (pathExpr) =>
+  `open(${pathExpr}, encoding='utf-8', newline='').read()`;
+
 export function writeFixture(relDir, rel, content) {
   const p = path.join(relDir, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });

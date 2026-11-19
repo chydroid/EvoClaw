@@ -5,6 +5,8 @@ import {
   resetVerificationEvidenceStore,
   classifyVerificationCommand,
   isVerificationExitAttributable,
+  pipelineLeadsLastPipe,
+  resolvePipelineHeadExitCode,
 } from "./verification-evidence";
 
 // ═══════════════════════════════════════════════════════════
@@ -117,6 +119,10 @@ describe("isVerificationExitAttributable（退出码可归因判定）", () => {
   });
 
   it("接管道 → 不可归因（tail 恒 0，掩盖检查失败）", () => {
+    // ★ 2026-11-19：isVerificationExitAttributable 现在含 PIPESTATUS 升级
+    //   （pipelineLeadsLastPipe → true）——但该升级只在**数组真实存在**时由
+    //   llm-caller 接线生效；本函数自身无结果可看，对管道命令保守判 false
+    //   的行为不变（fail-closed 基线）。
     expect(isVerificationExitAttributable("node --test x.js 2>&1 | tail -20")).toBe(false);
     expect(isVerificationExitAttributable("pnpm test | grep PASS")).toBe(false);
     expect(isVerificationExitAttributable("vitest run 2>&1 | tail -5")).toBe(false);
@@ -269,6 +275,76 @@ describe("VerificationEvidenceStore > 连续未归因计数（getUnattributedStr
   it("从未 unattributed → 0", () => {
     const s = new VerificationEvidenceStore();
     s.record(["a.py"], "python3 test_a.py", 0);
+    expect(s.getUnattributedStreak()).toBe(0);
+  });
+});
+// ═══════════════════════════════════════════════════════════
+// PIPESTATUS 管道首段归因（2026-11-19，hermes base_session_env.py /
+// verification_evidence._segment_status 的 TS 移植）
+// ═══════════════════════════════════════════════════════════
+describe("pipelineLeadsLastPipe（检查命令是否在最后一条管道首段）", () => {
+  it("管道首段 → true", () => {
+    expect(pipelineLeadsLastPipe("pnpm test | tail -20")).toBe(true);
+    expect(pipelineLeadsLastPipe("node --test x.js 2>&1 | tail -20")).toBe(true);
+    expect(pipelineLeadsLastPipe("vitest run 2>&1 | grep PASS | wc -l")).toBe(true);
+  });
+  it("管道非首段（首段非验证命令）→ false", () => {
+    expect(pipelineLeadsLastPipe("cat run.log | grep vitest")).toBe(false);
+    expect(pipelineLeadsLastPipe("echo hi | node --test x.js")).toBe(false);
+  });
+  it("无管道 → false", () => {
+    expect(pipelineLeadsLastPipe("python3 test_x.py")).toBe(false);
+    expect(pipelineLeadsLastPipe("")).toBe(false);
+  });
+  it("或链 → false（掩盖形态不适用 PIPESTATUS）", () => {
+    expect(pipelineLeadsLastPipe("node --test x.js || true")).toBe(false);
+  });
+  it("引号内的 | 不算管道分隔", () => {
+    expect(pipelineLeadsLastPipe(`echo "a|b"`)).toBe(false);
+    expect(pipelineLeadsLastPipe(`grep "x|y" run.log`)).toBe(false);
+  });
+  it("前段管道 + 末段非管道命令 → false（末段无 |）", () => {
+    expect(pipelineLeadsLastPipe("pnpm test | tee out.log")).toBe(true);
+  });
+  it("引号内的分号不产生新顶层片段", () => {
+    expect(pipelineLeadsLastPipe(`node --test -e "console.log('a');console.log('b')" | tail -1`)).toBe(true);
+  });
+});
+
+describe("resolvePipelineHeadExitCode（PIPESTATUS[0] 读取）", () => {
+  it("有数组且首段是数字 → 返回首段", () => {
+    expect(resolvePipelineHeadExitCode({ pipelineStatus: [7, 0] })).toBe(7);
+    expect(resolvePipelineHeadExitCode({ pipelineStatus: [0] })).toBe(0);
+  });
+  it("数组缺失/空/首段非数字 → null（fail-closed）", () => {
+    expect(resolvePipelineHeadExitCode({})).toBe(null);
+    expect(resolvePipelineHeadExitCode({ pipelineStatus: [] })).toBe(null);
+    expect(resolvePipelineHeadExitCode({ pipelineStatus: [NaN, 0] })).toBe(null);
+    expect(resolvePipelineHeadExitCode({ pipelineStatus: "7 0" })).toBe(null);
+    expect(resolvePipelineHeadExitCode(null)).toBe(null);
+    expect(resolvePipelineHeadExitCode("result")).toBe(null);
+  });
+});
+
+describe("未归因运行的 since 清除语义（hermes last_unattributed_run）", () => {
+  it("任何可归因 record()（无论成败）都清空 unattributedRun", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("pnpm test | tail -20");
+    expect(s.getLastUnattributedRun()).not.toBeNull();
+    // 失败的可归因运行也清除——模型已经用直跑方式留下了可信结果
+    s.record(["a.py"], "pnpm test", 1);
+    expect(s.getLastUnattributedRun()).toBeNull();
+    expect(s.getUnattributedStreak()).toBe(0);
+  });
+  it("未归因运行不清零 streak，可归因运行清零", () => {
+    const s = new VerificationEvidenceStore();
+    s.markUnattributedRun("a | tail");
+    s.markUnattributedRun("b; echo done");
+    s.markUnattributedRun("c || true");
+    expect(s.getUnattributedStreak()).toBe(3);
+    s.markUnattributedRun("d | tail");
+    expect(s.getUnattributedStreak()).toBe(4);
+    s.record(["x.js"], "node --test x.js", 1);
     expect(s.getUnattributedStreak()).toBe(0);
   });
 });

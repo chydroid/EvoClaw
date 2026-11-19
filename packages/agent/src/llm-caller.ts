@@ -146,6 +146,8 @@ import {
   classifyVerificationCommand,
   isVerificationExitAttributable,
   resolveVerificationExitCode,
+  resolvePipelineHeadExitCode,
+  pipelineLeadsLastPipe,
 } from "./verification-evidence";
 import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
@@ -6615,12 +6617,17 @@ if (deps.contextPruningManager && !prunerNoop) {
                 const baseNudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount - 1);
                 // 管道掩盖退出码的命令不能算证据：明确告诉模型直跑检查命令。
                 const unattributed = evidenceStore.getLastUnattributedRun();
+                // ★ 2026-11-19（hermes _UNATTRIBUTED_RUN_WARNING 文案对齐）：
+                //   PIPESTATUS 捕获后管道**首段**已可归因，旧文案「不要接管道」
+                //   过严——hermes 的口径是「直跑检查；若必须接管道，让检查命令
+                //   保持管道第一段」。终端已截断长输出，无需用 tail 自行截断。
                 const nudge = baseNudge && unattributed
                   ? baseNudge +
-                    `\n\n⚠️ 你最近的验证命令 \`${unattributed.slice(0, 200)}\` 经管道/或链串接，` +
-                    `shell 的退出码来自管道尾部，**不能证明检查本身通过**（测试全红也可能报 0）。` +
-                    `请**直接运行检查命令**，不要把检查接到 \`| tail\` / \`| grep\` 后面；` +
-                    `如果必须接管道，请先 \`set -o pipefail\` 并读取真实输出（出现 fail/FAIL/AssertionError 即视为失败）。`
+                    `\n\n⚠️ 你最近的一次检查运行（\`${unattributed.slice(0, 200)}\`）的退出状态没有被计入` +
+                    `——它经过了管道、\`||\` 或 \`; echo\` 等串接，shell 汇报的退出码来自检查之外的片段，` +
+                    `不能证明检查本身通过（测试全红也可能报 0）。请**直接运行检查命令本身**；` +
+                    `如果必须接管道（如 \`...\ | tail -20\` 截断输出），让**检查命令保持管道的第一段**` +
+                    `（退出码会从管道首段读取）。终端输出过长时无需自行截断——输出溢出已自动落盘到文件。`
                   : baseNudge;
                 trace.addSystem(
                   `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
@@ -6655,10 +6662,10 @@ if (deps.contextPruningManager && !prunerNoop) {
                 const streakOnly = lastFailedVerify === null;
                 testRedGateHandledCommands.add(streakOnly ? "__unattributed_streak__" : lastFailedVerify!.command);
                 const testRedNudge = streakOnly
-                  ? `\n\n**测试红门**：你连续 ${unattributedStreak} 次运行验证命令，但每次的退出码都被掩盖` +
-                    `（命令末尾接了 \`; echo\` / \`| tail\` 等恒真片段，或管道吞掉了退出码）——账本里没有任何可信的验证结果。\n` +
+                  ? `\n\n**测试红门**：你连续 ${unattributedStreak} 次运行验证命令，但每次的退出状态都没有被计入` +
+                    `（命令末尾接了 \`; echo\` 等\`恒真\`片段，或退出码以其他方式被掩盖）——账本里没有任何可信的验证结果。\n` +
                     `如果你在掩盖失败的测试：停下。请**直接运行检查命令本身**（如 \`python3 test_x.py\`、\`node --test x.test.js\`），` +
-                    `不要接任何管道或 echo 后缀，让退出码如实传达：\n` +
+                    `不要接 \`; echo\` / \`|| true\` 后缀；如果必须接管道截断输出，让**检查命令保持管道的第一段**，让退出状态如实传达：\n` +
                     `- 测试全绿 → 直接以该命令的退出码 0 作为完成依据收尾；\n` +
                     `- 测试红 → 修实现或独立复算修正断言（期望值必须由实现口径导出），重跑至退出码 0。\n` +
                     `掩盖退出码不能让失败消失——账本会在收尾时拦下它。`
@@ -7546,13 +7553,27 @@ if (deps.contextPruningManager && !prunerNoop) {
                 ? classifyVerificationCommand(verifyCommand)
                 : null;
               if (verifyKind) {
+                // ★ 2026-11-19（hermes PIPESTATUS 捕获移植）：shell_exec 现在经
+                //   eval 包装捕获 bash PIPESTATUS 数组（pipelineStatus）。检查命令
+                //   在最后一条管道首段时，用 pipelineStatus[0] 归因——`pnpm test |
+                //   tail -20` 全红时 tail 报 0，但首段如实记录失败。旧逻辑一概
+                //   markUnattributedRun，模型被反复 nudge「不要接管道」，其实是
+                //   掩盖形态中唯一可 rescue 的一类。
+                //   fail-closed：数组缺失（超时/spawn 失败/沙箱路径/旧结果）时
+                //   管道命令**仍判不可归因**——绝不因「命令看起来像管道首段」
+                //   就按 shell 顶层退出码（tail 的 0）记通过。
+                const pipelineHeadCode = toolName === "shell_exec"
+                  ? resolvePipelineHeadExitCode(rawResult)
+                  : null;
                 // ★ 2026-11-16（对标 hermes verification_evidence 的 unattributed run）：
                 //   形如 `node --test x.js 2>&1 | tail -20` 时，shell 的退出码来自
                 //   管道尾部（tail 恒 0）——测试全红也会以 exit 0 返回，被记成
                 //   「验证通过」并清空编辑记录，验证门从此闭嘴。v14 diff 任务
                 //   就是这样被误判为「测试通过」的。可归因失败时**不记证据**，
                 //   只登记未归因命令，让工作区保持 unverified、验证门继续要求复验。
+                //   ★ PIPESTATUS 可用且检查命令在管道首段时升级为可归因。
                 const attributable = toolName !== "shell_exec"
+                  || (pipelineHeadCode !== null && pipelineLeadsLastPipe(verifyCommand))
                   || isVerificationExitAttributable(verifyCommand);
                 // ★ 2026-11-17（v15 Task 3）：缺少 exitCode（超时 / spawn 失败 /
                 //   execute_code 异常早退）与管道掩盖等价——不能按 0 记成通过。
@@ -7591,10 +7612,17 @@ if (deps.contextPruningManager && !prunerNoop) {
                     );
                   }
                 } else {
+                  // ★ 2026-11-19（hermes PIPESTATUS）：管道首段归因时优先用
+                  //   pipelineStatus[0]——shell 顶层退出码来自管道尾部（tail 恒 0），
+                  //   会把全红的测试记成通过。管道首段退出码是检查命令的真值。
+                  const headCode = toolName === "shell_exec"
+                    ? resolvePipelineHeadExitCode(rawResult)
+                    : null;
+                  const effectiveCode = headCode !== null ? headCode : exitCode;
                   evidenceStore.record(
                     createdFiles.map((f) => f.path),
                     `${toolName}:${verifyKind}`,
-                    exitCode,
+                    effectiveCode,
                   );
                 }
               }
