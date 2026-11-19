@@ -9,7 +9,15 @@ import { getActiveSecurityPolicy } from "@evoclaw/security";
 
 export type Severity = "low" | "medium" | "high";
 
-export type GuardrailAction = "log" | "warn" | "sanitize" | "block";
+/**
+ * ★ 2026-11-18（Hermes 对齐）：新增 "approve" 档（借鉴 hermes-agent
+ * tools/approval_detection.py 的两级语义——DANGEROUS_PATTERNS → 人工审批，
+ * HARDLINE_PATTERNS → 永不放行）。approve 命中不拦截执行，而是路由到
+ * HITL 审批（人工可放行一次）；block 保留给「永无正当语境」的硬线
+ * （path traversal / SQL 注入 / rm -rf /）。此前工具层只有 block 一档，
+ * 「要求删除文件」类正当任务在 normal 档被硬拦、模型只能绕路（v17 Task 3）。
+ */
+export type GuardrailAction = "log" | "warn" | "sanitize" | "approve" | "block";
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 
@@ -28,6 +36,13 @@ export interface GuardrailResult {
   sanitizedArgs?: Record<string, unknown>;
   /** Which rule IDs were triggered */
   triggeredRules?: string[];
+  /**
+   * ★ 2026-11-18（Hermes 对齐）：仅工具类结果携带。worstAction === "approve"
+   * 时为 true——调用方（llm-caller）应将该次工具调用路由到 HITL 审批
+   * （人工放行）而非直接执行。语义对齐 hermes-agent DANGEROUS_PATTERNS：
+   * 危险操作提示人工确认，不拦截模型执行路径。
+   */
+  requiresApproval?: boolean;
 }
 
 // ─── Rule Definitions ───────────────────────────────────────────────────────
@@ -112,10 +127,15 @@ const BUILTIN_INPUT_RULES: InputRule[] = [
   },
   {
     id: "inj-sudo-mode",
-    pattern: /(sudo|developer|admin)\s+mode/i,
+    // ★ 2026-11-18 体系化修复（裸词误拦家族第 4 起）：(sudo|developer|admin)\s+mode
+    //   裸词误拦正当语境——「我们产品的 developer mode 文档怎么写」「debug mode
+    //   是怎么开启的」（探针实证 2 处 BLOCK）。收窄为攻击构造：
+    //   进入类动词（enter/activate/switch/put）或「you are in/now in」结构
+    //   才算攻击；讨论文档/功能本身放行。
+    pattern: /(?:\b(?:enter|activate|switch\s+to|put\s+you\s+in|you\s+are\s+(?:now\s+)?in)\s+(?:\S+\s+)?(?:sudo|developer|admin)\s+mode\b)|(?:^|\n)\s*(?:sudo|developer|admin)\s+mode\s*[:：]?\s*(?:on|enabled|activated|开启|激活)/i,
     severity: "high",
     action: "block",
-    description: "Prompt injection: sudo/developer mode",
+    description: "Prompt injection: sudo/developer mode activation",
   },
   {
     id: "inj-simulate",
@@ -211,10 +231,15 @@ const BUILTIN_INPUT_RULES: InputRule[] = [
   // Developer mode bypass
   {
     id: "injection-dev-mode",
-    pattern: /(?:developer\s*mode|debug\s*mode|maintenance\s*mode|god\s*mode|admin\s*mode|root\s*access|jailbreak|DAN\s*mode)/gi,
+    // ★ 2026-11-18 体系化修复（裸词误拦家族第 4 起）：(developer|debug|maintenance|
+    //   god|admin)\s*mode 裸词误拦正当语境——产品功能讨论、debug 排障教程
+    //   （探针实证）；裸 jailbreak 词拦掉「如何防御 jailbreak 攻击」的安全课程
+    //   大纲。收窄为攻击构造：进入类动词 + 模式名组合；DAN mode 保留
+    //   （DAN 无正当语境，DAN 模式本身就是越狱请求）。
+    pattern: /(?:\b(?:enter|activate|switch\s+to|go\s+into|put\s+you\s+in|you\s+are\s+(?:now\s+)?in)\s+(?:\S+\s+)?(?:developer|debug|maintenance|god|admin)\s*mode\b)|\bDAN\s*mode\b|(?:developer|debug|god|admin)\s*mode\s*[:：]?\s*(?:on|enabled|activated|开启|激活)/i,
     severity: "high",
     action: "block",
-    description: "Developer/debug mode bypass attempt",
+    description: "Developer/debug mode bypass attempt (activation construction)",
   },
 ];
 
@@ -304,15 +329,18 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     // 模型失去审批检查通道。lookaround 保证只拦真删除类工具名
     // （file_delete / rm / truncate_file 仍命中；permission_status 放行）。
     // ★ 2026-11-18（v17 压测 Task 3）：deletable=true 规则标记——risky 安全档下
-    //   本规则降级为 log（见 ToolGuardrail.check），放行删除类操作，改由
+    //   本规则降级为 log（见 ToolGuardrail.check），删除操作直接放行，改由
     //   HITL 审批（file_delete: critical）与 PermissionManager 兜底。
-    //   硬拦导致「要求删除文件」的巡检/审计/重构类任务无法交付 removed 分类。
+    // ★ 2026-11-18（Hermes 对齐）：normal 档从 block 改为 approve——
+    //   对齐 hermes-agent DANGEROUS_PATTERNS 语义（危险→人工审批，非拦截）。
+    //   硬拦导致「要求删除文件」的巡检/审计/重构类任务无法交付 removed 分类，
+    //   模型被迫绕路（v17 Task 3 实证）。审批通过即执行，人工兜底不变。
     toolPattern: /(?<![a-z0-9])(?:delete|remove|unlink|rmdir|rm|truncate|wipe|destroy)(?![a-z0-9])/i,
     argPattern: /./, // any args — the tool name itself is dangerous
     severity: "high",
-    action: "block",
+    action: "approve",
     deletable: true,
-    description: "Tool: file deletion operation",
+    description: "Tool: file deletion operation (requires approval)",
   },
   {
     id: "tool-shell-injection",
@@ -327,13 +355,13 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
     // 可反弹 shell 到外部端口），一并纳入拦截。
     argPattern: /(?:;\s*(?:rm|del|format|shutdown|reboot|nc|ncat)|\|\s*(?:rm|del|format|shutdown)|&&\s*(?:rm|del|format|shutdown)|`[^`]*\b(?:rm|del|format|nc|ncat)\b[^`]*`|\$\([^)]*\b(?:rm|del|format|nc|ncat)\b[^)]*\))/i,
     severity: "high",
-    action: "block",
-    // ★ 2026-11-18（v17 压测 Task 3）：deletable=true——risky 档下降级为 log。
-    //   操作符后的 rm/del 属删除类（nc/ncat 反弹 shell 不属于，但同规则内
-    //   无法按分支区分，risky 档下统一放行；nc/ncat 由 shell 层
-    //   isDestructiveCommand / ShellGuard 依据 shell.blockAtOrAbove 兜底）。
+    // ★ 2026-11-18（Hermes 对齐）：同 tool-file-deletion，normal 档 block →
+    //   approve——操作符后的 rm/del 交人工审批；nc/ncat 反弹 shell 在 shell 层
+    //   isDestructiveCommand / ShellGuard 依据 shell.blockAtOrAbove 兜底。
+    //   risky 档下 deletable 降级为 log，直接放行。
+    action: "approve",
     deletable: true,
-    description: "Tool: shell injection pattern in arguments",
+    description: "Tool: shell destructive chain in arguments (requires approval)",
   },
   {
     id: "tool-path-traversal",
@@ -712,7 +740,7 @@ export class ToolGuardrail {
         //   无法完成 removed 分类。降级后删除操作交由 HITL 审批
         //   （file_delete: critical）与 shell 层破坏性命令检测兜底。
         //   懒 require：guardrails 保持零模块级内部依赖；security 不可用时保守 block。
-        if (rule.deletable && rule.action === "block" && ToolGuardrail.isRiskySecurityLevel()) {
+        if (rule.deletable && rule.action === "approve" && ToolGuardrail.isRiskySecurityLevel()) {
           rule.action = "log";
           delete rule.deletable; // 只降一次，避免每次 check 重复查询
         }
@@ -753,6 +781,19 @@ export class ToolGuardrail {
         reason: reason ?? "Tool call blocked by guardrail",
         sanitizedArgs,
         triggeredRules,
+      };
+    }
+
+    // ★ 2026-11-18（Hermes 对齐）：approve 档——不拦截，信号化交给调用方
+    //   路由 HITL 审批（hermes DANGEROUS_PATTERNS 语义：危险 → 人工确认）。
+    if (worstAction === "approve") {
+      return {
+        passed: true,
+        severity,
+        reason: reason ?? "Tool call flagged for approval",
+        sanitizedArgs,
+        triggeredRules,
+        requiresApproval: true,
       };
     }
 
@@ -915,7 +956,8 @@ function actionRank(a: GuardrailAction): number {
     case "log":      return 0;
     case "warn":     return 1;
     case "sanitize": return 2;
-    case "block":    return 3;
+    case "approve":  return 3;
+    case "block":    return 4;
     default:         return 0;
   }
 }

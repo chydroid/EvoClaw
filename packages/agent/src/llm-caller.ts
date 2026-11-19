@@ -6878,15 +6878,23 @@ if (deps.contextPruningManager && !prunerNoop) {
           }
 
           // ── Guardrails: tool call validation ──
+          // ★ 2026-11-18（Hermes 对齐）：worstAction === "approve" 的规则命中
+          //   不再作为错误返回（旧逻辑 block 高危即失败 → 模型被迫绕路），
+          //   而是抬高 riskLevel 强制走下方 HITL 审批流——人工放行即执行，
+          //   对齐 hermes-agent DANGEROUS_PATTERNS（危险 → 审批，非拦截）。
           let toolResult: string = "";
           let toolErrored = false;
           let toolError: string | undefined;
+          let guardrailApproval = false;
           if (deps.checkToolGuardrail) {
             const toolCheck = deps.checkToolGuardrail(toolName, args);
             if (!toolCheck.passed && toolCheck.severity === "high") {
               toolResult = JSON.stringify({ error: `[工具安全拦截] ${toolCheck.reason}` });
               toolErrored = true;
               toolError = toolCheck.reason;
+            } else if (toolCheck.passed && toolCheck.requiresApproval) {
+              guardrailApproval = true;
+              asyncLog(`[AgentModelExecutor] Guardrail approve-action: "${toolName}" routed to HITL approval (${toolCheck.reason})\n`);
             }
           }
 
@@ -6927,6 +6935,22 @@ if (deps.contextPruningManager && !prunerNoop) {
             }
           }
 
+          // ★ 2026-11-18（Hermes 对齐）：guardrail approve 档命中时强制走 HITL。
+          //   risky 档（approveRiskyOperations=false）语义是「无需审批」——v17
+          //   已将删除规则在 risky 下降级为 log（ToolGuardrail.check），此处
+          //   requiresApproval 亦放行，双重兜底保持一致；仅 normal/strict 档
+          //   才把 approve 命中升级为人工审批。
+          //   懒 require：guardrails/llm-caller 保持零模块级内部依赖（同 v17 模式）；
+          //   security 不可用时保守视为可审批（正常档应审批）。
+          let guardrailForcesApproval = guardrailApproval;
+          if (guardrailApproval) {
+            try {
+              const { getActiveSecurityPolicy } = await import("@evoclaw/security");
+              guardrailForcesApproval = getActiveSecurityPolicy().approveRiskyOperations !== false;
+            } catch {
+              /* 保守：保持 true */
+            }
+          }
           // ── Human-in-the-Loop approval check ──
           // 技能中的 Python 脚本执行无须批准：shell_exec 已设为 low 风险级别，
           // 此处额外检查命令是否为 Python 脚本执行，确保即使 HITL 配置变更也不会拦截。
@@ -6960,9 +6984,9 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (
             deps.humanApprovalManager &&
             !isPythonScriptExecution &&
-            deps.humanApprovalManager.requiresApproval(toolName, args)
+            (guardrailForcesApproval || deps.humanApprovalManager.requiresApproval(toolName, args))
           ) {
-            const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName, args);
+            const riskLevel = deps.humanApprovalManager.getRiskLevel(toolName, args) || (guardrailApproval ? "high" : undefined);
 
             // ★ P3 熔断：连续拒绝达到阈值后不再生成新的审批请求（避免无限弹窗），
             //   只把原因写进 tool-result，不动系统提示/历史。

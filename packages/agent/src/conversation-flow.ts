@@ -77,21 +77,34 @@ const INTENT_RULES: IntentRule[] = [
   {
     intent: "jailbreak_attempt",
     patterns: [
-      /(ignore|disregard|forget)\s+(previous|prior|above|all)\s+(instructions?|rules?|prompts?)/i,
-      /(忽略|无视|忘记)(之前|上面|所有)(的)?(指令|规则|提示)/,
-      // ★ 2026-11-18（v17 压测 Task 6 误拦）：\bDAN\b 裸词（大小写不敏感）会命中
-      //   任务文本里的人名「Dan」——「Dan "C"」位于 init 阶段直接整会话被拒
-      //   （0 token，与 v12「密码」裸词误拦同族）。改为要求越狱语境组合：
-      //   「DAN」与提示注入动词（mode/jailbreak）同现，或明确写 jailbreak/越狱。
-      // ★ 顺带修复（自检发现的历史缺口）：原 \b(...|系统提示词|越狱)\b 对中文分支
-      //   **从不匹配**——\b 需要 \w 与非 \w 交界，CJK 字符两侧皆非 \w，词界永不成立。
-      //   英文词保留 \b，中文词改裸匹配（词义本身就是越狱语境，无误拦面）。
-      /\b(system\s+prompt|jailbreak)\b|系统提示词|越狱/i,
-      /\bDAN\s+(mode|jailbreak)/i,
-      /\b(you\s+are\s+now|现在你是|pretend\s+to\s+be|扮演)\b/i,
-      /\b(override|覆盖|绕过|bypass)\s+(safety|安全|filter|过滤)\b/i,
+      // ── 攻击构造 1：指令覆盖（ignore/disregard/forget + 指令宾语）──
+      // ★ 2026-11-18 体系化修复（裸词误拦家族第 4 起）：旧式 (previous|prior|above|all)
+      //   固定语序漏掉经典攻击「ignore all previous instructions」（all 插在
+      //   previous 前）——改为动词 + 可选插入语 + 指令宾语的松散结构：
+      //   (all\s+)?(previous|prior|above) 之外还支持 (the\s+)?(above|prior)。
+      /(ignore|disregard|forget)\s+(?:(?:all|the)\s+)?(?:previous|prior|above)\s+(instructions?|rules?|prompts?|directions?)/i,
+      /(ignore|disregard|forget)\s+all\s+(instructions?|rules?|prompts?|directions?)/i,
+      /(忽略|无视|忘记)(?:(?:所有|全部)?(?:之前|上面|以上|先前)的?|所有|全部)(指令|规则|提示|设定)/,
+      /(忽略|无视|忘记).{0,6}(指令|规则|提示|设定)/,
+      // ── 攻击构造 2：系统提示词提取（动词 + 提取宾语）──
+      // 话题裸词（system prompt / jailbreak / 越狱）不再进 deny 路径：
+      // 「写 jailbreak 防御课程大纲」「system prompt injection 安全培训」
+      // 「美剧《越狱》」「iPhone 越狱教程」均为正当语境（探针实证 4 处误拦）。
+      // 只有「动词+提取目标」的提取构造才判攻击。
+      /\b(reveal|show|display|print|output|repeat|dump|extract)\s+(your|the|this|your\s+full|your\s+original)\s+(system\s+prompt|initial\s+prompt|original\s+instructions?|hidden\s+instructions?|real\s+prompt)\b/i,
+      /(输出|打印|复述|泄露|揭示|展示|给出|告诉我)(你的)?(?:(完整|原始|真实)的?)?(系统提示词|初始指令|初始提示|真实提示|系统指令)/,
+      // ── 攻击构造 3：角色覆盖到不安全角色（DAN/evil/unrestricted…）──
+      // 「现在你是产品经理」「扮演法官」是正当用法，不再命中（CJK \b 死代码
+      // 顺带修复：旧 \b(现在你是|扮演)\b 中 CJK 两侧皆非 \w，词界永不成立，
+      // 该分支本就是死代码——现改为无 \b 的构造匹配）。
+      /\byou\s+are\s+now\s+(an?\s+)?(DAN|evil|malicious|unrestricted|uncensored|jailbroken)\b/i,
+      /\bDAN\s+(mode|jailbreak)\b/i,
+      /你(?:现在|如今)是\s*(DAN|邪恶的|无限制的|不受限制的|无道德的)/,
+      // ── 攻击构造 4：安全机制绕过（动词 + 安全宾语）──
+      /\b(override|bypass|disable|turn\s+off)\s+(your\s+)?(safety|safety\s+filters?|content\s+filter|guardrails?|restrictions?)/i,
+      /(覆盖|绕过|关闭|解除)\s*(你的)?(安全|安全过滤|内容过滤|护栏|限制)/,
     ],
-    description: "越狱尝试",
+    description: "越狱尝试（攻击构造匹配，话题裸词不进 deny 路径）",
   },
   {
     intent: "personal_info",
@@ -118,8 +131,14 @@ const INTENT_RULES: IntentRule[] = [
       //   会被 \bpassword\b 误命中。改为凭证上下文才触发：所有格、赋值。
       // ★ 2026-11-16 同类修复：passwd 裸词会误伤安全审计任务（/etc/passwd 是
       //   基线审计必查项，`sudo passwd` 是运维命令）。改为凭证上下文触发
-      //   （所有格 / 赋值）。ssn 保留裸词（个人社保号属高敏标识，不应在对话中出现）。
-      /\bssn\b/i,
+      //   （所有格 / 赋值）。
+      // ★ 2026-11-18 体系化修复（裸词误拦家族第 4 起）：ssn 裸词注释自称
+      //   「不应在对话中出现」，但探针实证「写一个 SSN 格式校验的正则」
+      //   这类开发任务在 init 阶段被整会话拒。改为与 password/passwd 同策略：
+      //   凭证上下文（所有格 / 赋值）才触发；SSN **数字格式** \d{3}-\d{2}-\d{4}
+      //   保留（真泄漏是数字串，不是话题词）。
+      /\b(?:my|our|your)\s+(?:ssn|social\s+security\s+number)\b/i,
+      /\bssn\s*(?:=|:)\s*[^\s，,。；;]{4,}/i,
       /(?:我的|我们的|你们的|你的|我们|你|我|他|她|my|our|your)\s*(?:的)?\s*passwd/i,
       /\bpasswd\s*(?:=|:)\s*[^\s，,。；;]{4,}/i,
       /(?:我的|我们的|你的|my|our|your)\s*password/i,
@@ -159,7 +178,12 @@ const INTENT_RULES: IntentRule[] = [
   {
     intent: "greeting",
     patterns: [
-      /^(你好|您好|hi|hello|hey|早上好|晚上好|下午好)\b/i,
+      // ★ 2026-11-18 体系化修复（裸词误拦家族顺带）：旧 ^(你好|...)\b 中 CJK
+      //   字符两侧皆非 \w，\b 词界永不成立 → 中文问候**从不匹配**（死代码），
+      //   blocked 会话无法用中文问候解封（探针实证：你好 → intent=unknown）。
+      //   中文分支去掉 \b（^ 锚点已足够），英文分支保留 \b（防 hey 匹配 hey Jude
+      //   开头的正文——但问候意图本就无害，仅影响状态机转移）。
+      /^(?:你好|您好|早上好|晚上好|下午好|(?:hi|hello|hey)\b)/i,
     ],
     description: "问候语",
   },
@@ -319,7 +343,18 @@ export class ConversationFlow {
     }
 
     // 可疑分数阈值检查
-    if (ctx.suspicionScore >= this.suspicionThreshold) {
+    // ★ 2026-11-18（Hermes 对齐）：消息层不再 0-token 整会话拒绝。
+    //   hermes-agent SECURITY.md §2.2/§2.4：「对对抗性 LLM 的唯一安全边界是
+    //   操作系统」；进程内模式扫描「运行在攻击者影响的字符串上，只是启发式，
+    //   不是边界」，且「prompt injection 本身不算漏洞」。消息层的 deny 是
+    //   裸词误拦家族（v4 token / v6 password / v12 密码 / v17 Dan）的放大器：
+    //   单条正则误命中 → 整个会话 0 token 被拒、任务完全无法进行。
+    //   对齐后：消息层保留意图标记 + 可疑分数累积（供审计与下游提示），
+    //   越狱/敏感意图**放行**，交给 pipeline 下游与工具层（效果点）执行；
+    //   仅话题白名单（运营者显式配置的强约束）与累计型可疑分数（多轮
+    //   反复试探）仍触发 block——前者是运营者意图，后者是多轮信号聚合、
+    //   单条正则误报不致整会话拒死。
+    if (ctx.suspicionScore >= this.suspicionThreshold && intent !== "question" && intent !== "greeting") {
       ctx.state = "blocked";
       ctx.intentHistory.push(intent);
       ctx.lastIntent = intent;
@@ -331,6 +366,18 @@ export class ConversationFlow {
     const rule = this.findTransitionRule(ctx.state, intent);
     if (!rule) {
       // 无匹配规则：默认允许，保持当前状态
+      ctx.intentHistory.push(intent);
+      ctx.lastIntent = intent;
+      ctx.updatedAt = Date.now();
+      return this.buildResult(intent, ctx, true, undefined, false);
+    }
+
+    // ★ 2026-11-18（Hermes 对齐）：jailbreak_attempt / personal_info 意图的
+    //   deny 转移降级为 allow + 警告——消息层内容启发式不做 0-token 整会话
+    //   拒绝（误拦家族的放大器），意图仍写入 metadata/历史供审计与下游
+    //   stage 提示。运营者如需内容拦截，应配置话题白名单或收紧 suspicion
+    //   阈值（多轮聚合），或依赖工具层效果点（HITL 审批 / 破坏性命令硬拦）。
+    if (rule.action === "deny" && (intent === "jailbreak_attempt" || intent === "personal_info")) {
       ctx.intentHistory.push(intent);
       ctx.lastIntent = intent;
       ctx.updatedAt = Date.now();
