@@ -77,6 +77,11 @@
   {
     "input": "a👨‍👩‍👧b",
     "maxWidth": 3,
+    "want": "a👨‍👩‍👧"
+  },
+  {
+    "input": "a👨‍👩‍👧b",
+    "maxWidth": 2,
     "want": "a"
   },
   {
