@@ -351,7 +351,8 @@ function getAssistantMsgPosition(msg: { id: string; isFinalSummary?: boolean }):
 function getMessageContainerStyle(msg: { role: string; content: string }, hovered: boolean): CSSProperties {
   if (msg.role === "assistant") {
     // 助手消息默认不用气泡，直接显示（2026-10-31 用户诉求）；
-    // 鼠标悬停时用 inset box-shadow 模拟边框 + 辉光，避免 border/padding 变化导致重排。
+    // 鼠标悬停时用 outline（offset 3px，向外扩一圈）画框 + 辉光，
+    // outline 不参与布局，避免 border/padding 变化导致重排。
     return {
       maxWidth: "min(85%, 1100px)",
       color: "var(--text-primary, #c9d1d9)",
@@ -360,8 +361,10 @@ function getMessageContainerStyle(msg: { role: string; content: string }, hovere
       wordBreak: "break-word",
       position: "relative",
       border: "none",
+      outline: hovered ? "1px solid var(--accent, #58a6ff)" : "none",
+      outlineOffset: "5px",
       boxShadow: hovered
-        ? "inset 0 0 0 1px var(--accent, #58a6ff), 0 0 12px rgba(88, 166, 255, 0.2)"
+        ? "0 0 12px rgba(88, 166, 255, 0.2)"
         : "none",
       borderRadius: "8px",
       padding: "4px 0",
