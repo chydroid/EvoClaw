@@ -748,55 +748,17 @@ export class AgentModelExecutor {
     return this.executionCheckpointStore;
   }
 
-  /** List all interrupted/failed executions that can be resumed */
-  listResumableExecutions(): Array<{ sessionId: string; originalMessage: string; status: string; snapshotCount: number; lastCheckpointTime: number }> {
-    return this.executionCheckpointStore.getResumableExecutions().map(s => ({
-      sessionId: s.sessionId,
-      originalMessage: s.originalMessage.slice(0, 100),
-      status: s.status,
-      snapshotCount: s.snapshots.length,
-      lastCheckpointTime: s.lastCheckpointTime,
-    }));
-  }
-
-  /** Resume an interrupted execution from the last checkpoint (or a specific snapshot) */
-  async resumeExecution(
-    sessionId: string,
-    fromSnapshotIndex?: number,
-    onProgress?: AgentProgressCallback,
-  ): Promise<{ reply: string; tokensUsed: number; contextTokens?: number; contextTokensEstimated?: boolean; contextLimit?: number; contextLimitSource?: "user" | "provider" | "catalog" | "fallback"; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }>; toolsExecuted: boolean; files?: Array<{ path: string; size: number; downloadUrl: string }> } | null> {
-    const resumeData = this.executionCheckpointStore.getSnapshotForResume(sessionId, fromSnapshotIndex);
-    if (!resumeData) return null;
-
-    const { messages, originalMessage } = resumeData;
-    const startTime = Date.now();
-    const pendingPermissions: Array<{ id: string; operation: string; description: string; target: string }> = [];
-
-    asyncLog(`[AgentModelExecutor] Resuming execution for session "${sessionId}" from snapshot ${fromSnapshotIndex ?? "latest"}, ${messages.length} messages\n`);
-
-    // Delete the old execution state so a fresh one is created by tryCallLLM
-    this.executionCheckpointStore.deleteExecution(sessionId);
-
-    // Re-run chat with the original message — the conversation history will be
-    // reconstructed from the snapshot so the LLM continues where it left off.
-    // We inject the snapshot messages into conversation history first.
-    const historyEntries: Array<{ role: string; content: string | null; tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>; tool_call_id?: string; name?: string }> = [];
-    for (const msg of messages) {
-      if (msg.role === "user" || msg.role === "assistant" || msg.role === "tool") {
-        historyEntries.push({
-          role: msg.role,
-          content: msg.content,
-          ...(msg.tool_calls ? { tool_calls: msg.tool_calls as Array<{ id: string; type: string; function: { name: string; arguments: string } }> } : {}),
-          ...(msg.tool_call_id ? { tool_call_id: msg.tool_call_id } : {}),
-          ...(msg.name ? { name: msg.name } : {}),
-        });
-      }
-    }
-    this.conversationHistory.set(sessionId, historyEntries);
-
-    // Call chat() to continue execution
-    return this.chat(originalMessage, { sessionId }, onProgress);
-  }
+  // ── R11 P0 台账第 5 项：Resume API 下线（选项 B「补全或下线」取下线）──
+  // 台账判定：resumeExecution/listResumableExecutions 0 调用者；store.resume()
+  // 只回快照不重启 LLM 循环 → 「断点续跑」实质不存在。
+  // 复核结论（2026-11-20）：真实断点续跑已由 DurableTaskRunner 全链路承接
+  // （resumeAll 启动恢复 + durable-tasks REST + web-ui 轮询闭环，见 apps/server
+  // index.ts durableRunner 接线）——这就是本仓库的 resume 语义，与 hermes
+  // durable task 对位一致。被移除的 resumeExecution 还有一层正确性缺陷：
+  // 快照 messages 是**请求形状**（含增强消息/工具流量），直接 set 进持久
+  // history 后 chat() 又会追加一次 user 轮 → 重复 user + 形状串位。
+  // ExecutionCheckpointStore 本体保留：快照/观测面（/api/executions 路由消费）
+  // 与崩溃后 interrupted 状态标记仍在服务。
 
   private runIdCounter = 0;
   private workspacePath: string;
@@ -893,7 +855,7 @@ export class AgentModelExecutor {
       this.planningEngine = new PlanningEngine({
         providers: this.providers,
         persona: this.persona,
-        recordProviderSuccess: (id: string) => this.recordProviderSuccess(id),
+        recordProviderSuccess: (id: string, latencyMs?: number) => this.recordProviderSuccess(id, latencyMs),
         recordProviderFailure: (id: string, error: string, errorType?: string) => this.recordProviderFailure(id, error, errorType ?? "UNKNOWN"),
       });
     } catch { /* planning-engine not available in test env */ }
@@ -1145,6 +1107,47 @@ export class AgentModelExecutor {
     return this.idleCompactionTracker;
   }
 
+  /**
+   * R11 GAP-23：注册 todo 快照提供器（压缩后重注入活跃 todo）。
+   * TodoStore 实例归工具层所有（apps/server todo-tools.ts），executor 无法
+   * import → 启动时由 server 注入回调。未注入时压缩不注入 todo（零成本）。
+   */
+  private todoSnapshotProvider: ((sessionId: string) => string | null) | null = null;
+  setTodoSnapshotProvider(provider: (sessionId: string) => string | null): void {
+    this.todoSnapshotProvider = provider;
+  }
+
+  /**
+   * R11 P0 死码接线：注入 ModelFailoverManager（记账镜像模式）。
+   * 生产请求路径熔断已有 ProviderHealthTracker（llm-caller 模块级），manager
+   * 不参与请求路径决策；仅接收 recordProviderSuccess/Failure 转发以维护
+   * 健康分/熔断统计，供 /api/system/failover/* 路由读取。未注入则零开销。
+   *
+   * 参数用结构化类型而非 import ModelFailoverManager：executor 只依赖记账/
+   * 查询面（recordSuccess/recordFailure/getHealth/registerProvider），避免
+   * 为类型引入整类依赖（与 setChannelManager 的鸭子类型 setter 同风格）。
+   */
+  private failoverManager: {
+    recordSuccess(providerId: string, latencyMs: number): void;
+    recordFailure(providerId: string, error: string): void;
+    getHealth(providerId: string): { circuitState: string; active: boolean } | undefined;
+    registerProvider(provider: { id: string; name: string; enabled: boolean; order: number; healthCheck: () => Promise<boolean> }): void;
+  } | null = null;
+  setFailoverManager(manager: NonNullable<AgentModelExecutor["failoverManager"]> | null): void {
+    this.failoverManager = manager;
+    if (manager) {
+      // 把当前 provider 配置注册进 manager（镜像键域 = provider.id）
+      for (const p of this.providers) {
+        if (!manager.getHealth(p.id)) {
+          manager.registerProvider({
+            id: p.id, name: p.name, enabled: p.enabled, order: p.order,
+            healthCheck: async () => true,
+          });
+        }
+      }
+    }
+  }
+
   setWorkspacePath(dir: string): void {
     this.workspacePath = dir;
     if (!fs.existsSync(dir)) {
@@ -1234,6 +1237,8 @@ export class AgentModelExecutor {
       compactionTokenThreshold: this.compactionTokenThreshold,
       idleCompactAfterSeconds: this.idleCompactAfterSeconds,
       idleCompactionTracker: this.idleCompactionTracker,
+      // R11 GAP-23：todo 压缩后重注入（见 setTodoSnapshotProvider）
+      todoSnapshotProvider: (sid: string) => this.todoSnapshotProvider?.(sid) ?? null,
       conversationHistory: this.conversationHistory,
       compactionManager: this.compactionManager,
       lifecycleManager: this.lifecycleManager,
@@ -1287,10 +1292,12 @@ export class AgentModelExecutor {
       compactionTokenThreshold: this.compactionTokenThreshold,
       idleCompactAfterSeconds: this.idleCompactAfterSeconds,
       idleCompactionTracker: this.idleCompactionTracker,
+      // R11 GAP-23：todo 压缩后重注入（见 setTodoSnapshotProvider）
+      todoSnapshotProvider: (sid: string) => this.todoSnapshotProvider?.(sid) ?? null,
       compactionManager: this.compactionManager,
       lifecycleManager: this.lifecycleManager,
       memoryHub: this.memoryHub,
-      recordProviderSuccess: (id: string) => this.recordProviderSuccess(id),
+      recordProviderSuccess: (id: string, latencyMs?: number) => this.recordProviderSuccess(id, latencyMs),
       recordProviderFailure: (id: string, error: string, errorType?: string) => this.recordProviderFailure(id, error, errorType ?? "UNKNOWN"),
       getEventLedger: () => this.getEventLedger(),
       // ★ P0-5：buildSkillsPromptForRun 不再经 deps 传给 llm-caller——skills 段
@@ -1600,10 +1607,14 @@ export class AgentModelExecutor {
   /**
    * 记录 Provider 成功调用
    */
-  private recordProviderSuccess(providerId: string): void {
+  private recordProviderSuccess(providerId: string, latencyMs?: number): void {
     const stats = this.providerStats.get(providerId) || { successCount: 0, failureCount: 0 };
     stats.successCount += 1;
     this.providerStats.set(providerId, stats);
+    // R11 P0：转发 failover manager（记账镜像；未注入则零开销）
+    if (this.failoverManager) {
+      try { this.failoverManager.recordSuccess(providerId, latencyMs ?? 0); } catch { /* 尽力而为 */ }
+    }
   }
 
   /**
@@ -1615,6 +1626,10 @@ export class AgentModelExecutor {
     stats.lastError = errorMessage;
     stats.lastErrorType = errorType;
     this.providerStats.set(providerId, stats);
+    // R11 P0：转发 failover manager（记账镜像；未注入则零开销）
+    if (this.failoverManager) {
+      try { this.failoverManager.recordFailure(providerId, `${errorType}: ${errorMessage}`); } catch { /* 尽力而为 */ }
+    }
   }
 
   buildSystemPrompt(promptMode?: PromptMode, context?: { skillsPrompt?: string; workspacePath?: string; bootstrapFiles?: Array<{ path: string; content: string }>; channel?: string; sessionId?: string }): string {
@@ -1969,7 +1984,7 @@ export class AgentModelExecutor {
     const deps: BriefUnderstandingDeps = {
       providers: this.providers,
       persona: this.persona,
-      recordProviderSuccess: (id: string) => this.recordProviderSuccess(id),
+      recordProviderSuccess: (id: string, latencyMs?: number) => this.recordProviderSuccess(id, latencyMs),
       recordProviderFailure: (id: string, error: string, errorType?: string) => this.recordProviderFailure(id, error, errorType ?? "UNKNOWN"),
     };
     return generateBriefUnderstandingFn(deps, userMessage);

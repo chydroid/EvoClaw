@@ -180,3 +180,69 @@ describe("assertNotStale", () => {
     expect(() => assertNotStale("agent-A", filePath)).toThrow(/FileStaleError/);
   });
 });
+
+describe("withWriteLock — 死锁修复回归（R11 接线发现）", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fsr-lock-"));
+    FileStateRegistry.resetInstance();
+  });
+
+  afterEach(() => {
+    FileStateRegistry.getInstance().clearAll();
+    FileStateRegistry.resetInstance();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("★ 串行调用：fn 必须被执行且返回值透传（旧实现对首把锁死锁，fn 永不执行）", async () => {
+    const registry = FileStateRegistry.getInstance();
+    const target = path.join(tmpDir, "serial.txt");
+    const res = await registry.withWriteLock(target, async () => 42);
+    expect(res).toBe(42);
+    const res2 = await registry.withWriteLock(target, async () => "second");
+    expect(res2).toBe("second");
+  });
+
+  it("★ 并发同路径：第二个临界区等待第一个释放（互斥顺序）", async () => {
+    const registry = FileStateRegistry.getInstance();
+    const target = path.join(tmpDir, "conc.txt");
+    const order: string[] = [];
+    const p1 = registry.withWriteLock(target, async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      order.push("first");
+    });
+    const p2 = registry.withWriteLock(target, async () => {
+      order.push("second");
+    });
+    await Promise.all([p1, p2]);
+    expect(order).toEqual(["first", "second"]);
+  });
+
+  it("fn 抛错时锁仍释放（后续调用不被卡死）", async () => {
+    const registry = FileStateRegistry.getInstance();
+    const target = path.join(tmpDir, "err.txt");
+    await expect(
+      registry.withWriteLock(target, async () => {
+        throw new Error("boom");
+      }),
+    ).rejects.toThrow("boom");
+    const res = await registry.withWriteLock(target, async () => "recovered");
+    expect(res).toBe("recovered");
+  });
+
+  it("不同路径互不阻塞", async () => {
+    const registry = FileStateRegistry.getInstance();
+    const order: string[] = [];
+    const p1 = registry.withWriteLock(path.join(tmpDir, "a.txt"), async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      order.push("a");
+    });
+    const p2 = registry.withWriteLock(path.join(tmpDir, "b.txt"), async () => {
+      order.push("b");
+    });
+    await Promise.all([p1, p2]);
+    // b 不等 a：a 睡 30ms，b 同步完成 → b 必须先于 a 出现（sort 会抹掉顺序信息，不能排序后断言）
+    expect(order).toEqual(["b", "a"]);
+  });
+});

@@ -14,6 +14,10 @@ import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
 import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
+// R11 GAP-8：延迟语法裁决（此前完整实现仅 barrel 导出零调用死码）。挂点 = 停止门：
+// syntaxBroken 只探回执/声称的交付物；lsp-verdicts 探本回合全部被编辑文件
+//（含 sed/apply_patch 半途截断留下的破损），两者互补。
+import { collectLateVerdicts } from "./lsp-verdicts";
 import { sessionCalledKanbanTerminal, TERMINAL_KANBAN_TOOLS, buildKanbanStopNudge } from "./kanban-stop";
 import { RunawayStreamWatch, REPETITION_LOOP_INTERRUPTED } from "./repetition-guard";
 import {
@@ -142,7 +146,10 @@ import { getCrossSessionRateGuard } from "./cross-session-rate-guard";
 import { RecordingManager } from "./recording-manager";
 import { getToolOutputPruner } from "./tool-output-pruner";
 import { hasActionIntent as hasActionIntentFn } from "./quick-reply";
-import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, maybeIdleCompact as maybeIdleCompactFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import { needsCompaction as needsCompactionFn, compactConversationHistory as compactConversationHistoryFn, maybeIdleCompact as maybeIdleCompactFn, persistSessionTurn as persistSessionTurnFn, persistToolExecutionCheckpoint as persistToolCheckpointFn, closeInterruptedToolSequence as closeInterruptedToolSequenceFn, getUsageAnchorRegistry, needsCompactionProbe, type SessionPersistenceDeps, type SessionHistoryEntry } from "./session-persistence";
+import { maybePrepareCompaction } from "./prepared-compaction";
+import { captureUsageAnchor } from "./usage-anchor";
+import { ReadTracker } from "./read-tracker";
 import { applyAnthropicCacheControl } from "./prompt-cache";
 import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
@@ -323,6 +330,11 @@ export async function nativeFetch(
         const status = res.statusCode || 0;
         const ok = status >= 200 && status < 300;
         const chunks: Buffer[] = [];
+        // GAP-20：错误响应体缓冲上限（64KB）。!ok 的 body 只用于错误分类/
+        // 记账/日志，任意大小都不值得缓冲——无上限时恶意/异常 provider 可用
+        // GB 级 error body 打爆内存（DoS）。超限后销毁连接停止接收。
+        const ERROR_BODY_CAP_BYTES = 64 * 1024;
+        let errorBodyCapped = false;
 
         // ★ P0-5：流式模式下 res 回调即 resolve，body 增量推送，
         //   首 chunk 到达时 consumer 即可读到；同时累积 buffer 供 .text()/.json()
@@ -342,6 +354,18 @@ export async function nativeFetch(
         });
 
         res.on("data", (chunk: Buffer) => {
+          if (!ok) {
+            // 错误体：只保留上限内的前缀
+            if (!errorBodyCapped) {
+              chunks.push(chunk);
+              const total = chunks.reduce((n, c) => n + c.byteLength, 0);
+              if (total >= ERROR_BODY_CAP_BYTES) {
+                errorBodyCapped = true;
+                req.destroy(); // 停止接收剩余 body；error/end 处理器照常收尾
+              }
+            }
+            return;
+          }
           chunks.push(chunk);
           if (wantsStream && streamController) {
             try {
@@ -420,6 +444,29 @@ export async function nativeFetch(
         res.on("error", (err) => {
           if (timeoutId) clearTimeout(timeoutId);
           cleanupAbortListeners();
+          // GAP-20：错误体超限主动 destroy（errorBodyCapped）不是真错误——
+          // 以已缓冲的截断前缀正常收尾（语义 = end），错误分类/记账照常拿到前缀。
+          if (errorBodyCapped) {
+            if (wantsStream) {
+              if (streamController) {
+                try { streamController.close(); } catch { /* already closed */ }
+              }
+              if (!streamEnded && bodyCompleteResolver) bodyCompleteResolver(Buffer.concat(chunks));
+              return;
+            }
+            const buffer = Buffer.concat(chunks);
+            resolve({
+              ok,
+              status,
+              statusText: res.statusMessage || "",
+              body: new ReadableStream<Uint8Array>({
+                start(c) { c.enqueue(new Uint8Array(buffer)); c.close(); },
+              }),
+              text: async () => buffer.toString("utf-8"),
+              json: async () => JSON.parse(buffer.toString("utf-8")),
+            });
+            return;
+          }
           // 流式模式已 resolve：必须将错误注入 body stream，并让 .text()/.json() 不挂
           if (wantsStream) {
             if (streamController) {
@@ -585,6 +632,24 @@ export class ProviderHealthTracker {
   resetAll(): void {
     this.providers.clear();
   }
+
+  /** R11 P0：仅在已有记录时返回快照（未知 provider 返回 null，不建空档）。 */
+  getSnapshotIfKnown(providerId: string): ProviderHealthSnapshot | null {
+    if (!this.providers.has(providerId)) return null;
+    return this.getSnapshot(providerId);
+  }
+
+  /** R11 P0：仅在已有记录时重置。返回是否确有记录被清除。 */
+  resetIfKnown(providerId: string): boolean {
+    return this.providers.delete(providerId);
+  }
+
+  /** R11 P0：重置全部并返回清除的记录数。 */
+  resetAllKnown(): number {
+    const count = this.providers.size;
+    this.providers.clear();
+    return count;
+  }
 }
 
 // Module-level tracker shared by the provider failover loop.
@@ -602,6 +667,22 @@ function recordProviderFailure(providerName: string): void {
 
 function recordProviderSuccess(providerName: string, responseMs?: number): void {
   providerHealthTracker.recordSuccess(providerName, responseMs);
+}
+
+/**
+ * R11 P0：活熔断状态/重置面（/api/system/failover/* 路由消费）。
+ * getSnapshot 返回 null = 该 provider 从未参与调用（无记录）；
+ * reset 清除指定 provider 的 tripped 态（与 isTripped 的 TTL 自愈一致语义）。
+ */
+export function getLiveProviderHealthSnapshot(providerName: string): ProviderHealthSnapshot | null {
+  return providerHealthTracker.getSnapshotIfKnown(providerName);
+}
+
+export function resetLiveProviderCircuit(providerName?: string): number {
+  if (providerName) {
+    return providerHealthTracker.resetIfKnown(providerName) ? 1 : 0;
+  }
+  return providerHealthTracker.resetAllKnown();
 }
 
 // ── Circuit breaker for tool execution ──
@@ -1146,10 +1227,12 @@ export interface LLMCallerDeps {
   idleCompactAfterSeconds?: number;
   /** 空闲触发压缩的会话活动/产出追踪器。 */
   idleCompactionTracker?: import("./idle-compaction").IdleCompactionTracker;
+  /** R11 GAP-23：todo 快照提供器（压缩后重注入活跃 todo；无活跃项返回 null）。 */
+  todoSnapshotProvider?: (sessionId: string) => string | null;
   lifecycleManager: import("./agent-lifecycle").AgentLifecycleManager | null;
   memoryHub: { getLongTerm(): { store(entry: import("@evoclaw/core").MemoryEntry): Promise<import("@evoclaw/core").MemoryEntry>; search(query: import("@evoclaw/core").MemorySearchQuery): Promise<import("@evoclaw/core").MemorySearchResult[]> } } | null;
   // Callbacks for provider stats
-  recordProviderSuccess: (id: string) => void;
+  recordProviderSuccess: (id: string, latencyMs?: number) => void;
   recordProviderFailure: (id: string, error: string, errorType?: string) => void;
   // EventLedger resolver
   getEventLedger: () => EventLedgerLike | null;
@@ -2393,6 +2476,8 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
     compactionTokenThreshold: deps.compactionTokenThreshold,
     idleCompactAfterSeconds: deps.idleCompactAfterSeconds,
     idleCompactionTracker: deps.idleCompactionTracker,
+    // R11 GAP-23：todo 压缩后重注入（formatForInjection 此前零调用死码）
+    todoSnapshotProvider: deps.todoSnapshotProvider,
     conversationHistory: deps.conversationHistory,
     compactionManager: deps.compactionManager,
     lifecycleManager: deps.lifecycleManager,
@@ -3307,6 +3392,38 @@ function convertAnthropicResponseToOpenAI(data: unknown): Record<string, unknown
   };
 }
 
+// ── GAP-20：错误体有界读（对标 hermes bounded_response 截断语义）──
+
+/**
+ * 读取响应体并在 maxBytes 处截断（流式增量，不全量缓冲）。
+ * 用于 !response.ok 的错误体：provider 可能返回任意大小的 body，
+ * 无界 text() 是内存 DoS 面。截断后追加省略标记，分类/记账照常。
+ */
+async function readBoundedBodyText(response: NativeFetchResponse, maxBytes: number): Promise<string> {
+  if (!response.body) {
+    return await response.text();
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (received < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done || !value) break;
+      chunks.push(value);
+      received += value.byteLength;
+    }
+    // 超限后取消，避免连接继续把 body 泵进来
+    if (received >= maxBytes) {
+      void reader.cancel().catch(() => {});
+    }
+  } finally {
+    void reader.releaseLock?.();
+  }
+  const text = Buffer.concat(chunks).toString("utf-8");
+  return received >= maxBytes ? text + "\n…[truncated]" : text;
+}
+
 // ── parseStreamingResponse ──
 
 export async function parseStreamingResponse(
@@ -3834,9 +3951,9 @@ export async function parseStreamingResponse(
     return null;
   }
 
+  const latency = Date.now() - startTime;
   const obs = deps.registry?.resolveService<any>("observability");
   if (obs) {
-    const latency = Date.now() - startTime;
     try {
       obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }], 1);
       obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }]);
@@ -3844,7 +3961,7 @@ export async function parseStreamingResponse(
   }
 
   const streamResponseMs = Date.now() - startTime;
-  deps.recordProviderSuccess(provider.id);
+  deps.recordProviderSuccess(provider.id, latency);
 
   const toolCalls = toolCallsMap.size > 0
     ? Array.from(toolCallsMap.entries()).map(([, tc]) => ({
@@ -4169,7 +4286,10 @@ const response = await nativeFetch(apiURL, {
     const responseMs = Date.now() - callStart;
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
+      // GAP-20（对标 hermes bounded_response 语义）：错误体读取必须有界。
+      // 未见面的恶意/异常 provider 可返回 GB 级 error body，无界 text() 会把
+      // 内存打爆（DoS）。读流并在上限处截断，已读部分照常进分类/记账/日志。
+      const errorText = await readBoundedBodyText(response, 64 * 1024).catch(() => "");
       // fix-1: 传递 sessionTokens 用于 server-disconnect + 大 session 启发式
       // 注意：callLLMOnce 内部无法访问 lastPromptTokens，因此不传 sessionTokens。
       // server-disconnect 启发式在 chat() 函数的其他位置仍可生效。
@@ -4225,16 +4345,16 @@ const response = await nativeFetch(apiURL, {
       return null;
     }
 
+    const latency = Date.now() - startTime;
     const obs = deps.registry?.resolveService<any>("observability");
     if (obs) {
-      const latency = Date.now() - startTime;
       try {
         obs.counterIncrement("evoclaw_llm_calls_total", [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }], 1);
         obs.histogramObserve("evoclaw_llm_latency_ms", latency, [{ key: "provider", value: provider.provider || "unknown" }, { key: "model", value: provider.model || "unknown" }, { key: "status", value: "success" }]);
       } catch { /* observability is best-effort */ }
     }
 
-    deps.recordProviderSuccess(provider.id);
+    deps.recordProviderSuccess(provider.id, latency);
 
     // ── 非流式路径同样要记录思考轨迹 ──
     // 实测（2026-10-08）：provider 走非流式时，只有 tool_result 入轨迹，
@@ -4666,6 +4786,9 @@ export async function tryCallLLM(
   // 「发生了什么 + 下一步做什么」，而不是通用的"请检查 API Key/服务是否在线"。
   let lastFailureEvidence: TerminalFailureEvidence | null = null;
   let errorAttemptsByProvider = new Map<string, number>();
+  // R11 GAP-1：本回合是否已捕获 usage anchor（只认第一通成功调用，
+  // 防后续工具轮 prompt_tokens——含不进持久 history 的工具流量——双计）
+  let turnAnchorCaptured = false;
 
   // ── 空闲触发压缩（对标 hermes `_idle_compaction`）──
   // 在每个 turn 起点、provider 循环之前执行一次（而非每 provider 一次），
@@ -4783,6 +4906,9 @@ export async function tryCallLLM(
       if (needsCompactionFn(sessionPDeps, sessionId, stableSystemPrompt + dynamicSystemTail, deps.config.maxTokens)) {
         asyncLog(`[AgentModelExecutor] Auto-compaction triggered for session "${sessionId}"\n`);
         await compactConversationHistoryFn(sessionPDeps, sessionId);
+        // R11 GAP-6：压缩边界前进读追踪 generation——压缩后每个 (path,offset,limit)
+        // 的首次读回全文（摘要可能丢字节）；dedup 保留（未变文件继续 stub）。
+        ReadTracker.getInstance().advanceGeneration(sessionId);
       }
 
       // ── TrajectoryCompressor: in-place 轨迹压缩（对标 Hermes trajectory_compressor.py）──
@@ -5340,6 +5466,8 @@ if (deps.contextPruningManager && !prunerNoop) {
       let lengthContinueCount = 0;
       // 验证门 nudge 计数：模型在变更文件后未验证就声称完成时，回灌验证指令的轮数
       let verificationNudgeCount = 0;
+      // R11 GAP-8：延迟语法裁决 nudge 计数（防死循环，同 testRedGate 模式上限 2）
+      let lateVerdictNudgeCount = 0;
       // ★ 2026-11-19（v18 Task 1）测试红门：nudge 计数 + 已处理命令集合。
       //   同一条失败命令只 nudge 一次（模型修完后再次跑测试是新命令/或成功），
       //   防止「测试红 → nudge → 模型不修 → 再 nudge」的无限循环。
@@ -5952,6 +6080,8 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (classified.shouldCompact) {
             asyncLog(`[AgentModelExecutor] Compacting due to ${classified.type}...\n`);
             await compactConversationHistoryFn(getSessionPersistenceDeps(deps), sessionId);
+            // R11 GAP-6：压缩边界前进读追踪 generation（同主路径 4785 行）
+            ReadTracker.getInstance().advanceGeneration(sessionId);
             // ★ P0-7：与主路径同布局——易变内容前置，history 在后。
             conversationMessages = [
               { role: "system", content: stableSystemPrompt + ephemeralSuffix },
@@ -6079,6 +6209,29 @@ if (deps.contextPruningManager && !prunerNoop) {
         recordProviderSuccess(provider.name, result.responseMs);
         totalTokensUsed += result.tokensUsed;
         if (result.promptTokens > 0) lastPromptTokens = result.promptTokens;
+
+        // ── R11 GAP-1 usage anchor 捕获（对标 hermes capture_usage_anchor）──
+        // 仅在本回合**第一次**拿到真实 prompt_tokens 时捕获。锚绑定持久
+        // history（回合内第一次成功调用时 history 尚未追加本回合的
+        // [user, assistant] 对，此刻快照 = 已计价前缀）；后续工具轮的
+        // prompt_tokens 含工具流量（不进持久 history），若捕获会双计 →
+        // 只认第一通（turnAnchorCaptured 门）。锚值 = 完整请求
+        // promptTokens（含 sys/skills/tail/tools/当前 user，压缩门同口径
+        // 全含）。指纹保证：P0-9 原始消息存储 + P0-7 纯追加布局 → history
+        // 跨轮字节一致；压缩/剪枝改写前缀时失配（fail-closed 清锚回退估算）。
+        if (result.promptTokens > 0 && !turnAnchorCaptured) {
+          try {
+            const anchor = captureUsageAnchor(
+              result.promptTokens,
+              result.tokensUsed - result.promptTokens,
+              history,
+            );
+            if (anchor) {
+              getUsageAnchorRegistry().set(sessionId, anchor);
+              turnAnchorCaptured = true;
+            }
+          } catch { /* 锚捕获是尽力而为：失败保持旧路径全量估算 */ }
+        }
 
         // ★ 上下文用量实时下发（2026-11-06）：本次调用的 prompt 词元数就是
         //   "当前会话上下文用量"的准确估值。每次 LLM 调用结束后立即上报，
@@ -6643,7 +6796,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 syntaxBroken.length > 0 ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
 
-            // ── 验证门（Verification Gate）───────────────────────────
+            // ── R11 GAP-8：延迟语法裁决（对标 hermes turn_stop_gates::_late_lsp_verdicts）──
             // 借鉴 hermes-agent verification_stop.py：模型在变更类工具
             // （文件写类）之后声称完成，但未提供验证证据时，注入合成
             // nudge 要求先验证再结束。与 completion-truthfulness 的
@@ -6656,6 +6809,23 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   []    → 上次验证仍然有效（之后没再编辑）→ 不重复 nudge
             //   [paths] → 上次验证已被后续编辑作废 → 只对失效路径定向复验
             const stalePaths = evidenceStore.getStalePaths();
+            // ── R11 GAP-8：延迟语法裁决（对标 hermes turn_stop_gates::_late_lsp_verdicts）──
+            // 收集点在停止门（不在每次编辑后，避免性能开销）；仅查本回合变更文件。
+            // syntaxBroken 探「回执/声称的交付物」；此裁决探「全部被编辑文件」——
+            // sed 修一半截断、apply_patch 落盘破损等不在回执里的破损由此捕获。
+            // 与 testRedGate 同款防循环：最多 nudge 2 次，模型修完下回合裁决为空即自然通过。
+            let lateSyntaxVerdicts: string[] = [];
+            if (
+              changedPathsForGate.length > 0 &&
+              hasWorkContext &&
+              !isCreativeSubstantive &&
+              lateVerdictNudgeCount < 2
+            ) {
+              try {
+                lateSyntaxVerdicts = await collectLateVerdicts(changedPathsForGate);
+              } catch { /* 裁决失败不阻断主流程（无 LSP 时是尽力而为） */ }
+            }
+            const lateVerdictTriggered = lateSyntaxVerdicts.length > 0;
             const verificationGateTriggered =
               shouldTriggerVerificationGate(
                 changedPathsForGate,
@@ -6715,7 +6885,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               !sessionCalledKanbanTerminal(conversationMessages);
             const kanbanShouldContinue = kanbanStopTriggered;
 
-            const effectiveShouldContinue = shouldContinue || verificationGateTriggered || kanbanShouldContinue || testRedGateTriggered;
+            const effectiveShouldContinue = shouldContinue || verificationGateTriggered || kanbanShouldContinue || testRedGateTriggered || lateVerdictTriggered;
 
             if (effectiveShouldContinue) {
               if (kanbanStopTriggered) {
@@ -6819,6 +6989,31 @@ if (deps.contextPruningManager && !prunerNoop) {
                 );
                 conversationMessages.push(assistantMsg);
                 pendingTransient.push({ role: "user", content: testRedNudge });
+                if (finalReply) {
+                  lastReplyBackup = finalReply;
+                  pendingVerificationReply = finalReply;
+                }
+                finalReply = "";
+                continue;
+              }
+
+              // ── R11 GAP-8：延迟语法裁决 nudge（优先级最低——其他门没拦住才到这）──
+              if (lateVerdictTriggered && !verificationGateTriggered && !kanbanStopTriggered) {
+                lateVerdictNudgeCount++;
+                const lateNudge =
+                  `\n\n**延迟语法检查**：本回合编辑的文件中存在语法错误（工具结果返回后才暴露）：\n` +
+                  lateSyntaxVerdicts.join("\n") +
+                  `\n请修复以上语法错误后再收尾。可用 file_read 核对破损处上下文后用 file_write action=edit 定点修复。`;
+                trace.addSystem(
+                  `延迟语法裁决 #${lateVerdictNudgeCount}（回合内编辑的文件在停止门检出语法错误）`,
+                  `检出 ${lateSyntaxVerdicts.length} 条错误`,
+                );
+                asyncLog(
+                  `[AgentModelExecutor] Late syntax verdicts gate #${lateVerdictNudgeCount} ` +
+                  `— ${lateSyntaxVerdicts.length} deferred diagnostic(s); nudging agent to fix\n`,
+                );
+                conversationMessages.push(assistantMsg);
+                pendingTransient.push({ role: "user", content: lateNudge });
                 if (finalReply) {
                   lastReplyBackup = finalReply;
                   pendingVerificationReply = finalReply;
@@ -8744,6 +8939,19 @@ if (deps.contextPruningManager && !prunerNoop) {
           newHistory.splice(0, newHistory.length - deps.maxHistoryLength);
         }
         deps.conversationHistory.set(sessionId, newHistory);
+
+        // ── R11 GAP-2：预压缩回合末钩子（对标 hermes maybe_prepare）──
+        // 上下文进入压缩触发频带（阈值的 88%~100%）→ 后台启动一次摘要 pass，
+        // 下一次阈值触发压缩直接取用完成的摘要（窗口一致时），首 token 不再被
+        // 同步摘要调用阻塞。失配/失败照旧内联（fail-closed）。从不抛错。
+        // 本回合已触发过压缩 → 频带必不满足（压缩后远低于下限），无需显式跳过。
+        try {
+          const preparedDeps = getSessionPersistenceDeps(deps);
+          const probe = needsCompactionProbe(preparedDeps, sessionId, stableSystemPrompt + dynamicSystemTail);
+          maybePrepareCompaction(preparedDeps, sessionId, probe);
+        } catch (prepErr) {
+          process.stderr.write(`[AgentModelExecutor] Prepared compaction hook skipped: ${prepErr instanceof Error ? prepErr.message : String(prepErr)}\n`);
+        }
 
         const ledgerEnd = deps.getEventLedger();
         if (ledgerEnd) {

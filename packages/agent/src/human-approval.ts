@@ -126,8 +126,9 @@ const DEFAULT_RISK_LEVELS: Record<string, RiskLevel> = {
  * 未列出的 action 回落到工具级 DEFAULT_RISK_LEVELS，再回落 "medium"。
  */
 const ACTION_RISK_LEVELS: Record<string, Record<string, RiskLevel>> = {
-  // file_create=medium / file_modify=high
-  file_write: { create: "medium", modify: "high" },
+  // file_create=medium / file_modify=high；edit=medium（定点编辑只动一段文本，
+  // 风险低于整文件覆盖的 modify，且 stale 阻断已在前置守卫兜底）
+  file_write: { create: "medium", modify: "high", edit: "medium" },
   // email_send=high；email_add_account=low（用户明确要求首次添加邮箱免审批）；
   // 其余只读 action=low
   email: {
@@ -565,6 +566,7 @@ export class HumanApprovalManager {
       file_write: {
         create: `\u521b\u5efa\u6587\u4ef6: ${String(args.path ?? "")}`,
         modify: `\u4fee\u6539\u6587\u4ef6: ${String(args.path ?? "")}`,
+        edit: `\u7f16\u8f91\u6587\u4ef6\uff08\u5b9a\u70b9\u66ff\u6362\uff09: ${String(args.path ?? "")}`,
       },
       email: {
         send: `\u53d1\u9001\u90ae\u4ef6\u81f3: ${String(args.to ?? "")}`,

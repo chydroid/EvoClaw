@@ -45,8 +45,11 @@ export type { ModelConfig, ProviderConfig, AgentExecutionResult, ToolDefinition,
 export type { SubTask, TaskPlan, ProjectTemplate } from "./task-planner";
 export type { PromptMode, SystemPromptParams } from "./system-prompt";
 export type { CompactionSummary, CompactionConfig } from "./compaction-manager";
-export { closeInterruptedToolSequence, persistSessionTurn, persistToolExecutionCheckpoint, loadSessionHistory } from "./session-persistence";
+export { closeInterruptedToolSequence, persistSessionTurn, persistToolExecutionCheckpoint, loadSessionHistory, needsCompactionProbe } from "./session-persistence";
 export type { SessionHistoryEntry, SessionPersistenceDeps, ToolCheckpointMetadata } from "./session-persistence";
+// PreparedCompaction — 后台预压缩（对标 Hermes agent/prepared_compaction.py，R11 GAP-2）
+export { maybePrepareCompaction, takePreparedSummary, discardPreparedCompaction, preparedCompactionStats, PREPARE_BAND_RATIO } from "./prepared-compaction";
+export type { PreparedSummary } from "./prepared-compaction";
 export type { AgentStatus, ToolCallStatus, LifecycleEventData, ErrorEvent, ToolCallEvent, CompactionEvent, PermissionEvent } from "./agent-lifecycle";
 export type { QueueMode, QueueItem, QueueConfig } from "./queue-manager";
 export { SessionManager } from "./session-manager";
@@ -98,6 +101,8 @@ export { EventLedger } from "./event-ledger";
 export type { LedgerEventType, LedgerEntry, LedgerQuery, EventLedgerConfig } from "./event-ledger";
 export { ModelFailoverManager } from "./model-failover";
 export type { FailoverConfig, ProviderHealth, FailoverProvider } from "./model-failover";
+export { getLiveProviderHealthSnapshot, resetLiveProviderCircuit } from "./llm-caller";
+export type { ProviderHealthSnapshot } from "./llm-caller";
 export { DefaultProviderRegistry } from "./provider-registry";
 export type { RegistryEntry, ResolvedProvider, RegistryConfig } from "./provider-registry";
 // R1-2: Provider Skip List — 持久化的失败 provider 跳过列表
@@ -216,6 +221,18 @@ export { StreamingThinkScrubber, stripThinkBlocks } from "./think-scrubber";
 // FileStateRegistry — 跨 agent 文件状态协调（对标 Hermes tools/file_state.py）
 export { FileStateRegistry, assertNotStale } from "./file-state-registry";
 export type { StaleResult } from "./file-state-registry";
+
+// EscapeDriftAutocorrect — 匹配前转义漂移保守纠正（对标 Hermes tools/escape_drift_autocorrect.py）
+export { maybeCorrectEscapeDrift, AmbiguousEscapeDriftError } from "./escape-drift-autocorrect";
+export type { EscapeDriftCorrection } from "./escape-drift-autocorrect";
+
+// ReadTracker — per-session 读追踪（对标 Hermes tools/file_tools_read_tracking.py）
+export { ReadTracker, CONSECUTIVE_READ_BLOCK, CONSECUTIVE_READ_WARN, EDIT_FAILURE_ESCALATE } from "./read-tracker";
+export type { ReadVerdict } from "./read-tracker";
+
+// UsageAnchor — usage-anchored token accounting（对标 Hermes agent/usage_anchor.py，R11 GAP-1）
+export { captureUsageAnchor, anchoredContextTokens, anchorMatches, messageFingerprint } from "./usage-anchor";
+export type { UsageAnchor } from "./usage-anchor";
 
 // ToolSearch — 渐进式工具披露 BM25（对标 Hermes tools/tool_search.py）
 export { ToolSearchEngine, ToolSearchIndex, estimateTokens, estimateToolTokens, estimateTotalTokens } from "./tool-search";

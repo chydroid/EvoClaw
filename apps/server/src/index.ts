@@ -37,7 +37,7 @@ import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, 
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, DelegateEngine, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager, getClarifyGateway } from "@evoclaw/agent";
-import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "@evoclaw/agent";
+import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner, ModelFailoverManager } from "@evoclaw/agent";
 import type { DurableTask } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer, BrowserVault, runBackgroundReview, DEFAULT_REVIEW_CONFIG } from "@evoclaw/agent";
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler, ReviewChatFn, ReviewMessage, BackgroundReviewConfig } from "@evoclaw/agent";
@@ -79,6 +79,7 @@ import {
   registerKanbanTools,
   registerVerifyTools,
   registerTodoTools,
+  getTodoStore,
   registerDelegateTools,
   registerBrowserCompletionTools,
 } from "./tools";
@@ -136,6 +137,7 @@ export class EvoClawServer {
   private sessionManager: SessionManager;
   private contextEngine: ContextEngine;
   private channelManager: ChannelManager;
+  private failoverManager: ModelFailoverManager;
   private protocolHandler: ProtocolHandler;
   private reportGenerator: ReportGenerator;
   private taskClassifier: TaskClassifier;
@@ -813,9 +815,28 @@ export class EvoClawServer {
     });
     process.stdout.write(`[Server] CopilotRouter initialized (respects user LLM config order)\n`);
 
+    // ── R11 P0 死码接线：ModelFailoverManager ──
+    // 台账：类完整（707 行）+ 两 API 路由（/api/system/failover/status|reset）+
+    // web-ui OpsPage 消费面俱全，但 0 实例化 → 路由恒 503。
+    // hermes-first 差异：hermes 的 failover 管理器直接参与请求路径（execWithFallback
+    // 包裹每次调用）；EvoClaw 生产已有活熔断（llm-caller ProviderHealthTracker 30s 冷却
+    // + skip list + CrossSessionRateGuard），语义重叠但键域/响应速度不同。
+    // 决策：manager 作为「记账镜像 + 统一状态面」接线，不做第二套请求路径熔断：
+    //  1. executor 转发每次 provider 成功/失败 → manager 健康分/熔断统计
+    //  2. status 路由：manager 视图 + 活 tripped 态合并（OpsPage 显示真实熔断）
+    //  3. reset 路由：manager 熔断 + 活 ProviderHealthTracker 一并重置（真重置）
+    this.failoverManager = new ModelFailoverManager();
+    this.registry.registerService("failoverManager", this.failoverManager);
+    this.agentModelExecutor.setFailoverManager(this.failoverManager);
+
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
     this.registry.registerService("channelManager", this.channelManager);
+    // R11 P0：入站分发去重（channel+messageId，处理失败不记账允许平台重投）
+    this.channelManager.enableDispatchDedupe({
+      persistPath: path.resolve(__dirname, "..", "..", "..", "data", "dispatch-dedupe.json"),
+      persistEnabled: true,
+    });
 
     // ── Dead Letter Queue ──
     const dlq = new DeadLetterQueue({ storageDir: path.resolve(__dirname, "..", "..", "..", "data", "dlq") });
@@ -2364,6 +2385,16 @@ export class EvoClawServer {
     registerTodoTools({
       executor: this.agentModelExecutor,
       getSessionId: () => this.agentModelExecutor.currentSessionId || "web-ui",
+    });
+    // R11 GAP-23：todo 压缩后重注入——formatForInjection 此前是死码
+    // （getTodoStore 导出零消费，头注释声称已实现）。压缩边界把活跃
+    // （pending/in_progress）todo 折进压缩后历史，防模型重做已完成工作。
+    this.agentModelExecutor.setTodoSnapshotProvider((sessionId) => {
+      try {
+        return getTodoStore(sessionId).formatForInjection();
+      } catch {
+        return null;
+      }
     });
   }
 

@@ -73,13 +73,13 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
     return (await entry.handler(params)) as Record<string, unknown>;
   };
 
-  it("★ file_write 是复合工具：action 必填且只开放 create / modify", () => {
+  it("★ file_write 是复合工具：action 必填且只开放 create / modify / edit", () => {
     // 合并自 file_create + file_modify：判别字段缺失或拼错会让模型静默走错分支
     const tools = mountTools();
     const def = tools.get("file_write")!.definition;
-    const action = def.parameters as { action: { required?: boolean; enum?: string[] } };
+    const action = (def.parameters as Record<string, { required?: boolean; enum?: string[] }>).action;
     expect(action.required).toBe(true);
-    expect(action.enum).toEqual(["create", "modify"]);
+    expect(action.enum).toEqual(["create", "modify", "edit"]);
     // 原 file_create / file_modify 两个独立工具已不再注册
     expect(tools.has("file_create")).toBe(false);
     expect(tools.has("file_modify")).toBe(false);

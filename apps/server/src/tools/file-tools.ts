@@ -1,7 +1,18 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as os from "os";
-import type { AgentModelExecutor } from "@evoclaw/agent";
+import { AgentModelExecutor } from "@evoclaw/agent";
+import {
+  getCurrentToolCallContext,
+  FileStateRegistry,
+  ReadTracker,
+  fuzzyFindAndReplace,
+  maybeCorrectEscapeDrift,
+  AmbiguousEscapeDriftError,
+  CONSECUTIVE_READ_BLOCK,
+  CONSECUTIVE_READ_WARN,
+  EDIT_FAILURE_ESCALATE,
+} from "@evoclaw/agent";
 import type { PermissionManager, PermissionRelay } from "@evoclaw/security";
 import { getActiveSecurityPolicy, decideFileAccess } from "@evoclaw/security";
 import type { ErrorRecoveryManager } from "@evoclaw/security";
@@ -256,6 +267,89 @@ export function registerFileTools(
     return workspaceBase ?? fsBase;
   };
 
+  // ── R11-1 文件编辑三件套（GAP-5/6/7）共享设施 ─────────────────────
+  // FileStateRegistry 管**跨会话** mtime/hash staleness；ReadTracker 管**会话内**
+  // 重复读去重、分页覆盖账与整文件覆盖的全文基线。两者互补（对标 hermes
+  // file_state.py + file_tools_read_tracking.py 的分工）。
+  const stateRegistry = FileStateRegistry.getInstance();
+  const readTracker = ReadTracker.getInstance();
+
+  /** 当前会话 id（ToolRuntimeContext 未包裹时退 "default"，与审批层一致） */
+  const currentSessionId = (): string => getCurrentToolCallContext()?.sessionId ?? "default";
+
+  /** 文件 version（mtime + hash 前 16 字符）；文件不存在返回 null */
+  function fileVersionOf(resolvedPath: string): string | null {
+    try {
+      const stat = fs.statSync(resolvedPath);
+      const content = fs.readFileSync(resolvedPath, "utf-8");
+      return `${stat.mtimeMs}:${FileStateRegistry.hashContent(content)}`;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 会话内读追踪记账：ReadTracker（stub/block/覆盖账/基线）+ FileStateRegistry（跨会话 staleness）。
+   * 在 file_read 成功返回内容前调用。
+   */
+  function noteSuccessfulRead(
+    sessionId: string,
+    resolvedPath: string,
+    offset: number,
+    limit: number | undefined,
+    content: string,
+    truncated: boolean,
+    fileVersion: string | null,
+  ): void {
+    try {
+      // hash 传 undefined → recordRead 自动读盘计算**整文件** hash。
+      // 不能传 content 的 hash：分页读的 content 只是片段，与 checkStale 的
+      // 整文件 hash 比对会永远误报 stale（实测 dbg2 复现）。
+      stateRegistry.recordRead(sessionId, resolvedPath);
+    } catch {
+      /* staleness 记账失败不阻断读 */
+    }
+    try {
+      const endLine = offset - 1 + content.split("\n").length;
+      const totalLines = (() => {
+        try {
+          return fs.readFileSync(resolvedPath, "utf-8").split("\n").length;
+        } catch {
+          return 0;
+        }
+      })();
+      readTracker.noteReadServed(
+        sessionId, resolvedPath, fileVersion, offset, limit, endLine, totalLines, truncated,
+      );
+    } catch {
+      /* 读追踪失败不阻断读 */
+    }
+  }
+
+  /**
+   * 整文件覆盖前的双守卫（对标 hermes `_stale_overwrite_blocker`，在磁盘突变前执行）。
+   * 返回 null = 放行；返回字符串 = 拒绝理由（含 re-read 引导）。
+   * modify 成功后 noteWriteServed 刷新基线 → 连续 modify 不自卡。
+   */
+  function checkStaleOverwrite(sessionId: string, resolvedPath: string): string | null {
+    // 1) 跨会话 staleness（version/mtime/hash/removed，FileStateRegistry）
+    const stale = stateRegistry.checkStale(sessionId, resolvedPath);
+    if (stale.stale) {
+      return (
+        `${resolvedPath} was modified outside this session since you last read it ` +
+        `(${stale.reason}). Re-read the file with file_read before overwriting.`
+      );
+    }
+    // 2) 会话内全文基线（ReadTracker：never read / partial read / changed since）
+    const version = fileVersionOf(resolvedPath);
+    return readTracker.checkOverwriteBaseline(sessionId, resolvedPath, version !== null, version);
+  }
+
+  /** 文件行数 */
+  function countLines(content: string): number {
+    return content.split("\n").length;
+  }
+
   // ── file_write（create / modify 复合工具）─────────────────────────
   // 合并自 file_create 与 file_modify。两者仅「新建还是覆盖」的语义不同，
   // handler 逻辑体逐字保留，由 action 分发。旧工具名不再注册。
@@ -287,7 +381,7 @@ export function registerFileTools(
       // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
       // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
       // `...\data\workspace\data\workspace`，连踩两个坑。
-      return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+      return { success: true, ...(r as object), path: resolvedPath, workspaceRelative: display };
     };
     return await errRecovery
       .executeWithRetry("file_create", fsPath, doCreate)
@@ -326,11 +420,26 @@ export function registerFileTools(
     } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
       permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `修改文件: ${filePath}`, params, category: "file" });
     }
+    // ★ R11 GAP-5 stale-overwrite 阻断（对标 hermes `_stale_overwrite_blocker`）：
+    //   磁盘突变前拒绝「基于旧快照/未读过全文的整文件覆盖」——静默丢工作的最直接路径。
+    //   modify 成功后 noteWriteServed 刷新基线，连续 modify 不自卡。
+    const sessionId = currentSessionId();
+    const blocker = checkStaleOverwrite(sessionId, resolvedPath);
+    if (blocker) {
+      return { success: false, error: blocker, stale_write_blocked: true, path: filePath, resolved_path: resolvedPath };
+    }
     const doModify = async () => {
       const r = pf.insideSandbox
         ? await fsMgr.modifyFile(fsPath, content)
         : await fsMgr.operateAbsolute(resolvedPath, content, "modify", true);
-      return { ...(r as object), path: resolvedPath, workspaceRelative: display };
+      // 写后记账：跨会话 staleness 刷新 + 会话内基线/dedup 更新
+      try {
+        stateRegistry.recordWrite(sessionId, resolvedPath, content);
+      } catch { /* 记账失败不阻断写 */ }
+      try {
+        readTracker.noteWriteServed(sessionId, resolvedPath, fileVersionOf(resolvedPath) ?? `${Date.now()}:write`);
+      } catch { /* 记账失败不阻断写 */ }
+      return { success: true, ...(r as object), path: resolvedPath, workspaceRelative: display };
     };
     return await errRecovery
       .executeWithRetry("file_modify", fsPath, doModify)
@@ -349,16 +458,166 @@ export function registerFileTools(
       });
   }
 
+  /**
+   * R11 GAP-7：file_write action=edit — old_string/new_string 精确编辑
+   * （对标 hermes patch_tool mode=replace）。改大文件不再整文件重发。
+   * 流程：preflight → 权限 → 写锁内（stale 阻断 → 读当前内容 →
+   * escape-drift 纠正 → 9 策略模糊匹配 → CRLF 归一 → 写回）。
+   */
+  async function handleFileWriteEdit(params: Record<string, unknown>): Promise<unknown> {
+    const filePath = String(params.path || "");
+    const oldString = params.old_string !== undefined ? String(params.old_string) : undefined;
+    const newString = params.new_string !== undefined ? String(params.new_string) : undefined;
+    const replaceAll = params.replace_all === true;
+    if (oldString === undefined || oldString === "") {
+      return { success: false, error: "action=edit 需要 old_string（要查找的原文）。请先 file_read 核对当前内容。" };
+    }
+    if (newString === undefined) {
+      return { success: false, error: "action=edit 需要 new_string（替换文本；删除内容请传空字符串）" };
+    }
+    const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(), filePath);
+    const pf = preflight(resolvedPath, fsBase, true);
+    if (!pf.ok) return { success: false, error: pf.error };
+    const sessionId = currentSessionId();
+    if (pf.needsConfirm) {
+      const cReq = permMgr.requestPermission("file_modify", filePath, { outsideSandbox: true, edit: true }, "tool");
+      if (cReq.status === "denied") {
+        return { success: false, error: `Permission denied for file_modify on ${filePath}. Request ID: ${cReq.id}` };
+      }
+      if (cReq.status === "pending") {
+        permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `编辑沙箱外文件: ${filePath}`, params, category: "file" });
+        return { success: false, requiresPermission: true, requestId: cReq.id, operation: "file_modify", description: "编辑文件", target: filePath, error: `该路径位于沙箱外，需要你确认后才能编辑: ${filePath}` };
+      }
+    } else if (permMgr.isPathAutoApproved(resolvedPath, "file_modify")) {
+      permRelay?.request({ agentId: "system", sessionId: "default", toolName: "file_modify", description: `编辑文件: ${filePath}`, params, category: "file" });
+    }
+
+    return await errRecovery.executeWithRetry("file_edit", fsPath, async () => {
+      return await stateRegistry.withWriteLock(resolvedPath, async () => {
+        // a. staleness 检查：edit 对「未全文读」**不硬拦**（hermes patch_tool 语义：
+        //    _stale_overwrite_blocker 只管 write_file 整文件覆盖；patch 的安全机制
+        //    是 old_string 必须命中当前内容——文件变了就匹配失败，模型自然重读）。
+        //    跨会话 mtime/hash 漂移降级为 warning 附到结果上。
+        let staleWarning: string | null = null;
+        const stale = stateRegistry.checkStale(sessionId, resolvedPath);
+        if (stale.stale) {
+          staleWarning =
+            `Warning: ${filePath} was modified since you last read it (${stale.reason}). ` +
+            "The content you read may be stale — old_string may not match. Consider re-reading.";
+        }
+        // b. 读当前内容
+        let content: string;
+        try {
+          content = pf.insideSandbox
+            ? await fsMgr.readFile(fsPath)
+            : fs.readFileSync(resolvedPath, "utf-8");
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            success: false,
+            error: message,
+            hint: `无法读取待编辑文件（可能不存在）。本次解析为：${resolvedPath}。请先用 file_read 确认路径。`,
+          };
+        }
+        // c. escape-drift 保守纠正（AmbiguousEscapeDriftError 必须报错、不得送模糊匹配）
+        let effectiveOld = oldString!;
+        let effectiveNew = newString!;
+        let driftNote: string | null = null;
+        try {
+          const corrected = maybeCorrectEscapeDrift(effectiveOld, effectiveNew, content);
+          effectiveOld = corrected.old;
+          effectiveNew = corrected.new;
+          driftNote = corrected.note;
+        } catch (err: unknown) {
+          if (err instanceof AmbiguousEscapeDriftError) {
+            return { success: false, error: err.message, ambiguous_escape_drift: true, path: filePath };
+          }
+          throw err;
+        }
+        // d. 9 策略模糊匹配替换
+        const result = fuzzyFindAndReplace(content, effectiveOld, effectiveNew, replaceAll);
+        if (!result.success) {
+          const failures = readTracker.recordEditFailure(sessionId, resolvedPath);
+          const escalate =
+            failures >= EDIT_FAILURE_ESCALATE
+              ? ` （连续 ${failures} 次未命中该文件——停止微调 old_string 重试，先 file_read 重新核对该文件的当前内容，再决定编辑方案。）`
+              : "";
+          return {
+            success: false,
+            error: result.error + escalate,
+            hint: `用 file_read 核对当前内容，或加长 old_string 提供更多上下文使其唯一。${driftNote ? ` note: ${driftNote}` : ""}`,
+            path: filePath,
+          };
+        }
+        // e. CRLF 归一（hermes _detect_line_ending 最小版）：文件主体为 CRLF 时
+        //    替换文本内的 \n 改写为 \r\n，避免同文件混用行尾
+        const crlfFile = content.includes("\r\n");
+        let toWrite = result.newContent;
+        if (crlfFile && effectiveNew.includes("\n") && !effectiveNew.includes("\r\n")) {
+          // 仅当替换段来自非 exact 策略或模型用了 LF：把 new 里的 LF 归一为 CRLF
+          const newAsCrlf = effectiveNew.replace(/\r?\n/g, "\r\n");
+          if (newAsCrlf !== effectiveNew) {
+            // 重放一次 exact 替换（effectiveOld 已在模糊匹配中命中），成本可忽略
+            const redo = fuzzyFindAndReplace(content, effectiveOld, newAsCrlf, replaceAll);
+            if (redo.success) toWrite = redo.newContent;
+          }
+        }
+        // f. 写回
+        if (pf.insideSandbox) {
+          await fsMgr.modifyFile(fsPath, toWrite);
+        } else {
+          await fsMgr.operateAbsolute(resolvedPath, toWrite, "modify", true);
+        }
+        // g. 记账：跨会话 + 会话内 + 失败计数清零
+        try { stateRegistry.recordWrite(sessionId, resolvedPath, toWrite); } catch { /* ignore */ }
+        try {
+          readTracker.noteWriteServed(sessionId, resolvedPath, fileVersionOf(resolvedPath) ?? `${Date.now()}:edit`);
+          readTracker.clearEditFailures(sessionId, resolvedPath);
+        } catch { /* ignore */ }
+        // h. 受影响行区间摘要（不做完整 unified diff）
+        const oldLineCount = countLines(content);
+        const newLineCount = countLines(toWrite);
+        return {
+          success: true,
+          path: resolvedPath,
+          workspaceRelative: display,
+          size: Buffer.byteLength(toWrite, "utf-8"),
+          strategy: result.strategy,
+          matchCount: result.matchCount,
+          linesBefore: oldLineCount,
+          linesAfter: newLineCount,
+          ...(driftNote ? { note: driftNote } : {}),
+          ...(staleWarning ? { warning: staleWarning } : {}),
+        };
+      });
+    }).catch((err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("ENOENT") || message.includes("no such file")) {
+        return {
+          success: false,
+          error: message,
+          hint:
+            `路径解析失败。相对路径以 workspace 根为基准：${resolveWorkspaceBase()}；` +
+            `沙箱根（仓库根）：${fsBase}；本次解析为：${resolvedPath}。`,
+        };
+      }
+      throw err;
+    });
+  }
+
   executor.registerTool(
     "file_write",
     {
       name: "file_write",
-      description: "Create a new file or overwrite an existing file's content. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。路径契约：相对路径以工作区根（workspace）为基准；绝对路径一律原样直通、不被改写——写产物请始终使用「工作区根相对路径」（如 v9-novel/the-last-city.md），不要把 /data/workspace/ 拼进相对路径。",
+      description: "Create a new file, overwrite an existing file, or edit an existing file in place. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容；action=edit 用 old_string/new_string 定点替换已有文件中的一段文本（改大文件的首选——只发变更段，不整文件重发）。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。路径契约：相对路径以工作区根（workspace）为基准；绝对路径一律原样直通、不被改写——写产物请始终使用「工作区根相对路径」（如 v9-novel/the-last-city.md），不要把 /data/workspace/ 拼进相对路径。",
       parameters: {
-        action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容", required: true, enum: ["create", "modify"] },
+        action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容；edit = old_string/new_string 定点替换", required: true, enum: ["create", "modify", "edit"] },
         path: { type: "string", description: "File path. 相对路径以 workspace 根为基准；绝对路径原样直通（不会被剥段改写）。", required: true },
-        content: { type: "string", description: "Content to write to the file", required: true },
+        content: { type: "string", description: "Content to write to the file（仅 create/modify 使用）", required: false, default: "" },
         overwrite: { type: "boolean", description: "Whether to overwrite if the file already exists（仅 action=create 生效，default: false）", required: false, default: false },
+        old_string: { type: "string", description: "（仅 action=edit）要查找的原文；请从 file_read 结果逐字复制，含足够上下文使其唯一", required: false },
+        new_string: { type: "string", description: "（仅 action=edit）替换文本；删除内容传空字符串", required: false },
+        replace_all: { type: "boolean", description: "（仅 action=edit）替换所有匹配（default: false，要求唯一匹配）", required: false, default: false },
       },
     },
     async (params: Record<string, unknown>) => {
@@ -374,7 +633,8 @@ export function registerFileTools(
           : (/^[a-z_]+/i.exec(rawAction)?.[0] ?? "").toLowerCase();
       if (action === "modify") return await handleFileWriteModify(params);
       if (action === "create") return await handleFileWriteCreate(params);
-      return { success: false, error: `未知 file_write action: ${rawAction.slice(0, 40)}（仅支持 create / modify）` };
+      if (action === "edit") return await handleFileWriteEdit(params);
+      return { success: false, error: `未知 file_write action: ${rawAction.slice(0, 40)}（仅支持 create / modify / edit）` };
     }
   );
 
@@ -441,6 +701,7 @@ export function registerFileTools(
       const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
+      const sessionId = currentSessionId();
       // 「一般安全」档允许读取沙箱外的一般文件；只有严格档会在这里被拒（pf.ok=false）
       // ★ 2026-11-04 ENOENT 兜底：stripWorkspacePrefix 在 resolveToolPath 中已无条件调用，
       //   但若服务器加载了旧 dist（或路径经过其他组件改写后重新拼回 data/workspace/），
@@ -469,18 +730,79 @@ export function registerFileTools(
             }
           };
       return await errRecovery.executeWithRetry("file_read", fsPath, async () => {
-        let content = await readTarget();
         const parsedOffset = params.offset ? parseInt(String(params.offset), 10) : 1;
         const offset = Number.isFinite(parsedOffset) ? Math.max(1, parsedOffset) : 1;
         const parsedLimit = params.limit ? parseInt(String(params.limit), 10) : undefined;
         const limit = parsedLimit !== undefined && Number.isFinite(parsedLimit) ? Math.max(1, parsedLimit) : undefined;
+        const version = fileVersionOf(resolvedPath);
+        // ★ R11 GAP-6 读追踪：同 version 的同一 (path, offset, limit) 重复读
+        //   第 1 次 stub、第 2 次起硬 BLOCK（weak tool-follower 防死循环）。
+        const verdict = readTracker.checkBeforeRead(sessionId, resolvedPath, version, offset, limit);
+        if (verdict.action === "block") {
+          return {
+            success: false,
+            error:
+              `BLOCKED: You have called file_read on this exact region ${verdict.consecutive} times ` +
+              "and the file has NOT changed. STOP calling file_read for this path — the content " +
+              "from your earlier file_read result in this conversation is still current. " +
+              "Proceed with your task using the information you already have.",
+            guardrail_refusal: true,
+            already_read: verdict.consecutive,
+            path: filePath,
+          };
+        }
+        if (verdict.action === "stub") {
+          return {
+            status: "unchanged",
+            message:
+              "File unchanged since last read. The content from the earlier file_read result " +
+              "in this conversation is still current — refer to that instead of re-reading.",
+            path: filePath,
+            dedup: true,
+            content_returned: false,
+          };
+        }
+        let content = await readTarget();
+        const totalLines = countLines(content);
+        let truncated = false;
         if (offset > 1 || limit) {
           const allLines = content.split("\n");
           const start = Math.max(0, offset - 1);
           const end = limit ? start + limit : allLines.length;
           content = allLines.slice(start, end).join("\n");
         }
-        return { path: filePath, content };
+        // 16K char 截断（此前只在 description 里声明、未强制）：截断页不作全文证据
+        if (content.length > 16000) {
+          content = content.slice(0, 16000);
+          truncated = true;
+        }
+        noteSuccessfulRead(sessionId, resolvedPath, offset, limit, content, truncated, version);
+        const result: Record<string, unknown> = { path: filePath, content };
+        if (truncated) {
+          result.truncated = true;
+          result.total_lines = totalLines;
+          result.hint =
+            `Content truncated at 16000 characters (file has ${totalLines} lines). ` +
+            "Use offset/limit to page through the rest if you need it.";
+        }
+        if (verdict.consecutive >= CONSECUTIVE_READ_BLOCK) {
+          // 理论上 dedup 已被 noteReadServed 清空走 allow；此分支兜底硬拒
+          return {
+            success: false,
+            error:
+              `BLOCKED: You have read this exact file region ${verdict.consecutive} times in a row. ` +
+              "The content has NOT changed. You already have this information. " +
+              "STOP re-reading and proceed with your task.",
+            guardrail_refusal: true,
+            path: filePath,
+          };
+        }
+        if (verdict.consecutive >= CONSECUTIVE_READ_WARN) {
+          result.warning =
+            `You have read this exact file region ${verdict.consecutive} times consecutively. ` +
+            "The content has not changed since your last read. Use the information you already have.";
+        }
+        return result;
       }).catch((err: unknown) => {
         // ★ 2026-11-07 e2e 压测发现：ENOENT 错误里只有被解析路径，模型不知道
         //   workspace 根在哪、相对路径以谁为基准，连续用 `../` 之类的猜测碰壁。

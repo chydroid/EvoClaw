@@ -122,64 +122,19 @@ export class ExecutionCheckpointStore {
       .slice(0, limit);
   }
 
-  /**
-   * Resume a stored execution by id. If the store has a checkpoint, returns
-   * a "resumable handle" pointing at the latest snapshot. The actual
-   * re-invocation of the LLM is the caller's job (the gateway simply returns
-   * the snapshot so the WebUI can show progress and offer a Resume button).
-   *
-   * `fromSnapshotIndex` is optional; defaults to the latest available.
-   */
-  resume(id: string, fromSnapshotIndex?: number): {
-    executionId: string;
-    fromSnapshotIndex: number;
-    messages: ExecutionSnapshot["messages"];
-    originalMessage: string;
-    status: string;
-  } | null {
-    const exec = this.activeExecutions.get(id);
-    if (!exec) return null;
-    const snapshots = exec.snapshots;
-    const idx = fromSnapshotIndex ?? Math.max(0, snapshots.length - 1);
-    const snap = snapshots[idx];
-    if (!snap) {
-      return {
-        executionId: id,
-        fromSnapshotIndex: idx,
-        messages: [],
-        originalMessage: exec.originalMessage,
-        status: exec.status,
-      };
-    }
-    return {
-      executionId: id,
-      fromSnapshotIndex: idx,
-      messages: snap.messages,
-      originalMessage: exec.originalMessage,
-      status: exec.status,
-    };
-  }
-
   /** Find all interrupted/failed executions that can be resumed */
   getResumableExecutions(): ExecutionState[] {
     return Array.from(this.activeExecutions.values())
       .filter(s => s.status === "running" || s.status === "failed" || s.status === "interrupted");
   }
 
-  /** Resume from a specific snapshot index */
-  getSnapshotForResume(sessionId: string, snapshotIndex?: number): { messages: ExecutionSnapshot["messages"]; originalMessage: string } | null {
-    const state = this.activeExecutions.get(sessionId);
-    if (!state || state.snapshots.length === 0) return null;
-
-    const idx = snapshotIndex ?? state.snapshots.length - 1;
-    const snapshot = state.snapshots[idx];
-    if (!snapshot) return null;
-
-    return {
-      messages: snapshot.messages,
-      originalMessage: state.originalMessage,
-    };
-  }
+  // ── R11 P0 台账第 5 项：resume 快照句柄下线 ──
+  // resume()/getSnapshotForResume() 曾是 ExecutionCheckpoint resume 语义的
+  // 一半（另一半 resumeExecution 已随 executor 下线）。真实续跑由
+  // DurableTaskRunner 承接；快照 messages 是请求形状（含增强消息/工具流量），
+  // 直接回填持久 history 会重复 user 轮 + 形状串位，故删除而非补全。
+  // 观测面（getRecent/getResumableExecutions/getSnapshot/getAllSnapshots）
+  // 保留，/api/executions 路由与时间旅行调试仍可用。
 
   /** Get a specific snapshot for time-travel debugging */
   getSnapshot(sessionId: string, snapshotIndex: number): ExecutionSnapshot | undefined {

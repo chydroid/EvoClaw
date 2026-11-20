@@ -8,6 +8,13 @@
 
 import * as crypto from "node:crypto";
 import type { EventBus } from "@evoclaw/core";
+// R11 P0 死码接线（台账第 5 项）：DispatchDedupeStore / BotLoopProtection 此前
+// 仅 barrel 导出、零实例化。接入点选在 ChannelManager.handleIncomingMessage——
+// 全部渠道适配器（telegram/feishu/discord/...）的 onMessage 都汇入此处。
+// OpenClaw 对位：src/channels/turn/ 的 dedupe + bot-loop-protection 同层。
+import { DispatchDedupeStore } from "./dispatch-dedupe-store.js";
+import type { HistoryEntry } from "./history-window.js";
+import { BotLoopProtection } from "./bot-loop-protection.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -136,9 +143,79 @@ export class ChannelManager {
   private blocklistedPeers = new Map<ChannelType, Set<string>>();
   private eventBus: EventBus | null = null;
   private sendFailureHandler: ((channel: ChannelType, target: string, text: string, error: string) => void) | null = null;
+  // ── R11 P0 死码接线 ──
+  /** 入站分发去重（channel+messageId 键；成功才记账，失败允许重投）。 */
+  private dedupeStore: DispatchDedupeStore | null = null;
+  /** bot 自循环防护（按群分实例；DM 不启用——ping-pong 检测本就面向群聊）。 */
+  private loopProtectionByGroup = new Map<string, BotLoopProtection>();
+  /** 循环防护动作日志去抖：同一群短时间内不重复告警。 */
+  private lastLoopActionByGroup = new Map<string, { action: string; at: number }>();
 
   constructor(eventBus?: EventBus) {
     this.eventBus = eventBus ?? null;
+  }
+
+  /**
+   * 启用入站分发去重。server 启动时调用；未调用则零开销（向后兼容）。
+   */
+  enableDispatchDedupe(config?: { persistPath?: string; persistEnabled?: boolean }): void {
+    this.dedupeStore = new DispatchDedupeStore({
+      persistPath: config?.persistPath,
+      persistEnabled: config?.persistEnabled ?? false,
+      defaultTtlMs: 6 * 60 * 60 * 1000, // 6h：重投窗口远小于消息重放周期即可
+    });
+  }
+
+  getDispatchDedupeStats(): ReturnType<DispatchDedupeStore["getStats"]> | null {
+    return this.dedupeStore?.getStats() ?? null;
+  }
+
+  /** 取（或懒建）某群的循环防护实例。 */
+  private loopProtectionFor(groupId: string): BotLoopProtection {
+    let inst = this.loopProtectionByGroup.get(groupId);
+    if (!inst) {
+      inst = new BotLoopProtection();
+      // 防实例泄漏：超过 256 群时清理无抑制条目的旧实例（窗口/抑制都在实例内）
+      if (this.loopProtectionByGroup.size >= 256) {
+        for (const [gid, lp] of this.loopProtectionByGroup) {
+          if (lp.pruneSuppressions() === 0 && !this.recentLoopAction(gid)) {
+            this.loopProtectionByGroup.delete(gid);
+            break;
+          }
+        }
+      }
+      this.loopProtectionByGroup.set(groupId, inst);
+    }
+    return inst;
+  }
+
+  private recentLoopAction(groupId: string): boolean {
+    const last = this.lastLoopActionByGroup.get(groupId);
+    return !!last && Date.now() - last.at < 5 * 60 * 1000;
+  }
+
+  /** 消息 payload 稳定哈希（dedupe 记账用）。 */
+  private hashMessagePayload(msg: ChannelMessage): string {
+    return crypto.createHash("sha256").update(`${msg.from}:${msg.text}`).digest("hex").slice(0, 16);
+  }
+
+  /** ChannelMessage → 循环防护 HistoryEntry（内容脱敏：截断 200 字符）。 */
+  private toHistoryEntry(msg: ChannelMessage): HistoryEntry {
+    return {
+      messageId: msg.messageId,
+      senderId: msg.from,
+      recipientId: msg.groupId ?? msg.to,
+      content: (msg.text ?? "").slice(0, 200),
+      timestamp: new Date(msg.timestamp),
+      channel: msg.channel,
+      isBot: (msg.raw as Record<string, unknown> | undefined ? ((msg.raw as Record<string, unknown>).from as Record<string, unknown> | undefined)?.is_bot === true || ((msg.raw as Record<string, unknown>).author as Record<string, unknown> | undefined)?.bot === true : false),
+    };
+  }
+
+  /** 关闭时释放去重存储（刷新待写持久化）。 */
+  shutdownDedupe(): void {
+    this.dedupeStore?.shutdown();
+    this.dedupeStore = null;
   }
 
   /** Set a callback for when message delivery fails (for DLQ integration) */
@@ -232,6 +309,32 @@ export class ChannelManager {
 
   /** Handle an incoming message from any channel */
   async handleIncomingMessage(msg: ChannelMessage): Promise<void> {
+    // ── R11 P0：入站分发去重（OpenClaw 6.6 对位）──
+    // 同一 (channel, messageId) 只分发一次；记账发生在**处理成功后**——
+    // 处理失败/中途崩溃不记账，平台重投时 isDispatched=false 允许再次分发。
+    // （不采用「pending 占位」方案：占位本身就会挡住重投，与重投语义矛盾。）
+    // messageId 缺失（如 framework 兜底的随机 id）不去重——随机 id 天然唯一。
+    let dedupePending = false;
+    if (this.dedupeStore && msg.messageId && !/^\w+-\d+-[0-9a-f]+$/.test(msg.messageId)) {
+      dedupePending = !this.dedupeStore.isDispatched({ channel: msg.channel, externalId: msg.messageId });
+      if (!dedupePending) {
+        process.stdout.write(`[ChannelManager] Dedupe: skipped already-dispatched message ${msg.channel}/${msg.messageId}\n`);
+        return;
+      }
+    }
+
+    // ── R11 P0：群聊 bot 自循环防护（openclaw 对位）──
+    // 只拦「block/alert」级动作；throttle 及以下放行，避免误伤正常群聊。
+    if (msg.isGroup && msg.text) {
+      const groupId = msg.groupId ?? msg.to;
+      const loopResult = this.loopProtectionFor(groupId).evaluate(this.toHistoryEntry(msg));
+      if (loopResult.action === "block" || loopResult.action === "alert") {
+        process.stdout.write(`[ChannelManager] Bot-loop ${loopResult.pattern} (${loopResult.repeatedCount}x) in ${msg.channel}/${groupId}: ${loopResult.reason} — blocked\n`);
+        this.lastLoopActionByGroup.set(groupId, { action: loopResult.action, at: Date.now() });
+        return;
+      }
+    }
+
     // Update status
     const status = this.statuses.get(msg.channel);
     if (status) {
@@ -287,6 +390,15 @@ export class ChannelManager {
     if (this.messageHandler) {
       try {
         await this.messageHandler(msg);
+        // 分发成功 → 记账（失败不记，平台重投允许再次分发）
+        if (dedupePending && this.dedupeStore && msg.messageId) {
+          this.dedupeStore.record(
+            { channel: msg.channel, externalId: msg.messageId },
+            this.hashMessagePayload(msg),
+            msg.from,
+            "success",
+          );
+        }
       } catch (err) {
         process.stderr.write(`[ChannelManager] Message handler error:` + " " + err + "\n");
         // 尝试通过适配器向用户发送错误通知，避免用户等待无响应

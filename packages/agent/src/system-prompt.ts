@@ -406,6 +406,7 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
   sections.push("   - If the current channel is `webchat` or `cli`: provide download link like 📄 文件已保存: `{path}` | [点击下载](/api/files/download/{path})");
   sections.push("   - If the current channel is `feishu`, `wechat`, or other IM: just tell the user the local file path. Do NOT provide localhost download links — they are not accessible from external channels.");
   sections.push("6. For large content written to a file, do NOT output the full content in your reply text. Just summarize what was created.");
+  sections.push("7. When editing an EXISTING file, prefer `file_write` (action: edit) with old_string/new_string — it sends only the changed region instead of the whole file (faster and safer). Copy old_string verbatim from file_read output. Use action: modify only when rewriting most of the file; the file must have been read (in full, or paged through) before any overwrite is accepted.");
   sections.push("");
 
   // ── Sequential Thinking / Reasoning Framework ──

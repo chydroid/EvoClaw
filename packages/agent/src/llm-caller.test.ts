@@ -120,6 +120,44 @@ describe("llm-caller > nativeFetch", () => {
     }
   });
 
+  it("GAP-20：!ok 错误体在 64KB 处截断（fetch 层缓冲上限）", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("K".repeat(2 * 1024 * 1024)); // 2MB 错误体
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const res = await nativeFetch(`http://127.0.0.1:${port}/boom`);
+      expect(res.ok).toBe(false);
+      expect(res.status).toBe(500);
+      const text = await res.text();
+      // 上限 64KB + 最后一个 chunk 的超冲（loopback chunk 可达 ~64KB）
+      expect(text.length).toBeLessThan(160 * 1024);
+      expect(text.startsWith("K")).toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("GAP-20：!ok 但错误体小于上限 → 完整保留", async () => {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(429, { "Content-Type": "application/json" });
+      res.end('{"error":"rate limited"}');
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    try {
+      const res = await nativeFetch(`http://127.0.0.1:${port}/rl`);
+      expect(res.ok).toBe(false);
+      expect(await res.text()).toBe('{"error":"rate limited"}');
+    } finally {
+      server.close();
+    }
+  });
+
   it("★ P0-5：streamBody 模式应在响应头到达后即 resolve，body 增量推送不等待尾部完整缓冲", async () => {
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -3047,3 +3085,89 @@ describe("judgeCreativeTask / looksLikeWritePathRequest — 创造性任务分�
 });
 
 
+
+// ═══════════════════════════════════════════════════════════
+// R11 GAP-20：!response.ok 错误体有界读（readBoundedBodyText 语义）。
+// 未见面的 provider 可返回任意大的 error body；无界 response.text()
+// 是内存 DoS 面。修复后：错误体读取在 64KB 上限截断，截断标记可见，
+// 超限时底层流被 cancel（不再继续泵入）。
+// ═══════════════════════════════════════════════════════════
+describe("R11 GAP-20 — 错误体有界读", () => {
+  function errorServer(
+    responder: (req: http.IncomingMessage, res: http.ServerResponse, raw: string) => void,
+  ): { port: number; close: () => void } {
+    const server = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => responder(req, res, raw));
+    });
+    server.listen(0);
+    const port = (server.address() as { port: number }).port;
+    return { port, close: () => server.close() };
+  }
+
+  function openAIProvider(port: number) {
+    return {
+      name: "local", provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: "sk-test",
+      enabled: true, order: 0, timeout: 5000, maxTokens: 4096, temperature: 0.3,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  function minimalDeps(overrides: Partial<LLMCallerDeps> = {}): LLMCallerDeps {
+    return {
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      providers: [],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      registeredTools: new Map(),
+      conversationHistory: new Map(),
+      maxHistoryLength: 200,
+      providerStats: new Map(),
+      pluginManager: null,
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      sessionManager: null,
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      ...overrides,
+    } as unknown as LLMCallerDeps;
+  }
+
+  it("HTTP 500 + 超大错误体：有界读截断 + recordProviderFailure 收到截断文本", async () => {
+    const { port, close } = errorServer((_req, res) => {
+      // 2MB 错误体 —— 远超 64KB 上限
+      res.writeHead(500, { "Content-Type": "text/plain" });
+      res.end("Z".repeat(2 * 1024 * 1024));
+    });
+    await new Promise<void>((r) => setTimeout(r, 50));
+
+    const recordFailure = vi.fn();
+    const result = await callLLMOnce(
+      openAIProvider(port),
+      [{ role: "user", content: "hi" }],
+      [],
+      "auto",
+      undefined,
+      minimalDeps({ recordProviderFailure: recordFailure }),
+    );
+    close();
+
+    expect(result).not.toBeNull();
+    expect(result!.classifiedError?.type).toBeDefined();
+    // 记账收到的错误描述包含错误体内容（截断后），但不包含全部 2MB
+    expect(recordFailure).toHaveBeenCalledTimes(1);
+    const recorded = String(recordFailure.mock.calls[0][1]);
+    expect(recorded.length).toBeLessThan(200 * 1024); // 64KB 上限 + chunk 超冲 + 分类包装
+    expect(recorded).toContain("Z".repeat(1024)); // 前缀内容在
+  });
+});

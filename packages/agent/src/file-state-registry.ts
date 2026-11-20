@@ -320,7 +320,15 @@ export class FileStateRegistry {
 
   /**
    * 获取 per-path 写入锁。
-   * 返回一个 Promise，resolve 后表示获得锁，调用返回的 release 函数释放。
+   * 返回 [lockPromise, releaseFn]：lockPromise 在「前面的持有者释放之后」resolve；
+   * 调用方 await lock 后执行临界区，完成后调用 releaseFn 放行下一个。
+   *
+   * ★ 死锁修复（R11 接线时发现）：原实现返回 `newLock`（本调用自己的 promise），
+   *   而 newLock 只能由 releaseFn resolve → withWriteLock 的 `await lock` 永远
+   *   等不到自己还没跑的 fn 的 release → 死锁。该模块此前零生产消费者，
+   *   首次接线（file-tools 三件套）即触发。
+   *   修正：返回 `prevLock ? prevLock.then(() => {}) : resolved`——只等待
+   *   **前序持有者**，不等自己的 release。
    *
    * @param filePath 文件绝对路径
    * @returns [lockPromise, releaseFn]
@@ -340,24 +348,22 @@ export class FileStateRegistry {
       this.states.set(absPath, state);
     }
 
-    // 若已有锁，等待前一个释放
-    const prevLock = state.writeLock;
-    let releaseFn: () => void;
+    // newLock：由 releaseFn resolve；writeLock 记录的是「下一个等待者要接上的链尾」
+    let releaseFn!: () => void;
     const newLock = new Promise<void>((resolve) => {
       releaseFn = resolve;
     });
 
-    const wrappedLock = prevLock
-      ? prevLock.then(() => newLock)
-      : newLock;
+    // 本调用要等的：前序链尾完成（prevLock 即上一个持有者的 newLock）
+    const prevLock = state.writeLock;
+    const myTurn: Promise<void> = prevLock ? prevLock.then(() => undefined) : Promise.resolve();
+    // 吞掉 prevLock 的 rejection 风险（release 正常 resolve，此处防链上异常传染）
+    myTurn.catch(() => undefined);
 
-    state.writeLock = wrappedLock;
-    state.lockRelease = releaseFn!;
+    state.writeLock = newLock;
+    state.lockRelease = releaseFn;
 
-    // 返回立即 resolve 的锁（等待链已建立）+ 释放函数
-    // 调用方 await 返回的 Promise 即可，但实际锁是 wrappedLock
-    // 这里简化：直接返回 wrappedLock 和 releaseFn
-    return [wrappedLock, releaseFn!];
+    return [myTurn, releaseFn];
   }
 
   /**

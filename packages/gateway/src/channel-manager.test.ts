@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { ChannelManager } from "./channel-manager";
 import type { ChannelAdapter, ChannelMessage, ChannelType } from "./channel-manager";
 
@@ -326,5 +326,133 @@ describe("ChannelManager", () => {
       await cm.stopAll();
       expect((adapter as any)._isStarted()).toBe(false);
     });
+  });
+});
+// ── R11 P0 死码接线：dispatch dedupe + bot loop protection ──
+
+describe("R11 P0: ChannelManager dispatch dedupe 接线", () => {
+  let cm: ChannelManager;
+  let adapter: ReturnType<typeof createMockAdapter>;
+  let handled: ChannelMessage[];
+
+  beforeEach(() => {
+    cm = new ChannelManager();
+    cm.registerChannel({
+      type: "telegram", enabled: true, label: "Telegram",
+      dmPolicy: "open", allowFrom: [], blockFrom: [], settings: {},
+    });
+    adapter = createMockAdapter("telegram");
+    handled = [];
+    // 先 setMessageHandler 再 attach（attachAdapter 会把 messageHandler 转发给 adapter）
+    cm.setMessageHandler(async (msg) => { handled.push(msg); });
+    void cm.attachAdapter(adapter);
+    cm.enableDispatchDedupe({ persistEnabled: false });
+  });
+
+  afterEach(() => { cm.shutdownDedupe(); });
+
+  function makeMsg(messageId: string, text: string): ChannelMessage {
+    return {
+      messageId, channel: "telegram", from: "u1", to: "c1",
+      text, timestamp: new Date().toISOString(),
+      isDirect: true, isGroup: false, raw: {},
+    };
+  }
+
+  it("同一 messageId 第二次到达被跳过（不重复分发）", async () => {
+    await cm.handleIncomingMessage(makeMsg("100", "hello"));
+    await cm.handleIncomingMessage(makeMsg("100", "hello"));
+    expect(handled.length).toBe(1);
+    expect(cm.getDispatchDedupeStats()!.hits).toBe(1);
+  });
+
+  it("处理失败不记账 → 平台重投允许再次分发", async () => {
+    let shouldFail = true;
+    cm.setMessageHandler(async () => {
+      if (shouldFail) throw new Error("boom");
+    });
+    await cm.handleIncomingMessage(makeMsg("200", "retry me"));
+    // 重投：handler 恢复成功
+    shouldFail = false;
+    cm.setMessageHandler(async (msg) => { handled.push(msg); });
+    await cm.handleIncomingMessage(makeMsg("200", "retry me"));
+    expect(handled.length).toBe(1);
+  });
+
+  it("不同 messageId 各自分发", async () => {
+    await cm.handleIncomingMessage(makeMsg("300", "a"));
+    await cm.handleIncomingMessage(makeMsg("301", "b"));
+    expect(handled.length).toBe(2);
+  });
+
+  it("未启用 dedupe（enableDispatchDedupe 未调用）→ 行为不变", async () => {
+    const cm2 = new ChannelManager();
+    cm2.registerChannel({ type: "telegram", enabled: true, label: "T", dmPolicy: "open", allowFrom: [], blockFrom: [], settings: {} });
+    const got: ChannelMessage[] = [];
+    cm2.setMessageHandler(async (msg) => { got.push(msg); });
+    void cm2.attachAdapter(createMockAdapter("telegram"));
+    await cm2.handleIncomingMessage(makeMsg("400", "x"));
+    await cm2.handleIncomingMessage(makeMsg("400", "x"));
+    expect(got.length).toBe(2);
+    expect(cm2.getDispatchDedupeStats()).toBeNull();
+  });
+});
+
+describe("R11 P0: ChannelManager bot loop protection 接线", () => {
+  let cm: ChannelManager;
+
+  beforeEach(() => {
+    cm = new ChannelManager();
+    cm.registerChannel({
+      type: "telegram", enabled: true, label: "Telegram",
+      dmPolicy: "open", allowFrom: [], blockFrom: [], settings: {},
+    });
+  });
+
+  function makeGroupMsg(from: string, text: string, groupId = "g1"): ChannelMessage {
+    return {
+      messageId: `m-${Math.random()}`, channel: "telegram", from, to: groupId,
+      text, timestamp: new Date().toISOString(),
+      isDirect: false, isGroup: true, groupId, raw: {},
+    };
+  }
+
+  it("block 级自循环消息被丢弃（不进 handler）", async () => {
+    const got: ChannelMessage[] = [];
+    cm.setMessageHandler(async (msg) => { got.push(msg); });
+    // 默认配置：blockAfter=4，同 sender 连续 4 条相似群消息触发 block。
+    // minRepeats=3 → 第 4 条达到 blockAfter（throttleAfter=2 → 第 3 条只 throttle 放行）。
+    for (let i = 0; i < 4; i++) {
+      await cm.handleIncomingMessage(makeGroupMsg("botA", "今天的会议纪要请大家查收"));
+    }
+    expect(got.length).toBeLessThan(4);
+  });
+
+  it("不同内容不相似 → 不误拦", async () => {
+    const got: ChannelMessage[] = [];
+    cm.setMessageHandler(async (msg) => { got.push(msg); });
+    const texts = [
+      "请部署一下前端服务",
+      "数据库备份已完成",
+      "明天的站会改到十点",
+      "新版本 v2.1 已发布",
+    ];
+    for (const t of texts) {
+      await cm.handleIncomingMessage(makeGroupMsg("human1", t));
+    }
+    expect(got.length).toBe(4);
+  });
+
+  it("DM 消息不启用循环防护", async () => {
+    const got: ChannelMessage[] = [];
+    cm.setMessageHandler(async (msg) => { got.push(msg); });
+    for (let i = 0; i < 6; i++) {
+      await cm.handleIncomingMessage({
+        messageId: `d-${i}`, channel: "telegram", from: "u9", to: "bot",
+        text: "同样的话重复很多遍", timestamp: new Date().toISOString(),
+        isDirect: true, isGroup: false, raw: {},
+      });
+    }
+    expect(got.length).toBe(6);
   });
 });

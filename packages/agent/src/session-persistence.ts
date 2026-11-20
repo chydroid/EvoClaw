@@ -10,6 +10,53 @@ import type { CompactionManager } from "./compaction-manager";
 import type { AgentLifecycleManager } from "./agent-lifecycle";
 import type { SessionManager } from "./session-manager";
 import { shouldIdleCompact, idleFloorTokens, type IdleCompactionTracker } from "./idle-compaction";
+import { anchoredContextTokens, type UsageAnchor } from "./usage-anchor";
+import { takePreparedSummary, discardPreparedCompaction } from "./prepared-compaction";
+
+/**
+ * R11 GAP-1：usage anchor 会话注册表（module-level Map）。
+ * llm-caller 捕获锚 → 此处存；needsCompaction / estimateRequestTokens 消费；
+ * compactConversationHistory 压缩成功 → 清锚（前缀改写，指纹必然失配）。
+ * 与 conversationHistory 同生命周期（内存态，进程重启自然失效回退估算）。
+ */
+const usageAnchors = new Map<string, UsageAnchor>();
+
+/**
+ * R11 GAP-4：落盘静默失败记账（hermes fail-closed 语义的最小对位）。
+ *
+ * hermes conversation_compression_checkpoint.py：压缩前 fail-closed 门——必需的
+ * 预压缩 checkpoint 不可用时，压缩**拒绝执行**（BLOCKED_MISSING_PREREQUISITE），
+ * 会话停下而不是无损上下文被压缩掉。
+ *
+ * EvoClaw 前提实证（与 hermes 的差异）：JSONL 持久层是 append-only（persistSessionTurn /
+ * persistToolExecutionCheckpoint），压缩只重写内存 conversationHistory——天然就是
+ * 「checkpoint 先于压缩存在」的架构。但三个 persist 函数的写入失败是**静默吞掉**
+ * （只写 stderr）：落盘坏了 → 内存照常累积 → 压缩照常重写内存 → 未归档上下文
+ * 真丢。这里用落盘失败计数做轻量门禁：persistSessionTurn / persistToolExecutionCheckpoint
+ * 失败时按会话记账；compactConversationHistory 执行前发现「落盘已坏且从未成功
+ * 恢复过」→ 拒绝压缩（fail-closed），宁可不压缩也不丢未归档上下文。stderr 里的
+ * 修复提示给运维一条明确恢复路径（与 hermes _CHECKPOINT_REQUIRED_REMEDIATION 同语义）。
+ */
+const persistFailureCounts = new Map<string, number>();
+
+function recordPersistFailure(sessionId: string): void {
+  persistFailureCounts.set(sessionId, (persistFailureCounts.get(sessionId) ?? 0) + 1);
+}
+
+export function getUsageAnchorRegistry(): {
+  get(sessionId: string): UsageAnchor | undefined;
+  set(sessionId: string, anchor: UsageAnchor | null): void;
+  clear(sessionId: string): void;
+} {
+  return {
+    get: (sessionId) => usageAnchors.get(sessionId),
+    set: (sessionId, anchor) => {
+      if (anchor) usageAnchors.set(sessionId, anchor);
+      else usageAnchors.delete(sessionId);
+    },
+    clear: (sessionId) => usageAnchors.delete(sessionId),
+  };
+}
 
 /** Conversation history entry type */
 export interface SessionHistoryEntry {
@@ -54,6 +101,13 @@ export interface SessionPersistenceDeps {
   idleCompactAfterSeconds?: number;
   /** 空闲触发压缩的会话级活动/产出追踪器。 */
   idleCompactionTracker?: import("./idle-compaction").IdleCompactionTracker;
+  /**
+   * R11 GAP-23：todo 快照提供器（压缩后重注入）。
+   * 对标 hermes _fold_todo_snapshot：返回 formatForInjection() 渲染的活跃
+   * todo 列表（无活跃项 → null 不注入）。TodoStore 实例在工具层
+   * （apps/server tools/todo-tools.ts），packages/agent 经此回调解耦。
+   */
+  todoSnapshotProvider?: (sessionId: string) => string | null;
 }
 
 /** Compute the file path for a session's JSONL persistence file */
@@ -89,7 +143,10 @@ export function persistSessionTurn(
       ...(redactMetadata(metadata) || {}),
     });
     fs.appendFileSync(filePath, entry + "\n", "utf-8");
+    // R11 GAP-4：落盘成功 → 清本会话失败计数（恢复后压缩门自动重新放行）。
+    persistFailureCounts.delete(sessionId);
   } catch (err) {
+    recordPersistFailure(sessionId);
     process.stderr.write(`[SessionPersistence] Failed to persist session turn: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
@@ -143,7 +200,9 @@ export function persistToolExecutionCheckpoint(
       ...(redactMetadata(metadata) || {}),
     });
     fs.appendFileSync(filePath, entry + "\n", "utf-8");
+    persistFailureCounts.delete(sessionId); // GAP-4：落盘恢复 → 清失败计数
   } catch (err) {
+    recordPersistFailure(sessionId);
     process.stderr.write(`[SessionPersistence] Failed to persist tool checkpoint: ${err instanceof Error ? err.message : String(err)}\n`);
   }
 }
@@ -295,10 +354,48 @@ export function needsCompaction(
 ): boolean {
   if (!deps.autoCompactionEnabled) return false;
   const history = deps.conversationHistory.get(sessionId) || [];
+  // R11 GAP-1（usage anchor）：provider 真实 prompt_tokens 优先——锚绑定已计价
+  // 前缀时用「锚 + delta 粗估」替代全量 chars×0.25（CJK 低估可达 2×）。
+  // 锚缺失/失配（压缩、剪枝改写过前缀）→ fail-closed 回退旧估算路径。
+  const usageAnchor = getUsageAnchorRegistry().get(sessionId);
+  if (usageAnchor) {
+    // 锚值 = 完整请求 promptTokens（sys/skills/tail/tools/当前 user 全含），
+    // 不再另加 systemTokens（重复计）。delta（锚后追加的轮次）内部粗估。
+    // fail-closed：指纹失配 → null → 走下方旧全量估算。
+    const anchored = anchoredContextTokens(history, usageAnchor);
+    if (anchored !== null) {
+      return anchored > deps.compactionTokenThreshold;
+    }
+  }
   const systemTokens = estimateMessagesTokens([{ role: "system", content: systemPrompt }]);
   const historyTokens = estimateMessagesTokens(history.map((h) => ({ role: h.role, content: h.content })));
   const totalTokens = systemTokens + historyTokens;
   return totalTokens > deps.compactionTokenThreshold;
+}
+
+/**
+ * R11 GAP-2（prepared compaction）：与 needsCompaction 同口径的 token 探针
+ * （锚优先，回退 chars×0.25 全量估算），供预压缩频带判定消费。
+ * 非负数；异常归 0（预压缩侧把 ≤0 视为「不准备」）。
+ */
+export function needsCompactionProbe(
+  deps: SessionPersistenceDeps,
+  sessionId: string,
+  systemPrompt: string,
+): number {
+  try {
+    const history = deps.conversationHistory.get(sessionId) || [];
+    const usageAnchor = getUsageAnchorRegistry().get(sessionId);
+    if (usageAnchor) {
+      const anchored = anchoredContextTokens(history, usageAnchor);
+      if (anchored !== null) return anchored;
+    }
+    const systemTokens = estimateMessagesTokens([{ role: "system", content: systemPrompt }]);
+    const historyTokens = estimateMessagesTokens(history.map((h) => ({ role: h.role, content: h.content })));
+    return systemTokens + historyTokens;
+  } catch {
+    return 0;
+  }
 }
 
 /** Compact conversation history by summarizing older turns and keeping recent ones */
@@ -310,12 +407,28 @@ export async function compactConversationHistory(
   const history = deps.conversationHistory.get(sessionId);
   if (!history || history.length <= keepRecentTurns * 2) return;
 
+  // ── R11 GAP-4：压缩前 fail-closed 门（对标 hermes conversation_compression_checkpoint）──
+  // 持久层静默失败未恢复（会话有落盘失败记录且此后无一次成功落盘）→ 拒绝压缩：
+  // 压缩重写内存 history，未归档进 JSONL 的上下文会真丢。宁可不压缩（下轮重试
+  // 触发同样的拒绝，运维看 stderr 修复），也不丢未归档上下文。
+  const persistFailures = persistFailureCounts.get(sessionId) ?? 0;
+  if (persistFailures > 0) {
+    process.stderr.write(
+      `[SessionPersistence] Compaction BLOCKED for session "${sessionId}": ${persistFailures} persist failure(s) since last successful write. ` +
+      `Fix the persistence path (disk full / permissions / path), then the gate clears on the next successful append.\n`,
+    );
+    return;
+  }
+
   const recentEntries = history.slice(-keepRecentTurns * 2);
   const olderEntries = history.slice(0, -(keepRecentTurns * 2));
 
   // Use CompactionManager if available for richer summary with successor transcripts
   let summary = "";
   let successorId = sessionId;
+  // ── R11 GAP-2：取用预压缩摘要（若窗口仍一致）。命中 → 跳过同步 LLM 摘要
+  // 调用（首 token 延迟的来源）；失配/无候选 → 照旧内联（fail-closed）。
+  const prepared = takePreparedSummary(sessionId, history);
   if (deps.compactionManager) {
     const olderTurnData = olderEntries.map((e) => ({ role: e.role, content: e.content }));
 
@@ -324,7 +437,14 @@ export async function compactConversationHistory(
     // buildLLMSummaryPrompt 此前是死代码（定义但从未调用），现接入活路径。
     // LLM 调用失败时回退规则提取（buildSummary），保证不中断压缩流程。
     let compaction = deps.compactionManager.buildSummary(sessionId, olderTurnData);
-    if (deps.llmSummarizer) {
+    if (prepared) {
+      // GAP-2：预压缩摘要直接替换（后台 pass 已用同一 buildLLMSummaryPrompt 生成）
+      compaction = {
+        ...compaction,
+        summary: prepared,
+      };
+      process.stdout.write(`[SessionPersistence] Used prepared compaction summary for session "${sessionId}" (spliced, no inline LLM call)\n`);
+    } else if (deps.llmSummarizer) {
       try {
         const llmPrompt = deps.compactionManager.buildLLMSummaryPrompt(olderTurnData);
         const llmSummaryText = await deps.llmSummarizer(llmPrompt);
@@ -373,21 +493,27 @@ export async function compactConversationHistory(
     }
   } else {
     // Fallback to simple compaction
-    const userMessages = olderEntries
-      .filter((e) => e.role === "user" && e.content)
-      .map((e) => e.content as string);
-    const assistantMessages = olderEntries
-      .filter((e) => e.role === "assistant" && e.content)
-      .map((e) => e.content as string);
-    if (userMessages.length > 0 || assistantMessages.length > 0) {
-      summary = `[Compacted ${olderEntries.length} turns. `;
-      if (userMessages.length > 0) {
-        summary += `User discussed: ${userMessages.map((m) => m.slice(0, 80)).join("; ")}. `;
+    if (prepared) {
+      // GAP-2：预压缩摘要命中（无 compactionManager 的路径）
+      summary = prepared;
+      process.stdout.write(`[SessionPersistence] Used prepared compaction summary for session "${sessionId}" (spliced, no inline LLM call)\n`);
+    } else {
+      const userMessages = olderEntries
+        .filter((e) => e.role === "user" && e.content)
+        .map((e) => e.content as string);
+      const assistantMessages = olderEntries
+        .filter((e) => e.role === "assistant" && e.content)
+        .map((e) => e.content as string);
+      if (userMessages.length > 0 || assistantMessages.length > 0) {
+        summary = `[Compacted ${olderEntries.length} turns. `;
+        if (userMessages.length > 0) {
+          summary += `User discussed: ${userMessages.map((m) => m.slice(0, 80)).join("; ")}. `;
+        }
+        if (assistantMessages.length > 0) {
+          summary += `Assistant covered: ${assistantMessages.map((m) => m.slice(0, 80)).join("; ")}.`;
+        }
+        summary += "]";
       }
-      if (assistantMessages.length > 0) {
-        summary += `Assistant covered: ${assistantMessages.map((m) => m.slice(0, 80)).join("; ")}.`;
-      }
-      summary += "]";
     }
   }
 
@@ -410,7 +536,36 @@ export async function compactConversationHistory(
     }
   }
 
+  // ── R11 GAP-23：todo 压缩后重注入（对标 hermes _fold_todo_snapshot）──
+  // 此前 todo-store.ts 的 formatForInjection() 是死码（getTodoStore 导出零消费），
+  // 头注释声称「压缩后重新注入」但三处 grep 无调用——注释与实现不符
+  // （v20 Task 6 同型事故源头：压缩后模型丢 todo 列表 → 重做已完成工作）。
+  // hermes 语义：压缩结果折叠**活跃**（pending/in_progress）todo 快照，
+  // 已完成项不注入（防止重做）；快照以 synthetic user 行落在压缩后历史末尾。
+  // EvoClaw 差异：hermes 用 _strip_stale_todo_snapshot 剥旧快照再折新的；
+  // EvoClaw 的压缩是摘要式（旧段进摘要，快照不逐字残留），且 TodoStore 实例
+  // 在 apps/server 工具层 → 经 todoSnapshotProvider 回调注入（依赖倒置，
+  // packages/agent 不 import apps/server）。
+  if (deps.todoSnapshotProvider) {
+    try {
+      const todoSnapshot = deps.todoSnapshotProvider(sessionId);
+      if (todoSnapshot) {
+        compacted.push({ role: "user", content: todoSnapshot });
+        process.stdout.write(`[SessionPersistence] Re-injected todo snapshot after compaction for session "${sessionId}"\n`);
+      }
+    } catch (err) {
+      // 快照注入失败不阻断压缩（模型仍有摘要可用）
+      process.stderr.write(`[SessionPersistence] Todo snapshot injection failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
   deps.conversationHistory.set(sessionId, compacted);
+  // R11 GAP-1：压缩改写了已计价前缀 → usage anchor 指纹必然失配，立即清锚
+  // （fail-closed：下次 LLM 调用重新捕获新锚）。不清的话 anchoredContextTokens
+  // 返回 null 也是回退，但显式清掉避免每轮白算一次前缀指纹。
+  getUsageAnchorRegistry().clear(sessionId);
+  // R11 GAP-2：压缩成功 = 会话边界 → 丢弃预压缩候选（若有残余/在飞 pass）。
+  discardPreparedCompaction(sessionId);
   process.stdout.write(`[SessionPersistence] Compacted session "${sessionId}" -> "${successorId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.\n`);
 
   // Fallback: Store compacted summary in long-term memory (only when CompactionManager not available, as it already handles this)
@@ -462,6 +617,12 @@ function estimateRequestTokens(
   systemPrompt: string,
 ): number {
   const history = deps.conversationHistory.get(sessionId) || [];
+  // R11 GAP-1：与 needsCompaction 同口径——锚有效时用 provider 真值优先。
+  const usageAnchor = getUsageAnchorRegistry().get(sessionId);
+  if (usageAnchor) {
+    const anchored = anchoredContextTokens(history, usageAnchor);
+    if (anchored !== null) return anchored;
+  }
   const systemTokens = estimateMessagesTokens([{ role: "system", content: systemPrompt }]);
   const historyTokens = estimateMessagesTokens(history.map((h) => ({ role: h.role, content: h.content })));
   return systemTokens + historyTokens;

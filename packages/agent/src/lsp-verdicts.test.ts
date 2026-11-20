@@ -229,3 +229,50 @@ describe("isCheckableFile", () => {
     expect(isCheckableFile("test.txt")).toBe(false);
   });
 });
+
+// ── R11 GAP-8 接线回归：停止门消费形状 ──
+// llm-caller 停止门用 `lateSyntaxVerdicts.length > 0` 作为触发条件，并用
+// join("\n") 直接拼进 nudge 文案。此组测试钉死消费契约：错误裁决 → 非空
+// 字符串数组（含可读文件：行:列 — 消息）；无错误 → 空数组（不触发 nudge）。
+describe("R11 GAP-8 接线契约：停止门消费形状", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "lsp-verdicts-gate-"));
+  });
+  afterEach(() => {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it("语法破损的已编辑文件 → 非空裁决数组（触发 nudge）", async () => {
+    const broken = path.join(tmpDir, "broken.js");
+    fs.writeFileSync(broken, "function f( {\n  return 1;\n}\n", "utf-8"); // 缺右括号
+    const verdicts = await collectLateVerdicts([broken]);
+    expect(verdicts.length).toBeGreaterThan(0);
+    for (const v of verdicts) {
+      expect(typeof v).toBe("string");
+      expect(v).toContain("error");
+      expect(v.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("语法完好的已编辑文件 → 空数组（不触发 nudge）", async () => {
+    const ok = path.join(tmpDir, "ok.js");
+    fs.writeFileSync(ok, "function f() {\n  return 1;\n}\nmodule.exports = { f };\n", "utf-8");
+    const verdicts = await collectLateVerdicts([ok]);
+    expect(verdicts).toEqual([]);
+  });
+
+  it("空变更列表 → 空数组（门直接短路，零开销路径）", async () => {
+    expect(await collectLateVerdicts([])).toEqual([]);
+  });
+
+  it("混合完好+破损 → 只对破损文件出裁决", async () => {
+    const broken = path.join(tmpDir, "broken2.js");
+    fs.writeFileSync(broken, "const x = ;\n", "utf-8");
+    const ok = path.join(tmpDir, "ok2.js");
+    fs.writeFileSync(ok, "const y = 1;\n", "utf-8");
+    const verdicts = await collectLateVerdicts([ok, broken]);
+    expect(verdicts.length).toBe(1);
+    expect(verdicts[0]).toContain("broken2.js");
+  });
+});

@@ -1,6 +1,6 @@
 import { Express, Request, Response } from "express";
 import { ServiceRegistry, EventBus, FeatureFlagStore, atomicWriteFileSync } from "@evoclaw/core";
-import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware, resolveContextWindow } from "@evoclaw/agent";
+import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware, resolveContextWindow, getLiveProviderHealthSnapshot, resetLiveProviderCircuit } from "@evoclaw/agent";
 import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
 import type { WebhookEndpoint } from "./webhook-manager";
@@ -7377,10 +7377,31 @@ export class ProtocolAdapter {
           return;
         }
 
+        // R11 P0 接线语义：manager 是「记账镜像」（executor 每次 provider 成功/
+        // 失败转发），真正门控请求路径的是 llm-caller 的 ProviderHealthTracker
+        // （30s 冷却）。这里把活 tripped 态合并进 provider 视图——OpsPage 看到
+        // 的熔断状态是真实生效的那个（键 = provider.name，与活门控同键域）。
+        const summary = failoverManager.getSummary();
+        const providers = failoverManager.getAllHealth().map((h) => {
+          const live = getLiveProviderHealthSnapshot(h.providerId);
+          return {
+            ...h,
+            liveTripped: live?.tripped ?? false,
+            liveConsecutiveFailures: live?.consecutiveFailures ?? 0,
+            liveAverageResponseMs: live?.averageResponseMs ?? 0,
+            // 展示态：活熔断优先（生效中），否则显示 manager 熔断（统计口径）
+            circuitState: live?.tripped ? "open" : h.circuitState,
+          };
+        });
+        const liveTrippedCount = providers.filter((p) => p.liveTripped).length;
         res.json({
           status: "active",
-          summary: failoverManager.getSummary(),
-          providers: failoverManager.getAllHealth(),
+          summary: {
+            ...summary,
+            liveTrippedProviders: liveTrippedCount,
+            openCircuits: liveTrippedCount > 0 ? liveTrippedCount : summary.openCircuits,
+          },
+          providers,
         });
       } catch (err) {
         this.handleError(err, res, "Failed to get failover status");
@@ -7398,12 +7419,17 @@ export class ProtocolAdapter {
 
         const { providerId } = req.body as { providerId?: string };
 
+        // R11 P0：真重置——同时清 manager 熔断（统计面）与活 ProviderHealthTracker
+        // tripped 态（请求路径门控）。只重置 manager 而活熔断继续拒请求 = 按钮是摆设。
+        let liveReset = 0;
         if (providerId) {
           failoverManager.resetCircuit(providerId);
-          res.json({ status: "ok", message: `Circuit reset for provider "${providerId}"` });
+          liveReset = resetLiveProviderCircuit(providerId);
+          res.json({ status: "ok", message: `Circuit reset for provider "${providerId}"${liveReset ? " (live breaker cleared)" : " (no live breaker record)"}` });
         } else {
           failoverManager.resetAllCircuits();
-          res.json({ status: "ok", message: "All circuits reset" });
+          liveReset = resetLiveProviderCircuit();
+          res.json({ status: "ok", message: `All circuits reset (live breakers cleared: ${liveReset})` });
         }
       } catch (err) {
         this.handleError(err, res, "Failed to reset circuit breaker");
