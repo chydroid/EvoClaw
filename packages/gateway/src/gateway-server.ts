@@ -346,8 +346,11 @@ export class GatewayServer {
       const statuses = channelManager?.getAllStatuses?.() ?? [];
       const connected = statuses.filter((s) => s.connected).length;
       const enabled = statuses.filter((s) => s.enabled).length;
+      // 渠道「启用未连接」（如等扫码/对端离线）是预期运行态，不应判 unhealthy：
+      // 503 会导致 Docker healthcheck/负载均衡摘除整个进程，而渠道可独立重连。
+      // 只有 HTTP/protocol 等进程级故障才值得 503。部分或全部未连接 → degraded。
       subsystems.channels = {
-        status: enabled > 0 && connected === enabled ? "healthy" : enabled > 0 && connected > 0 ? "degraded" : enabled > 0 ? "unhealthy" : "healthy",
+        status: enabled === 0 ? "healthy" : connected === enabled ? "healthy" : "degraded",
         details: { enabled, connected, channels: statuses },
       };
     } catch {
