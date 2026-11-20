@@ -223,6 +223,38 @@ export class Observability {
     return this.histograms.get(name)?.get(key)?.length ?? 0;
   }
 
+  /** 跨所有 label 组合聚合的观测值总数（如按 endpoint/status 分桶后求总量）。 */
+  histogramAggregateCount(name: string): number {
+    const labelMap = this.histograms.get(name);
+    if (!labelMap) return 0;
+    let total = 0;
+    for (const values of labelMap.values()) total += values.length;
+    return total;
+  }
+
+  /** 跨所有 label 组合聚合的观测值总和。 */
+  histogramAggregateSum(name: string): number {
+    const labelMap = this.histograms.get(name);
+    if (!labelMap) return 0;
+    let total = 0;
+    for (const values of labelMap.values()) {
+      for (const v of values) total += v;
+    }
+    return total;
+  }
+
+  /** 跨所有 label 组合合并观测序列后取分位数（label 混合分位无严格语义，但对全局延迟概览足够）。 */
+  histogramAggregatePercentile(name: string, percentile: number): number {
+    const labelMap = this.histograms.get(name);
+    if (!labelMap) return 0;
+    const all: number[] = [];
+    for (const values of labelMap.values()) all.push(...values);
+    if (all.length === 0) return 0;
+    const sorted = [...all].sort((a, b) => a - b);
+    const idx = Math.ceil(sorted.length * percentile / 100) - 1;
+    return sorted[Math.max(0, Math.min(idx, sorted.length - 1))];
+  }
+
   histogramSum(name: string, labels: MetricLabel[] = []): number {
     const key = this.labelKey(name, labels);
     return this.histograms.get(name)?.get(key)?.reduce((a, b) => a + b, 0) ?? 0;
@@ -412,13 +444,13 @@ export class Observability {
       metrics: {
         totalRequests: this.aggregateCounter(`${this.config.metricsPrefix}_requests_total`),
         errorRate: this.calculateErrorRate(),
-        avgLatencyMs: this.histogramCount(`${this.config.metricsPrefix}_request_duration_ms`) > 0
-          ? Math.round(this.histogramSum(`${this.config.metricsPrefix}_request_duration_ms`) /
-              this.histogramCount(`${this.config.metricsPrefix}_request_duration_ms`))
+        avgLatencyMs: this.histogramAggregateCount(`${this.config.metricsPrefix}_request_duration_ms`) > 0
+          ? Math.round(this.histogramAggregateSum(`${this.config.metricsPrefix}_request_duration_ms`) /
+              this.histogramAggregateCount(`${this.config.metricsPrefix}_request_duration_ms`))
           : 0,
-        p50LatencyMs: this.histogramPercentile(`${this.config.metricsPrefix}_request_duration_ms`, 50),
-        p90LatencyMs: this.histogramPercentile(`${this.config.metricsPrefix}_request_duration_ms`, 90),
-        p99LatencyMs: this.histogramPercentile(`${this.config.metricsPrefix}_request_duration_ms`, 99),
+        p50LatencyMs: this.histogramAggregatePercentile(`${this.config.metricsPrefix}_request_duration_ms`, 50),
+        p90LatencyMs: this.histogramAggregatePercentile(`${this.config.metricsPrefix}_request_duration_ms`, 90),
+        p99LatencyMs: this.histogramAggregatePercentile(`${this.config.metricsPrefix}_request_duration_ms`, 99),
         activeSessions: this.gaugeGet(`${this.config.metricsPrefix}_active_sessions`),
       },
       components,

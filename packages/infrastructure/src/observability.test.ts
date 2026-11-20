@@ -238,6 +238,35 @@ describe("Observability", () => {
       const report = obs.getHealthReport();
       expect(report.metrics.totalRequests).toBeGreaterThanOrEqual(1);
     });
+
+    // 回归：/health 的延迟指标读的是无 label 的 "_default" 桶，而写入按
+    // endpoint/method/status 分桶 → avg/p50/p90/p99 恒 0。必须跨 label 聚合读取。
+    it("should aggregate latency metrics across label series in health report", () => {
+      obs.recordRequestLatency("/a", "GET", 200, 10);
+      obs.recordRequestLatency("/b", "POST", 200, 30);
+      obs.recordRequestLatency("/c", "GET", 500, 50);
+
+      const report = obs.getHealthReport();
+      expect(report.metrics.totalRequests).toBe(3);
+      expect(report.metrics.avgLatencyMs).toBe(30); // (10+30+50)/3
+      expect(report.metrics.p50LatencyMs).toBe(30);
+      expect(report.metrics.p90LatencyMs).toBe(50);
+      expect(report.metrics.p99LatencyMs).toBe(50);
+    });
+
+    it("histogram aggregate accessors should span label series", () => {
+      const l1 = [{ key: "k", value: "a" }];
+      const l2 = [{ key: "k", value: "b" }];
+      obs.histogramObserve("agg_hist", 5, l1);
+      obs.histogramObserve("agg_hist", 15, l1);
+      obs.histogramObserve("agg_hist", 25, l2);
+
+      expect(obs.histogramAggregateCount("agg_hist")).toBe(3);
+      expect(obs.histogramAggregateSum("agg_hist")).toBe(45);
+      expect(obs.histogramAggregatePercentile("agg_hist", 50)).toBe(15);
+      expect(obs.histogramAggregateCount("missing_hist")).toBe(0);
+      expect(obs.histogramAggregatePercentile("missing_hist", 99)).toBe(0);
+    });
   });
 
   // ── Prometheus Export ───────────────────────────────────
