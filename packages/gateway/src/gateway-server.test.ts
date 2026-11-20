@@ -39,6 +39,36 @@ describe("GatewayServer", () => {
     });
   });
 
+  // 渠道「启用未连接」（等扫码/对端离线）是预期运行态：degraded 而非 unhealthy。
+  // unhealthy 会令 /health 返回 503，Docker healthcheck 会把整个进程摘除——过重。
+  it("all-enabled-none-connected channels should be degraded, not unhealthy", () => {
+    registry.registerService("channelManager", {
+      getAllStatuses: () => [
+        { type: "personal_wechat", enabled: true, connected: false },
+      ],
+    });
+
+    const health = gateway.getAggregatedHealth();
+    expect(health.subsystems.channels.status).toBe("degraded");
+    // 其余子系统未受影响（本例中 http 本身 unhealthy 未启动是另一回事——
+    // 只断言 channels 不再贡献 unhealthy 级别）
+    expect(health.subsystems.channels.details).toMatchObject({
+      enabled: 1,
+      connected: 0,
+    });
+  });
+
+  it("no enabled channels should be healthy", () => {
+    registry.registerService("channelManager", {
+      getAllStatuses: () => [
+        { type: "webchat", enabled: false, connected: false },
+      ],
+    });
+
+    const health = gateway.getAggregatedHealth();
+    expect(health.subsystems.channels.status).toBe("healthy");
+  });
+
   it("should start and stop gracefully", async () => {
     gateway.configure({ port: 0, host: "127.0.0.1", enableWS: false, shutdownTimeoutMs: 2000 });
     await gateway.start();
