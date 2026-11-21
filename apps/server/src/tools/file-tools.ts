@@ -398,6 +398,21 @@ export function registerFileTools(
               `沙箱根（仓库根）：${fsBase}；本次解析为：${resolvedPath}。`,
           };
         }
+        // ★ 2026-11-21（v23 Task 5 实证）：create 撞已有文件是确定性失败，
+        //   与 ENOENT 同属「一条 hint 就能自救」家族。旧实现只透传裸错误，
+        //   模型要自己猜 action=modify / overwrite=true / edit（v23 烧了 2 次
+        //   失败调用才恢复）。把三个可选出路一次给全，同类错误不再反复试错。
+        if (message.includes("already exists") || message.includes("EEXIST") || message.includes("eexist")) {
+          return {
+            success: false,
+            error: message,
+            hint:
+              `文件已存在（${resolvedPath}）。三选一：` +
+              `① 用 file_write action=modify + content 覆盖为完整新内容；` +
+              `② 用 file_write action=create + overwrite=true 显式替换；` +
+              `③ 只改局部时用 file_write action=edit + old_string/new_string。`,
+          };
+        }
         throw err;
       });
   }

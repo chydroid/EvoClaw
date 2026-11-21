@@ -350,6 +350,22 @@ describe("stale 阻断 — 整文件覆盖守卫（R11 GAP-5）", () => {
     void f;
   });
 
+  // ★ 2026-11-21（v23 Task 5 实证）：create 撞已有文件是确定性失败，必须给
+  //   模型「下一步怎么改」的 hint，而不是只透传裸 EEXIST 让其反复试错。
+  it("create 撞已有文件 → EEXIST 附三选一恢复 hint", async () => {
+    const f = path.join(workspace, "exists.txt");
+    fs.writeFileSync(f, "old", "utf-8");
+    const r = (await fw().handler({ action: "create", path: "exists.txt", content: "new" })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toContain("EEXIST");
+    const hint = String(r.hint ?? "");
+    expect(hint).toContain("action=modify");
+    expect(hint).toContain("overwrite=true");
+    expect(hint).toContain("action=edit");
+    // 原内容未被破坏
+    expect(fs.readFileSync(f, "utf-8")).toBe("old");
+  });
+
   it("edit 不受「未全文读」阻断（hermes patch_tool 语义：old_string 命中即安全）", async () => {
     const f = path.join(workspace, "unread-edit.txt");
     fs.writeFileSync(f, "content\n", "utf-8");
