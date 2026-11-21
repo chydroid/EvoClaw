@@ -2567,6 +2567,47 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).toContain("/tmp/v4-monitor/v4-monitor.service");
   });
 
+  it("★ v22 Task 2 实录：显式相对路径优先于裸名+目录拼接（避免假缺失）", () => {
+    // v22 对账任务：模型回复同时含「工作区目录」和「out/summary.json 内容」，
+    // 后者被旧逻辑拆成裸名 summary.json 再拼到工作区根 →
+    // /workspace/v22-recon/summary.json（真实文件在 out/ 下）→ 磁盘核验
+    // 误报「任务未完成」，用户看到自相矛盾的 footer。
+    const reply = [
+      "✅ 已真实写入全部交付文件并重新验证通过。",
+      "**交付物**（`/tmp/v22-recon/`，已确认落盘）：",
+      "- `recon.py`（7917B）",
+      "- `test_recon.py`（5611B）",
+      "- `README.md`（1541B）",
+      "**CLI 真实运行**：",
+      "- `out/summary.json` 内容精确为：`{\"matched\":4}`",
+      "- matched 4 对 = STARBUCKS / SALARY / RENT（同日同额）",
+      "冻结夹具未修改。",
+    ].join("\n");
+    const paths = extractClaimedFilePaths(reply, "/tmp/v22-recon");
+    expect(paths).toContain("/tmp/v22-recon/out/summary.json");
+    expect(paths).not.toContain("/tmp/v22-recon/summary.json");
+    expect(paths).toContain("/tmp/v22-recon/recon.py");
+  });
+
+  it("显式相对路径的运行期写目标语境不触发假缺失", () => {
+    const reply =
+      "交付物在 `/tmp/proj/` 下。脚本超阈值时记录到 `out/alert.log` 并发告警。";
+    const paths = extractClaimedFilePaths(reply, "/tmp/proj");
+    expect(paths).not.toContain("/tmp/proj/out/alert.log");
+  });
+
+  it("显式相对路径含多层子目录（snapshots/A.json）保留完整层级", () => {
+    const reply =
+      "交付完成（`/tmp/v22-merkle/`）：\n" +
+      "- `merkle.py`、`test_merkle.py`、`README.md` 已就位\n" +
+      "- CLI 产物 `snapshots/A.json` 与 `snapshots/B.json` 已生成\n" +
+      "- compare 输出 `[\"a.txt\"]`";
+    const paths = extractClaimedFilePaths(reply, "/tmp/v22-merkle");
+    expect(paths).toContain("/tmp/v22-merkle/snapshots/A.json");
+    expect(paths).toContain("/tmp/v22-merkle/snapshots/B.json");
+    expect(paths).not.toContain("/tmp/v22-merkle/A.json");
+  });
+
   it("bullet 引用语境（详见/参考）不提取", () => {
     const reply = "任务完成。\n- 详见 /tmp/docs/guide.md\n- 参考 /tmp/docs/api.md";
     const paths = extractClaimedFilePaths(reply);

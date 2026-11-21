@@ -1888,6 +1888,7 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   reply = stripSyntheticFooters(reply);
   const paths = new Set<string>();
   const hasBase = typeof baseDir === "string" && baseDir.length > 0;
+  const basenameOf = (p: string): string => path.basename(p.replace(/\\/g, "/"));
 
   // 1. 反引号中的绝对路径
   // ★ 2026-10-28 修复（v4 复测 Task 7 误报）：排除「记录到 / 写入到 / 输出到」
@@ -1911,6 +1912,32 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   //   「超阈值写入 `/tmp/v4-monitor/alert.log`」描述脚本运行期行为——
   //   「超阈值/阈值」条件前缀同样区别于完成声明。
   const runtimeWriteTargetRe = /(?:记录到|写入到|输出到|保存到|追加到|存到|发送到|写到|记到|记入|存入|输出为|存为|自动写入|尝试写|试着写|时写入|时记录|时保存|时输出|时发送|超阈值写入|阈值写入)\s*$/;
+  // ★ 2026-11-21（v22 Task 2 实证）：显式**相对路径**（`out/summary.json`、
+  //   `snapshots/A.json`）必须先登记。否则下游「裸文件名 + 最近目录拼接」会把
+  //   `out/summary.json` 的 basename 拼到正文另处提及的工作区根 →
+  //   `/workspace/summary.json`（错误落点），磁盘核验误报「任务未完成」。
+  //   这类相对路径是模型对**实际落点**最明确的声明，优先级高于启发式拼接。
+  //   仅在有 baseDir 时解析（无 baseDir 的纯文本调用保持旧行为）。
+  const explicitRelativePaths = new Set<string>();
+  if (hasBase) {
+    const relPathRe = /`((?!\/)[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+)`/g;
+    for (const m of reply.matchAll(relPathRe)) {
+      const rel = m[1];
+      if (!isCandidateFilePath(rel)) continue;
+      const at = m.index ?? 0;
+      // 与绝对路径策略 1 同源守卫：运行期写目标 / 否定删除语境 / 命令调用
+      // 不是交付声明，不得登记（否则 `记录到 out/alert.log` 会触发假缺失）。
+      const before = reply.slice(Math.max(0, at - 30), at);
+      if (runtimeWriteTargetRe.test(before)) continue;
+      const after = reply.slice(at + m[0].length, at + m[0].length + 40);
+      if (/(?:不存在|已删除|已移除|已清理|未创建|未生成|未找到|没有创建|没有生成)/.test(before + after)) continue;
+      if (/(?:^|[\s`])(?:bash|sh|zsh|node|npx|python3?|npm|pnpm|yarn|git|cat|head|tail|wc|chmod|rm|mv|cp|ls|test|source)\s+$/.test(before)) continue;
+      // 排除 URL/命令片段（含空格已由字符集排除）；解析到 workspace 绝对路径
+      explicitRelativePaths.add(path.resolve(baseDir!, rel));
+    }
+  }
+  for (const p of explicitRelativePaths) paths.add(p);
+
   const backtickPathRe = /`(\/[^`]+)`/g;
   for (const m of reply.matchAll(backtickPathRe)) {
     const p = m[1].trim();
@@ -2086,6 +2113,11 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       for (const m of rawLine.matchAll(re)) {
         const name = m[1];
         if (name.includes("/") || /^https?:/i.test(name)) continue;
+        // ★ 2026-11-21（v22 Task 2 实证）：若正文已显式给出同名相对路径
+        //   （`out/summary.json`），裸名 `summary.json` 只是它的引用，绝不再
+        //   拼到最近的绝对目录（那会造出不存在的 `/workspace/summary.json`
+        //   → 磁盘核验误报「任务未完成」）。
+        if ([...explicitRelativePaths].some((p) => basenameOf(p) === name)) continue;
         // ★ 2026-10-28：运行时写目标守卫（与策略 1/2 同源）——文件名前的上下文
         //   以写目标介词结尾（如「超阈值自动写入 `alert.log`」）→ 运行期输出位置，
         //   非创建声明，跳过。
