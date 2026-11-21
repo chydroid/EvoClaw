@@ -623,9 +623,18 @@ describe("lookupCachedToolResult — 副作用工具豁免", () => {
     expect(r).toBeNull();
   });
 
-  it("读类工具（file_read）缓存行为不变", () => {
-    const r = lookupCachedToolResult(cache, "file_read", { path: "x.js" }, 300_000);
-    expect(r).toBe("abc");
+  // ★ 2026-11-22（v23 EEXIST 在线探针）：file_read 命中 300s 结果缓存 →
+  //   file_write modify 后同参读拿到写前旧内容（磁盘已是 final，模型收到 seed）。
+  //   文件内容是活状态，与 shell_exec/浏览器同类，必须豁免结果缓存；
+  //   file_list（目录内容随 create/delete 变化）同理。
+  it("file_read / file_list 即使缓存命中也不复用（写后读必须见新内容）", () => {
+    expect(NO_RESULT_CACHE_TOOLS.has("file_read")).toBe(true);
+    expect(NO_RESULT_CACHE_TOOLS.has("file_list")).toBe(true);
+    expect(lookupCachedToolResult(cache, "file_read", { path: "x.js" }, 300_000)).toBeNull();
+    expect(lookupCachedToolResult(
+      new Map([["file_list:{\"path\":\".\"}", { result: "[]", timestamp: Date.now() }]]),
+      "file_list", { path: "." }, 300_000,
+    )).toBeNull();
   });
 });
 

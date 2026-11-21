@@ -1654,6 +1654,13 @@ export const NO_RESULT_CACHE_TOOLS = new Set([
   "browser_screenshot",
   "browser_tabs",
   "browser_act",
+  // ★ 2026-11-22（v23 EEXIST 在线探针实证）：file_read 命中 300s 结果缓存
+  // → 紧跟 file_write modify 的同参读拿到**写前旧内容**（磁盘已是 final，
+  // 模型却收到 seed，绕路 shell 才验证成功）。文件内容是跨调用可变的活状态，
+  // 与 shell_exec/浏览器同类——结果不是 args 的纯函数。file_list 同理
+  // （目录内容随 create/delete 变化）。
+  "file_read",
+  "file_list",
 ]);
 
 /**
@@ -7570,7 +7577,12 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (deps.toolResultCache) cleanToolCache(deps.toolResultCache);
           // ★ P0 性能优化：直接命中精确 key（与下方写入侧同键），避免
           // lookupCachedToolResult 内部再 JSON.stringify(args) 一次。
-          const cachedResult = deps.toolResultCache?.get(argsKey)?.result ?? null;
+          // ★ 2026-11-22：快路径必须与 lookupCachedToolResult / 写入侧共用
+          // NO_RESULT_CACHE_TOOLS 判定，否则被豁免的工具（file_read 等）
+          // 仍能在此命中 300s 内的旧结果——快路径绕过豁免是本类 bug 的隐蔽入口。
+          const cachedResult = NO_RESULT_CACHE_TOOLS.has(toolName)
+            ? null
+            : deps.toolResultCache?.get(argsKey)?.result ?? null;
           if (cachedResult !== null) {
             asyncLog(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult };
