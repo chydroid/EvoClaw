@@ -350,6 +350,31 @@ describe("stale 阻断 — 整文件覆盖守卫（R11 GAP-5）", () => {
     void f;
   });
 
+  // ★ v26 实证（T4 R14 / T7 R11）：同一会话 create 成功后紧接 modify 必须放行。
+  //   旧实现 create 不登记全文基线，modify 被「没读过全文」守卫拒绝，
+  //   模型被迫先 file_read 整个文件再重试，白烧一轮。
+  it("create 后同一会话 modify 放行（create 登记全文基线）", async () => {
+    const f = path.join(workspace, "created-then-modify.txt");
+    const r1 = (await fw().handler({ action: "create", path: "created-then-modify.txt", content: "v1" })) as Record<string, unknown>;
+    expect(r1.success).toBe(true);
+    const r2 = (await fw().handler({ action: "modify", path: "created-then-modify.txt", content: "v2" })) as Record<string, unknown>;
+    expect(r2.success).toBe(true);
+    expect(fs.readFileSync(f, "utf-8")).toBe("v2");
+  });
+
+  // ★ v26 T9 实证：模型一度怀疑 `:`/`=`/`$` 被写入链路改写，改用
+  //   String.fromCharCode 绕行。实测是它自己的 shell 双引号里 `$"` 被
+  //   bash 当 locale 翻译吞掉（探针误报），写入链路本身必须逐字保真。
+  it("write 链路对 $ : = 等特殊字符逐字保真（T9「mangling」误判回归）", async () => {
+    const content = 'const COLON = ":";\nconst EQ = "=";\nconst D = "$";\nconst T = "a$b";\n';
+    const r1 = (await fw().handler({ action: "create", path: "punct.txt", content })) as Record<string, unknown>;
+    expect(r1.success).toBe(true);
+    expect(fs.readFileSync(path.join(workspace, "punct.txt"), "utf-8")).toBe(content);
+    const r2 = (await fw().handler({ action: "modify", path: "punct.txt", content: content + "$" })) as Record<string, unknown>;
+    expect(r2.success).toBe(true);
+    expect(fs.readFileSync(path.join(workspace, "punct.txt"), "utf-8")).toBe(content + "$");
+  });
+
   // ★ 2026-11-21（v23 Task 5 实证）：create 撞已有文件是确定性失败，必须给
   //   模型「下一步怎么改」的 hint，而不是只透传裸 EEXIST 让其反复试错。
   it("create 撞已有文件 → EEXIST 附三选一恢复 hint", async () => {

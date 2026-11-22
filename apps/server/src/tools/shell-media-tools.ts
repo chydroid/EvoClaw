@@ -1927,6 +1927,10 @@ export function registerShellMediaTools(
           stderr: truncate(result.stderr),
           durationMs: result.durationMs,
           timedOut: result.timedOut,
+          // ★ v26 T9 实证：spawn 失败（如解释器不存在）只有 error 有信息，
+          //   stdout/stderr 全空。旧实现丢掉 result.error，模型收到无解释的
+          //   「success:false, exitCode:-1」后只能靠猜（曾误判为源码被改写）。
+          ...(result.error ? { error: result.error } : {}),
           language,
           sandbox: chosen,
           ...(chosen === "process"

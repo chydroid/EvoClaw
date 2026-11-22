@@ -105,9 +105,9 @@ export type {
   ConfigPropertyHint,
 } from "./config-schema-merge";
 export {
-  ENV_ALIASES, CONFIG_ALIASES, TOOL_ALIASES,
+  ENV_ALIASES, CONFIG_ALIASES, TOOL_ALIASES, TOOL_ALIAS_IMPLIED_ACTION,
   getEnvWithCompat, translateLegacyKey, resolveToolName,
-  resolveRegisteredToolName,
+  resolveRegisteredToolName, applyImpliedToolAction,
   detectLegacyEnv, printMigrationHints,
 } from "./compat-layer";
 

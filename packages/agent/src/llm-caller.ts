@@ -7,7 +7,7 @@
  */
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
-import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl, resolveRegisteredToolName } from "@evoclaw/core";
+import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl, resolveRegisteredToolName, applyImpliedToolAction } from "@evoclaw/core";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
@@ -7355,6 +7355,17 @@ if (deps.contextPruningManager && !prunerNoop) {
                 raw_arguments_prefix: typeof args._rawArguments === "string" ? args._rawArguments : undefined,
               }),
             };
+          }
+
+          // ★ v26 T7 实证：旧名改名成功后 action 仍然缺失（file_write 合并
+          //   file_create/file_modify/file_edit 后 action 必填），会让别名修复
+          //   白做一次。按旧名补齐隐含 action（edit 类旧名 → edit）。
+          const impliedActionArgs = applyImpliedToolAction(tc.function.name, toolName, args);
+          if (impliedActionArgs !== args) {
+            process.stderr.write(
+              `[LLMCaller] Applied implied action for alias "${tc.function.name}" -> "${String(impliedActionArgs.action)}"\n`,
+            );
+            args = impliedActionArgs;
           }
 
           // ★ 2026-11-10（v10 Task 6 全局化）：action 枚举容错归一化。

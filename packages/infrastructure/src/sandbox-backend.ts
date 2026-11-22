@@ -15,7 +15,7 @@
  *   4. 不破坏现有 API —— SandboxManager 增量支持 process 后端，不改 docker/ssh 行为
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as fs from "node:fs";
@@ -127,7 +127,7 @@ export class LocalSandboxBackend implements ISandboxBackend {
     script: string,
     options?: SandboxScriptOptions,
   ): Promise<SandboxResult> {
-    const interpreter = options?.interpreter ?? "node";
+    const interpreter = this.resolveInterpreter(options?.interpreter ?? "node");
     // node 解释器下按脚本模块形态选扩展名：
     // 出现 `require(`（CommonJS 用法）→ .cjs（ESM 作用域里 require 不存在，
     // 评测事故 2026-10-15：模型写 require('fs') 被当 ESM 跑 → ReferenceError 死循环）。
@@ -154,6 +154,30 @@ export class LocalSandboxBackend implements ISandboxBackend {
 
   async dispose(): Promise<void> {
     // 本地后端无持久资源
+  }
+
+  private static pythonBin: string | null = null;
+
+  /**
+   * python / python3 解释器解析：发行版常只装 `python3`，`python` 不存在。
+   * v26 Task 9 实证：execute_code language=python → spawn("python") ENOENT，
+   * 又被非持久路径吞掉 error，模型收到「{} 空失败」白白浪费一轮。
+   * 探测顺序：请求值 → python3 → python（结果进程内缓存）。
+   */
+  private resolveInterpreter(requested: string): string {
+    if (requested !== "python" && requested !== "python3") return requested;
+    if (LocalSandboxBackend.pythonBin) return LocalSandboxBackend.pythonBin;
+    for (const cmd of Array.from(new Set([requested, "python3", "python"]))) {
+      try {
+        if (spawnSync(cmd, ["-V"], { stdio: "ignore", timeout: 5000 }).status === 0) {
+          LocalSandboxBackend.pythonBin = cmd;
+          return cmd;
+        }
+      } catch {
+        // 该候选不存在或不可执行 → 试下一个
+      }
+    }
+    return requested;
   }
 
   // ── 内部方法 ────────────────────────────────────────────

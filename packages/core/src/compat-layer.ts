@@ -121,6 +121,9 @@ export const TOOL_ALIASES: Record<string, string> = {
   read_file: "file_read",
   write_file: "file_write",
   edit_file: "file_write",
+  file_create: "file_write",
+  file_modify: "file_write",
+  file_edit: "file_write",
   delete_file: "file_delete",
   list_files: "file_list",
   run_shell: "shell_exec",
@@ -131,6 +134,39 @@ export const TOOL_ALIASES: Record<string, string> = {
   send_mail: "email",
   take_screenshot: "browser_screenshot",
 };
+
+/**
+ * 旧工具名隐含的复合工具 action。
+ *
+ * file_write 合并了 file_create/file_modify/file_edit 后 action 必填；
+ * 模型沿用旧名调用时通常不带 action（v26 T7 R5 实证：file_edit 直接
+ * 「not registered」，write_file/edit_file 即使改名成功也会因缺 action 失败）。
+ */
+export const TOOL_ALIAS_IMPLIED_ACTION: Record<string, string> = {
+  write_file: "create",
+  edit_file: "edit",
+  file_create: "create",
+  file_modify: "modify",
+  file_edit: "edit",
+};
+
+/**
+ * 别名改名成功后补齐隐含 action。
+ * 只对 file_write 生效；模型显式给了 action 或参数里带 old_string/new_string
+ * （语义明确是定点编辑）时以其为准。
+ */
+export function applyImpliedToolAction(
+  originalName: string,
+  resolvedName: string,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (resolvedName !== "file_write") return args;
+  if (typeof args.action === "string" && args.action.trim() !== "") return args;
+  const inferred = typeof args.old_string === "string" || typeof args.new_string === "string"
+    ? "edit"
+    : TOOL_ALIAS_IMPLIED_ACTION[originalName];
+  return inferred ? { ...args, action: inferred } : args;
+}
 
 /**
  * Resolve a tool name through aliases.

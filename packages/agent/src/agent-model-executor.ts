@@ -1,4 +1,4 @@
-import { ServiceRegistry, EventBus, type DAGNode, type Skill, type PersonaConfig, resolveRegisteredToolName } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, type DAGNode, type Skill, type PersonaConfig, resolveRegisteredToolName, applyImpliedToolAction } from "@evoclaw/core";
 import type { Span } from "@opentelemetry/api";
 import { buildAgentSystemPrompt, buildCompactSkillsPrompt, type SystemPromptParams, type PromptMode } from "./system-prompt";
 import { PromptRegistry } from "./prompt-registry";
@@ -1571,7 +1571,9 @@ export class AgentModelExecutor {
     }
     // 与 llm-caller 主循环同源的 action 归一化（v10 Task 6）：脚本侧
     // tools.call()/扩展转发同样可能传入被模型写坏的 action 取值。
-    const normalized = normalizeToolActionArg(entry.definition, params);
+    // 旧名（write_file/file_edit…）改名后还要补齐隐含 action（v26 T7）。
+    const aliased = applyImpliedToolAction(name, resolvedName, params);
+    const normalized = normalizeToolActionArg(entry.definition, aliased);
     return await entry.handler(normalized.args);
   }
 

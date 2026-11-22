@@ -378,6 +378,18 @@ export function registerFileTools(
       const r = pf.insideSandbox
         ? await fsMgr.createFile(fsPath, content, overwrite)
         : await fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+      // ★ v26 实证（T4 R14 / T7 R11）：create 成功后必须登记会话内全文基线。
+      //   否则同一会话紧接着 action=modify 会被「没读过全文」守卫拒绝，
+      //   模型被迫先 file_read 整个文件再重试——白白多一轮，还会误以为
+      //   文件被外部改动。刚写入的就是完整内容，基线即 content。
+      const sessionId = currentSessionId();
+      try {
+        stateRegistry.recordWrite(sessionId, resolvedPath, content);
+      } catch { /* 记账失败不阻断写 */ }
+      try {
+        readTracker.noteWriteServed(sessionId, resolvedPath, fileVersionOf(resolvedPath) ?? `${Date.now()}:write`);
+        readTracker.clearEditFailures(sessionId, resolvedPath);
+      } catch { /* 记账失败不阻断写 */ }
       // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
       // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
       // `...\data\workspace\data\workspace`，连踩两个坑。
