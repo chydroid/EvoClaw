@@ -4911,6 +4911,13 @@ export async function tryCallLLM(
     }
   }
 
+  // 会话级 token 预算耗尽后必须终止 provider failover。
+  // v26 T9 实证：预算在 provider A 超标 → 工具循环 break → 无 finalReply →
+  // 被当作「provider 空响应」继续尝试 3 个 provider，每次先发一整轮 prompt
+  // 再命中同一个预算检查（1,856,874 → 1,934,331 tokens，多烧 ~77K），最后
+  // 仍返回兜底文案。预算是会话级累计量，换 provider 不可能成功。
+  let sessionBudgetExhausted = false;
+
   for (const provider of expandedProviders) {
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
@@ -6368,6 +6375,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         if (totalTokensUsed > TOKEN_BUDGET) {
           process.stderr.write(`[AgentModelExecutor] Token budget exceeded: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}". Forcing summary.\n`);
           turnExitReason = "budget_exhausted";
+          sessionBudgetExhausted = true;
           break;
         }
 
@@ -9231,6 +9239,12 @@ if (deps.contextPruningManager && !prunerNoop) {
     // 都要把本轮的工具统计累加到外层，供兜底回复如实说明。
     totalSuccessfulToolCalls += successfulToolCalls;
     totalFailedTools.push(...failedTools);
+
+    // 预算耗尽：后续 provider 必然在同一检查点再次超标，直接结束 failover。
+    if (sessionBudgetExhausted) {
+      asyncLog(`[LLMCaller] Token budget exhausted — skipping remaining provider failover attempts\n`);
+      break;
+    }
   }
 
   // ── 兜底回复：终态失败盖码 + 人话文案（hermes turn_failure_copy 语义）──
