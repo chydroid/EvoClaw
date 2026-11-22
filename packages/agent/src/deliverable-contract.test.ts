@@ -46,6 +46,30 @@ describe("extractRequiredDeliverables", () => {
     expect(specs.map((s) => s.path)).toEqual(["/tmp/ws/report.md"]);
   });
 
+  // ★ v26 smoke 实证：任务原文写 `data/workspace/...`，工具会剥前缀落到
+  //   workspace 根下；契约核验若照拼会得到 `<ws>/data/workspace/...` 双前缀，
+  //   误报「契约未满足」触发无谓续跑。
+  it("data/workspace/ 前缀先剥离再按 workspace 根解析（无双前缀）", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const specs = extractRequiredDeliverables(
+      "在 data/workspace/v26-smoke2/a.txt 写入 v1。",
+      ws,
+    );
+    expect(specs.map((s) => s.path)).toEqual([`${ws}/v26-smoke2/a.txt`]);
+  });
+
+  it("绝对任务目录下，带 workspace 前缀的 token 仍按 workspace 根解析", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const specs = extractRequiredDeliverables(
+      "在 /home/chy/EvoClaw/data/workspace/v26-t9/ 交付 gql.py，并写入 data/workspace/v26-t9/report.json。",
+      ws,
+    );
+    expect(specs.map((s) => s.path)).toEqual([
+      `${ws}/v26-t9/gql.py`,
+      `${ws}/v26-t9/report.json`,
+    ]);
+  });
+
   it("绝对路径交付物原样保留", () => {
     const msg = "交付 /tmp/abc/out/results.json 与 /tmp/abc/out/summary.md。";
     const specs = extractRequiredDeliverables(msg, "/tmp/ws");

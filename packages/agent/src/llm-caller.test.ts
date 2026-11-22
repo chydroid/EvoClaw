@@ -2532,6 +2532,16 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).not.toContain("/tmp/v4-monitor/monitor.sh");
   });
 
+  // ★ v26 smoke 实证：模型照抄任务原文的相对写法 `data/workspace/x`，
+  //   工具侧会剥前缀落到 workspace 根；声称核验必须同源解析，否则拼出
+  //   `<ws>/data/workspace/x` 双前缀 → 虚假 disk_files_missing 续跑 3 次。
+  it("相对路径带 data/workspace/ 前缀时不二次拼接", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const paths = extractClaimedFilePaths("已创建 `data/workspace/v26-smoke2/a.txt` 并验证。", ws);
+    expect(paths).toContain(`${ws}/v26-smoke2/a.txt`);
+    expect(paths).not.toContain(`${ws}/data/workspace/v26-smoke2/a.txt`);
+  });
+
   it("★ 运行时写目标（记录到/输出到）不视为声称创建的文件", () => {
     // 复测 Task 7 误报：monitor.sh 脚本运行期把告警写入 alert.log，
     // 回复「超阈值时记录到 `/tmp/v4-monitor/alert.log`」是脚本行为描述，

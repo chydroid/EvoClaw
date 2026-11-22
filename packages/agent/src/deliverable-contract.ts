@@ -18,6 +18,7 @@
  */
 
 import * as path from "path";
+import { stripWorkspaceDirPrefix } from "./workspace-path";
 
 /** 视为「交付文件」的扩展名（代码/数据/文档/压缩产物） */
 const DELIVERABLE_EXTENSIONS = [
@@ -187,7 +188,16 @@ export function extractRequiredDeliverables(
     // 与夹具同名（任务里以裸名再次出现）也算输入，不是交付物
     if (fixtureBasenames.has(base)) continue;
 
-    const abs = path.isAbsolute(raw) ? path.normalize(raw) : path.resolve(targetDir, raw);
+    // ★ v26 smoke 实证：任务原文常把仓库根相对写法 `data/workspace/x` 直接
+    //   当交付路径；工具会剥前缀后落到 workspace 根下。契约核验必须同源解析，
+    //   否则拼出 `<ws>/data/workspace/x` 双前缀 → 虚假「契约未满足」续跑。
+    const normalized = stripWorkspaceDirPrefix(raw);
+    const resolveBase = normalized.stripped
+      ? path.resolve(workspacePath || process.cwd())
+      : targetDir;
+    const abs = path.isAbsolute(raw)
+      ? path.normalize(raw)
+      : path.resolve(resolveBase, normalized.value);
     const key = abs.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);

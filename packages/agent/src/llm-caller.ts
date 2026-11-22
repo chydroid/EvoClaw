@@ -165,6 +165,7 @@ import {
   pipelineLeadsLastPipe,
 } from "./verification-evidence";
 import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
+import { stripWorkspaceDirPrefix } from "./workspace-path";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 import { getErrorRecoveryExecutor, type RecoveryMessage } from "./error-recovery-executor";
@@ -1991,8 +1992,11 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       const after = reply.slice(at + m[0].length, at + m[0].length + 40);
       if (/(?:不存在|已删除|已移除|已清理|未创建|未生成|未找到|没有创建|没有生成)/.test(before + after)) continue;
       if (/(?:^|[\s`])(?:bash|sh|zsh|node|npx|python3?|npm|pnpm|yarn|git|cat|head|tail|wc|chmod|rm|mv|cp|ls|test|source)\s+$/.test(before)) continue;
-      // 排除 URL/命令片段（含空格已由字符集排除）；解析到 workspace 绝对路径
-      explicitRelativePaths.add(path.resolve(baseDir!, rel));
+      // 排除 URL/命令片段（含空格已由字符集排除）；解析到 workspace 绝对路径。
+      // ★ v26 smoke 实证：与工具侧 stripWorkspacePrefix 同源——模型照抄任务原文的
+      //   `data/workspace/x` 相对写法时先剥前缀，避免拼出 `<ws>/data/workspace/x`
+      //   双前缀 → 虚假 disk_files_missing → 无谓续跑。
+      explicitRelativePaths.add(path.resolve(baseDir!, stripWorkspaceDirPrefix(rel).value));
     }
   }
   for (const p of explicitRelativePaths) paths.add(p);
