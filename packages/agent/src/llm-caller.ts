@@ -1869,6 +1869,32 @@ export function computeDynamicToolLimitCached(
 }
 
 /**
+ * execute_code 退款可额外延长的轮次上限。
+ * 与 IterationBudget.MAX_REFUNDS_PER_TYPE（20）对齐：单类退款最多 20 次，
+ * 因此最多也只是把循环上限延长 20 轮；终极安全网仍是 TOKEN_BUDGET 与循环检测器。
+ */
+export const MAX_REFUND_ROUND_EXTENSION = 20;
+
+/**
+ * 退款后的工具循环轮次上限。
+ *
+ * execute_code 类工具（shell/执行脚本）轮次是「执行」而非「决策」，Hermes 的
+ * iteration_budget.refund 直接递减 used —— 因为它的循环边界就是预算本身。
+ * EvoClaw 的循环边界是 maxToolRounds（IterationBudget.max=300 远大于它），
+ * 退款只改计数器不改边界，等于空转。v26 T9 实证：25 轮里 11 次
+ * "Execute-code refund" 照常打日志，循环仍在第 25 轮截断，token 预算还剩近半。
+ * 这里让退款真正延长轮次，链路上限 baseLimit + MAX_REFUND_ROUND_EXTENSION。
+ */
+export function extendRoundLimitForRefund(
+  currentLimit: number,
+  baseLimit: number,
+  refunded: number
+): number {
+  if (refunded <= 0) return currentLimit;
+  return Math.min(baseLimit + MAX_REFUND_ROUND_EXTENSION, currentLimit + refunded);
+}
+
+/**
  * 从回复文本中提取被声称创建/写入的文件路径。
  *
  * ★ 2026-10-27 新增：完成声明对账只检查"是否调用了写工具"，
@@ -5672,8 +5698,10 @@ if (deps.contextPruningManager && !prunerNoop) {
       let consecutiveReadOnlyRounds = 0;
       // Run-budget wrap-up notice 是否已注入（每 turn 只注入一次）
       let wrapUpNoticeInjected = false;
+      // 工具循环实际上限：execute_code 退款按轮延长（见 extendRoundLimitForRefund）。
+      let roundLimit = maxToolRounds;
 
-      for (let round = 0; round < maxToolRounds; round++) {
+      for (let round = 0; round < roundLimit; round++) {
         // ── End-to-end cancellation: stop dispatching new rounds when aborted ──
         // In-flight fetches are already cancelled via the abort signal wired into
         // callLLMOnce. Here we short-circuit the loop to return the best reply
@@ -5771,7 +5799,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
 
         // ★ 每轮开始就下发一次轨迹快照（force）：保证"上一轮的思考"及时送到前端
-        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1}/${maxToolRounds} 轮...`, progress: Math.min(30 + round * 3, 90), providerName: provider.name, round: round + 1, thinkingSteps: traceSnapshot(trace, { force: true }) });
+        onProgress?.({ type: "llm_call", phase: "thinking", detail: `正在调用 ${provider.name} (${provider.model})，第 ${round + 1}/${roundLimit} 轮...`, progress: Math.min(30 + round * 3, 90), providerName: provider.name, round: round + 1, thinkingSteps: traceSnapshot(trace, { force: true }) });
 
         // ── 进度反馈：预算接近耗尽时预警 ──
         if (budget) {
@@ -5782,8 +5810,8 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
 
         // ── 进度反馈：接近最大轮次时预警 ──
-        if (round === maxToolRounds - 5) {
-          onProgress?.({ type: "rounds_warning", phase: "thinking", detail: `即将达到最大轮次限制（${maxToolRounds} 轮），剩余 5 轮`, progress: 88 });
+        if (round === roundLimit - 5) {
+          onProgress?.({ type: "rounds_warning", phase: "thinking", detail: `即将达到最大轮次限制（${roundLimit} 轮），剩余 5 轮`, progress: 88 });
         }
 
         // ── Run-budget wrap-up notice（对标 Hermes turn_finalizer 80% 提醒）──
@@ -5793,16 +5821,16 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   调用工具」会让模型在 80% 线连**必交产物**都不写就收尾（v14 diff 类
         //   任务实证漏交）。Hermes 的语义是「停止新的探索/验证，但完成必交写入」——
         //   这里照此改写，并显式列出交付物契约中的必交路径。
-        if (maxToolRounds > 0 && round >= Math.floor(maxToolRounds * 0.8) && round < maxToolRounds - 1) {
+        if (roundLimit > 0 && round >= Math.floor(roundLimit * 0.8) && round < roundLimit - 1) {
           const requiredList = deliverableContract.length > 0
             ? `任务要求的必交产物：${deliverableContract.map((d) => `\`${d.path}\``).join("、")}。`
             : "";
-          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${maxToolRounds}（${Math.round((round + 1) / maxToolRounds * 100)}%），接近上限。**立即停止新的探索/调查/验证工作**，基于已有结果直接产出最终交付物（答案/文件/汇总），**只执行完成必交产物所必需的写入操作**，不要再做可选的额外工具调用。${requiredList}完成后输出完成状态汇报。`;
+          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${roundLimit}（${Math.round((round + 1) / roundLimit * 100)}%），接近上限。**立即停止新的探索/调查/验证工作**，基于已有结果直接产出最终交付物（答案/文件/汇总），**只执行完成必交产物所必需的写入操作**，不要再做可选的额外工具调用。${requiredList}完成后输出完成状态汇报。`;
           // 只在当前轮次第一次达到 80% 时注入一次
           if (!wrapUpNoticeInjected) {
             pendingTransient.push({ role: "user", content: wrapUpNotice });
             wrapUpNoticeInjected = true;
-            asyncLog(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / maxToolRounds * 100)}% for session "${sessionId}"\n`);
+            asyncLog(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / roundLimit * 100)}% for session "${sessionId}"\n`);
           }
         }
 
@@ -5831,7 +5859,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   多步任务（写脚本→运行→写报告 / 写服务→启动→验证）在第 2 次工具调用后
         //   就被剥夺工具能力，模型只能输出文本、编造未执行的结果（Task 3 编造了
         //   CSV 统计数字；Task 10 服务从未启动却声称完成）。行动任务不 nudge，
-        //   maxToolRounds 已兜底防死循环。
+        //   roundLimit（含 execute_code 退款延长）已兜底防死循环。
         const tc: "auto" | "none" = isCreativeTask && successfulToolCalls >= 2 ? "none" : "auto";
         if (isCreativeTask && successfulToolCalls >= 2) {
           asyncLog(`[AgentModelExecutor] ${successfulToolCalls} tool calls used, nudging toward final answer (round ${round + 1}) — tool_choice disabled\n`);
@@ -6698,7 +6726,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           // 借鉴 hermes-agent 的 post_tool_empty_retried 策略：
           // 当 LLM 在工具执行后返回空响应（无 content 且无 tool_calls）时，
           // 追加一条 nudge 消息重试，而非直接以空回复结束。
-          if (!assistantMsg.content && successfulToolCalls > 0 && round < maxToolRounds - 1) {
+          if (!assistantMsg.content && successfulToolCalls > 0 && round < roundLimit - 1) {
             const recovery = getStreamingRecoveryManager();
             const retryCount = recovery.getRetryCount("post_tool_empty");
             if (retryCount < recovery.getConfig().maxPostToolEmptyRetries) {
@@ -6743,9 +6771,9 @@ if (deps.contextPruningManager && !prunerNoop) {
             //   继续"也无人续跑，直接带未完成交付收尾（Task 7 terraform 只产出
             //   6 个 .tf 就停）。放宽到 cap-1：倒数第二轮仍可 nudge 续跑（续跑
             //   占用最后一轮）；末轮本身不 nudge，由兜底总结调用（下方
-            //   round === maxToolRounds - 1 的总结分支）接管。循环安全仍靠
+            //   round === roundLimit - 1 的总结分支）接管。循环安全仍靠
             //   MAX_AUTO_CONTINUE=3 + overlapRatio>0.7 循环守卫兜底，勿删。
-            round < maxToolRounds - 1 &&
+            round < roundLimit - 1 &&
             pendingPermissions.length === 0
           ) {
             const premature = detectPrematureStop(finalReply, { toolCallsThisRound: false });
@@ -8539,12 +8567,15 @@ if (deps.contextPruningManager && !prunerNoop) {
         // ── IterationBudget: execute_code 退款 ──
         // 本轮所有工具调用均为 execute_code 类（执行而非决策）时退还迭代。
         // 退款机此前为死代码（仅定义+测试），现接入活路径。
+        // v26：退款同时延长循环上限——否则 budget(max=300) 的退款对 25 轮
+        // 硬上限毫无影响，日志"退款成功"却仍被截断（Hermes 的循环边界即预算）。
         if (budget && roundToolNames.length > 0) {
           try {
             const refunded = await budget.refundForExecuteCode(roundToolNames);
             if (refunded > 0) {
+              roundLimit = extendRoundLimitForRefund(roundLimit, maxToolRounds, refunded);
               asyncLog(
-                `[AgentModelExecutor] Execute-code refund: returned ${refunded} iteration(s) for round ${round + 1} (all ${roundToolNames.length} tools were execute_code-type)\n`,
+                `[AgentModelExecutor] Execute-code refund: returned ${refunded} iteration(s) for round ${round + 1} (limit now ${roundLimit}, all ${roundToolNames.length} tools were execute_code-type)\n`,
               );
             }
           } catch { /* best-effort — refund must never break the loop */ }
@@ -8640,7 +8671,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   会被当成最终回复（用户看到的是开工前的话）。文本回复比末轮早
         //   两轮以上即视为过期，走末轮总结兜底。
         const staleFinalReply = finalReplyRound >= 0 && finalReplyRound < round - 1;
-        if ((!finalReply || staleFinalReply) && round === maxToolRounds - 1) {
+        if ((!finalReply || staleFinalReply) && round === roundLimit - 1) {
           if (staleFinalReply) {
             asyncLog(
               `[AgentModelExecutor] Stale final reply (round ${finalReplyRound}, now ${round}); requesting end-of-budget summary\n`,
