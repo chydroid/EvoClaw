@@ -6134,8 +6134,11 @@ if (deps.contextPruningManager && !prunerNoop) {
             try {
               const refunded = await budget.refundForRuntimeError(classified.type);
               if (refunded > 0) {
+                // 与 execute_code 退款同理：退款要真正延长循环上限，否则对
+                // maxToolRounds 硬边界毫无作用（Hermes 的边界即 budget）。
+                roundLimit = extendRoundLimitForRefund(roundLimit, maxToolRounds, refunded);
                 asyncLog(
-                  `[AgentModelExecutor] Runtime-error refund: returned ${refunded} iteration(s) for ${classified.type} on provider "${provider.name}"\n`,
+                  `[AgentModelExecutor] Runtime-error refund: returned ${refunded} iteration(s) for ${classified.type} on provider "${provider.name}" (limit now ${roundLimit})\n`,
                 );
               }
             } catch { /* best-effort — refund must never break recovery */ }
