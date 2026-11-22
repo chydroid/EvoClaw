@@ -61,6 +61,27 @@ describe("guardrails tool-sql-injection（回归）", () => {
     expect(bad.triggeredRules).toContain("tool-sql-injection");
   });
 
+  it("shell_exec heredoc 里的 `',' or ')'` 错误文案不误拦（v25 Task 2 实证）", () => {
+    // 旧 `'\s+OR\s+'` 命中 Python 分词器报错文案
+    // `f"expected ',' or ')' near token"`，硬拦整段 heredoc，
+    // 模型被迫用 chr() 拼接源码并交付损坏文件。
+    const ok = mgr.checkToolCall("shell_exec", {
+      command: `cd /tmp && python3 - <<'PY'\nraise ValueError(f"expected ',' or ')' near token {tok!r}")\nPY`,
+    });
+    expect(ok.passed).toBe(true);
+    expect(ok.triggeredRules).not.toContain("tool-sql-injection");
+
+    // 真布尔注入结构仍拦：`' OR 'a'='a` 与 `' OR 1=1`
+    const bad1 = mgr.checkToolCall("shell_exec", {
+      command: `mysql -e "SELECT * FROM t WHERE u = '' OR 'a'='a'"`,
+    });
+    expect(bad1.passed).toBe(false);
+    const bad2 = mgr.checkToolCall("execute_code", {
+      code: `q = "SELECT * FROM users WHERE name = '' OR 1=1"`,
+    });
+    expect(bad2.passed).toBe(false);
+  });
+
   it("shell_exec 中 SQL 注释注入（admin'--）仍被拦截", () => {
     const r = mgr.checkToolCall("shell_exec", {
       command: `mysql -e "SELECT * FROM t WHERE name = 'admin'--"`,

@@ -425,10 +425,16 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   // 让 `'\s*--` 命中——单引号后紧跟三个破折号。真注入 `admin'--` 的特征是 `--`
   // 之后**不再**是破折号/引号/单词（注释已收尾），故加负向前瞻 `(?![\-'"\w])`：
   // `---`/`'---'` 这类「破折号串/分隔线」放行，`'-- `、`'--;` 注入仍拦。
+  // 2026-11-22 修复第四类误伤（v25 Task 2 实证）：`'\s+OR\s+'` 把
+  // Python 错误文案 `f"expected ',' or ')' near token"`（两个引号之间的
+  // 英文 `or`）判成 SQL 布尔注入，硬拦 heredoc 写文件 → 模型被迫改用
+  // chr() 拼接构造源码，最终交付损坏文件。话题（出现 or）≠ 意图（布尔注入）：
+  // SQL 注入的 `' OR '` 后面必须跟可比较结构（数字/TRUE/引号等值），
+  // 单纯 `',' or ')'` 这类分隔符列举放行。
   {
     id: "tool-sql-injection",
     toolPattern: /(?:sql|query|database|\bdb\b|mysql|postgres|shell|exec|command|run|bash|terminal|execute)/i,
-    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+'|'\s*--(?![\-'"\w]))/im,
+    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+(?:TRUE\b|\d+\s*=\s*\d+|'[^']*'\s*=\s*'|"[^"]*"\s*=\s*")|'\s*--(?![\-'"\w]))/im,
     severity: "high",
     action: "block",
     description: "SQL injection pattern in tool arguments",
