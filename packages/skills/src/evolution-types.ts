@@ -116,6 +116,8 @@ export interface EvolutionSuggestion {
   reason: string;
   /** 建议的内容变更（unified diff 或新内容） */
   proposedChange: string;
+  /** 技能类别（CAPTURED/DERIVED 生成新技能时使用） */
+  category?: "tool_guide" | "workflow" | "reference";
   /** 触发源 */
   triggeredBy: "post-analysis" | "tool-degradation" | "metric-monitor" | "manual";
   /** 触发时的指标快照 */
@@ -295,9 +297,29 @@ export class SkillMetricsRecord {
 // ── ExecutionAnalysis + suggestions_by_type（借鉴 OpenSpace types.py line 291-293） ───
 
 /**
+ * 单个技能的执行判定（借鉴 OpenSpace SkillJudgment）。
+ *
+ * 由后置分析 LLM 对「本轮注入的每个技能」逐条判定：
+ *   - skillApplied：技能信息是否被实际采用（不只是注入）
+ *   - note：如何使用/为何未使用
+ */
+export interface SkillJudgment {
+  /** 精确 skill_id（优先 .skill_id sidecar，缺失时回退技能名） */
+  skillId: string;
+  /** 供展示与名称回退匹配 */
+  skillName: string;
+  /** 是否被实际使用 */
+  skillApplied: boolean;
+  /** 判定说明 */
+  note: string;
+}
+
+/**
  * 执行分析结果（借鉴 OpenSpace ExecutionAnalysis）。
  *
  * 由 LLM 分析录制数据后产出，包含：
+ *   - 独立的任务完成判定（不信任 agent 自报）
+ *   - 逐技能判定
  *   - 演化建议列表
  *   - 工具质量反馈
  *   - 任务级总结
@@ -305,6 +327,12 @@ export class SkillMetricsRecord {
 export interface ExecutionAnalysis {
   /** 任务 ID */
   taskId: string;
+  /** LLM 独立判定的任务完成状态（缺失 = 未知） */
+  taskCompleted?: boolean;
+  /** 执行质量概述 */
+  executionNote?: string;
+  /** 逐技能判定 */
+  skillJudgments?: SkillJudgment[];
   /** LLM 生成的演化建议 */
   suggestions: EvolutionSuggestion[];
   /** LLM 反馈的工具问题 */

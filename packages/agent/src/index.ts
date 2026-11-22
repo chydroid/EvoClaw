@@ -8,6 +8,12 @@ export { SqliteCheckpointer, asSqliteDatabase } from "./sqlite-checkpointer";
 export type { SqliteDatabaseLike as AgentSqliteDatabaseLike } from "./sqlite-checkpointer";
 export { DynamicDAGBuilder } from "./dynamic-dag-builder";
 export { AgentModelExecutor } from "./agent-model-executor";
+export type {
+  InjectedSkillRef,
+  PostRunAnalysisInput,
+  PostRunAnalysisHook,
+  SkillQualityHintProvider,
+} from "./agent-model-executor";
 export { destroyHttpAgents } from "./llm-caller";
 export { runWithToolCallContext, getCurrentToolCallContext } from "./tool-call-context";
 export type { ToolRuntimeContext } from "./tool-call-context";

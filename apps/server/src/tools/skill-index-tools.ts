@@ -6,14 +6,30 @@ import type { AutoSkillManager, SkillIndex, SkillManager } from "@evoclaw/skills
  *
  * `skill_view` 保持不变；原 `skill_index_list` 与 `skill_search`（后者实现自
  * skill-tools.ts 迁入）合并为 `skill_list`，通过 `action` 判别字段分发：
- *   - skill_list (action=index)   列出 Level 0 紧凑索引
- *   - skill_list (action=search)  按任务描述搜索技能
+ *   - skill_list (action=index)    列出 Level 0 紧凑索引
+ *   - skill_list (action=search)   按任务描述搜索技能
+ *   - skill_list (action=retrieve) 任务中途按 query 检索技能（对齐 OpenSpace
+ *     retrieve_skill），附带持久化质量计数与低质标记。
  */
+
+/** 质量库的最小读取契约（@evoclaw/evolution SkillQualityStore）。 */
+export interface SkillQualityLookup {
+  get(name: string): {
+    totalSelections: number;
+    totalApplied: number;
+    totalCompleted: number;
+    totalFallbacks: number;
+  } | null;
+  completionRate(name: string): number;
+  isLowQuality(name: string): boolean;
+}
+
 export function registerSkillIndexTools(
   executor: AgentModelExecutor,
   skillIndex: SkillIndex,
   autoSkillManager?: AutoSkillManager,
-  skillManager?: SkillManager
+  skillManager?: SkillManager,
+  qualityStore?: SkillQualityLookup,
 ): void {
   const index = skillIndex;
 
@@ -106,17 +122,62 @@ export function registerSkillIndexTools(
       description:
         "List or search available skills. " +
         "action=index: list all skills in the compact Level 0 index (minimal token usage); " +
-        "action=search: search for available skills matching a task description.",
+        "action=search: search for available skills matching a task description; " +
+        "action=retrieve: retrieve the most relevant skills for a mid-task query, with quality statistics.",
       parameters: {
-        action: { type: "string", description: "skill_list 操作类型", required: true, enum: ["index", "search"] },
+        action: { type: "string", description: "skill_list 操作类型", required: true, enum: ["index", "search", "retrieve"] },
         task: { type: "string", description: "Description of the task to search skills for（action=search 使用）", required: false },
+        query: { type: "string", description: "检索关键词/任务描述（action=retrieve 使用）", required: false },
+        limit: { type: "number", description: "retrieve 返回上限（1-50，默认 8）", required: false },
+        level: { type: "number", description: "retrieve 附带内容级别 0/1/2（默认 0=仅元数据）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
       const action = String(params.action || "index");
       if (action === "index") return await handleIndexList(params);
       if (action === "search") return await handleSearch(params);
-      return { success: false, error: `未知 skill_list action: ${action}（仅支持 index / search）` };
+      if (action === "retrieve") return await handleRetrieve(params);
+      return { success: false, error: `未知 skill_list action: ${action}（仅支持 index / search / retrieve）` };
     }
   );
+
+  // ── action=retrieve（对齐 OpenSpace retrieve_skill，任务中途检索）──
+  async function handleRetrieve(params: Record<string, unknown>) {
+    const query = String(params.query || params.task || "").trim();
+    if (!query) return { success: false, error: "query 不能为空" };
+    const rawLimit = Number(params.limit ?? 8);
+    const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(50, Math.round(rawLimit))) : 8;
+    const rawLevel = Number(params.level ?? 0);
+    const level: 0 | 1 | 2 = [0, 1, 2].includes(rawLevel) ? (rawLevel as 0 | 1 | 2) : 0;
+
+    const results = index.search(query, limit);
+    const items = results.map((result) => {
+      const entry = result.entry;
+      const quality = qualityStore?.get(entry.name) ?? null;
+      const item: Record<string, unknown> = {
+        id: entry.id,
+        name: entry.name,
+        relevanceScore: Number(result.relevanceScore.toFixed(4)),
+        useCount: entry.useCount,
+        successRate: entry.successRate,
+        lowQuality: qualityStore?.isLowQuality(entry.name) ?? false,
+      };
+      if (quality) {
+        item.quality = {
+          selections: quality.totalSelections,
+          applied: quality.totalApplied,
+          completions: quality.totalCompleted,
+          fallbacks: quality.totalFallbacks,
+          completionRate: qualityStore?.completionRate(entry.name) ?? 0,
+        };
+      }
+      if (level > 0) {
+        item.content = index.getSkillLevel(entry.id, level);
+      } else {
+        item.summary = entry.level0;
+      }
+      return item;
+    });
+    return { success: true, query, count: items.length, skills: items };
+  }
 }

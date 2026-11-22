@@ -232,3 +232,44 @@ describe("EvolutionTriggers > getStats", () => {
     expect(stats.currentTaskId).toBe("task-1");
   });
 });
+
+describe("EvolutionTriggers > startTask 反循环状态保留", () => {
+  it("后台监控（resetAddressed/resetIterations=false）不清空已处理问题与迭代上限", async () => {
+    const triggers = new EvolutionTriggers({
+      maxEvolutionIterations: 1,
+      toolDegradationThreshold: 0.9,
+    });
+    triggers.setLlmConfirmFn(async () => ({ confirmed: true, reason: "OK" }));
+    triggers.startTask("task-1");
+
+    const report: ToolQualityReport = {
+      summary: { totalTools: 1, trackedTools: 1, avgSuccessRate: 0.1, problematicTools: 1 },
+      byTool: [],
+      problematicTools: [
+        {
+          toolKey: "shell_exec",
+          penalty: 0.9,
+          recentSuccessRate: 0.1,
+          consecutiveFailures: 3,
+          llmFlagged: false,
+          reasons: ["low success rate"],
+        },
+      ],
+      recommendations: [],
+    };
+    expect((await triggers.processToolDegradation(report)).length).toBe(1);
+    expect(triggers.getStats().evolutionIterations).toBe(1);
+
+    // 模拟 10 分钟监控 tick：保留 addressed + 迭代计数
+    triggers.startTask("monitor", { resetAddressed: false, resetIterations: false });
+    expect(triggers.getStats().evolutionIterations).toBe(1);
+    expect(triggers.getStats().addressedDegradations).toBe(1);
+    // 达到单任务上限后不再触发
+    expect((await triggers.processToolDegradation(report)).length).toBe(0);
+
+    // 新任务（默认 reset）恢复干净状态
+    triggers.startTask("task-2");
+    expect(triggers.getStats().evolutionIterations).toBe(0);
+    expect(triggers.getStats().addressedDegradations).toBe(0);
+  });
+});

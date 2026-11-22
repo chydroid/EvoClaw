@@ -6,7 +6,7 @@ import { classifyLLMError, LLMErrorType, type ClassifiedError } from "./error-cl
 import type { LedgerEntry, LedgerEventType } from "./event-ledger";
 import type { ChatContent } from "@evoclaw/plugin-sdk";
 import { tryCallLLM as tryCallLLMFn, callLLMOnce as callLLMOnceFn, parseStreamingResponse as parseStreamingResponseFn, buildOpenAITools as buildOpenAIToolsFn, nativeFetch, type LLMCallerDeps, type LLMMessage, type NativeFetchResponse } from "./llm-caller";
-import { callAuxLLM, type AuxChatFn } from "./auxiliary-client";
+import { callAuxLLM, type AuxChatFn, type AuxTask } from "./auxiliary-client";
 import { runBackgroundReview, resolveReviewRuntime, type ReviewChatFn, type ReviewMessage, type ReviewAction } from "./background-review";
 // P0-2：共享异步日志（替代热路径同步 process.stdout/stderr.write，16ms 批量刷新）
 import { asyncLog, asyncErr } from "./async-log";
@@ -115,6 +115,34 @@ export function classifySkillInstallIntent(message: string): { any: boolean; com
   const any = strongSignal || (installSpecificSkill.test(message) && !technicalDeliveryTask);
   const compoundIndicators = /(?:然后|接着|之后|其次|最后|首先|再|之后用|然后用|执行一次|执行一个)/;
   return { any, compound: any && compoundIndicators.test(message) };
+}
+
+/** 本轮实际注入 prompt 的技能（按需选择子集；供后置分析逐条判定）。 */
+export interface InjectedSkillRef {
+  skillId: string;
+  name: string;
+  description?: string;
+}
+
+/** 任务结束后的后置分析载荷（Recording 已落盘，LLM 已返回）。 */
+export interface PostRunAnalysisInput {
+  taskId: string;
+  sessionId: string;
+  message: string;
+  reply: string;
+  status: "completed" | "failed" | "cancelled";
+  durationMs: number;
+  selectedSkills?: InjectedSkillRef[];
+  isSubagent?: boolean;
+}
+
+export type PostRunAnalysisHook = (
+  input: PostRunAnalysisInput,
+) => void | Promise<void>;
+
+/** 质量提示提供者（由 evolution 侧注入；避免 agent → evolution 反向依赖）。 */
+export interface SkillQualityHintProvider {
+  isLowQuality(skillIdOrName: string): boolean;
 }
 
 export class AgentModelExecutor {
@@ -793,6 +821,12 @@ export class AgentModelExecutor {
     topicHash: string;
     skillSetHash: string;
   }>();
+  /** 本轮实际注入的技能（后置分析/录制用）；按 session 覆盖写，体量 ≤12。 */
+  private _injectedSkillsBySession = new Map<string, InjectedSkillRef[]>();
+  /** 任务结束后置分析钩子（后台，fire-and-forget；不阻塞响应）。 */
+  private postRunAnalysisHook?: PostRunAnalysisHook;
+  /** 技能质量提示（低质技能在重算选择时降权/剔除）。 */
+  private skillQualityProvider?: SkillQualityHintProvider;
   /** skill 按需选择阈值：≤ 此数维持全量元数据（反正不大，且避免漏掉该用的 skill） */
   private static readonly SKILL_SELECTION_THRESHOLD = 30;
   /** 相关性命中上限（SkillIndex.search top-K） */
@@ -1737,7 +1771,7 @@ export class AgentModelExecutor {
   }
 
   async buildSkillsPromptForRun(allowedSkillNames?: string[], message?: string, sessionId?: string): Promise<string> {
-    const skills: Array<{ name: string; description: string; location: string }> = [];
+    const skills: Array<{ id: string; name: string; description: string; location: string }> = [];
     const skillManager = this.registry?.resolveService<{ listSkills(): Promise<Array<{ id: string; name: string; description: string; installPath: string }>> }>("skillManager");
     if (skillManager) {
       const installed = await skillManager.listSkills();
@@ -1748,6 +1782,7 @@ export class AgentModelExecutor {
           // P1-1 Bot Mode：allowedSkills 白名单过滤（null = 不过滤，全量可见，向后兼容）
           if (allowSet && !allowSet.has(s.name)) continue;
           skills.push({
+            id: s.id || s.name,
             name: s.name,
             description: s.description || `Execute ${s.name} skill`,
             location: s.installPath || `skills/${s.name}/SKILL.md`,
@@ -1769,6 +1804,14 @@ export class AgentModelExecutor {
     ) {
       const selection = this.selectSkillsForSession(skills, message, sessionId);
       selected = skills.filter((s) => selection.names.includes(s.name));
+      // 记录本轮实际注入的技能（供录制 traj + 后置分析逐条判定）。
+      this._injectedSkillsBySession.set(
+        sessionId,
+        selected.map((s) => ({ skillId: s.id, name: s.name, description: s.description })),
+      );
+    } else if (sessionId) {
+      // 全量注入不属于「按需选择」，避免后置分析逐条判定几十个技能。
+      this._injectedSkillsBySession.delete(sessionId);
     }
 
     // P0-4 缓存稳定化（2026-10-26）：按内容哈希记忆化渲染后的 skills prompt。
@@ -1857,18 +1900,55 @@ export class AgentModelExecutor {
     }
 
     // ── 重算：top-K 相关性 + 最近使用 top-3 合并去重，上限 MAX ──
-    const byRelevance = results.slice(0, AgentModelExecutor.SKILL_SELECTION_TOP_K).map((r) => r.entry.name);
-    const byRecent = skillIndex
+    // 质量过滤（对标 OpenSpace quality-filtered selection）：仅在新选/话题切换时
+    // 生效，不主动打破会话粘性（粘性复用保持逐字节稳定，避免缓存击穿）。
+    const isLow = (name: string): boolean => {
+      try {
+        return this.skillQualityProvider?.isLowQuality(name) === true;
+      } catch {
+        return false;
+      }
+    };
+    const relevance = results
+      .slice(0, AgentModelExecutor.SKILL_SELECTION_TOP_K)
+      .map((r) => r.entry.name);
+    const filteredRelevance = relevance.filter((name) => !isLow(name));
+    const byRelevance = filteredRelevance.length > 0 ? filteredRelevance : relevance;
+    const recent = skillIndex
       .getAll()
       .slice()
       .sort((a, b) => (b.useCount || 0) - (a.useCount || 0) || (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0))
       .slice(0, AgentModelExecutor.SKILL_SELECTION_RECENT)
       .map((e) => e.name);
+    const filteredRecent = recent.filter((name) => !isLow(name));
+    const byRecent = filteredRecent.length > 0 ? filteredRecent : recent;
     const names = [...new Set([...byRelevance, ...byRecent])].slice(0, AgentModelExecutor.SKILL_SELECTION_MAX);
 
     const entry = { names, topicHash, skillSetHash };
     this._skillSelectionBySession.set(sessionId, entry);
     return entry;
+  }
+
+  /**
+   * 注册任务结束后置分析钩子。钩子异步执行且永不阻塞回复；内部异常由
+   * 调用方（evolution 协调器）吞掉。传 undefined 取消。
+   */
+  setPostRunAnalysisHook(hook?: PostRunAnalysisHook): void {
+    this.postRunAnalysisHook = hook;
+  }
+
+  /** 注入技能质量提示（低质技能在新选时降权/剔除）。 */
+  setSkillQualityProvider(provider?: SkillQualityHintProvider): void {
+    this.skillQualityProvider = provider;
+  }
+
+  /** 本轮实际注入 prompt 的技能（按需选择子集）。 */
+  getInjectedSkills(sessionId: string): InjectedSkillRef[] {
+    return this._injectedSkillsBySession.get(sessionId) ?? [];
+  }
+
+  getInjectedSkillNames(sessionId: string): string[] {
+    return this.getInjectedSkills(sessionId).map((s) => s.name);
   }
 
   /**
@@ -3835,8 +3915,15 @@ export class AgentModelExecutor {
         enabled: true,
         order: 0,
       };
-      const content = req.messages
-        .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "")))
+      const content = [
+        typeof req.systemPrompt === "string" && req.systemPrompt.trim()
+          ? req.systemPrompt
+          : null,
+        ...req.messages.map((m) =>
+          typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? ""),
+        ),
+      ]
+        .filter((part): part is string => typeof part === "string" && part.length > 0)
         .join("\n\n");
       const result = await callLLMOnceFn(
         providerConfig,
@@ -3871,6 +3958,45 @@ export class AgentModelExecutor {
         runtime,
       };
     };
+  }
+
+  /**
+   * 辅助 LLM 单次调用（供 evolution 分析器/反思器/技能演化器使用）。
+   *
+   * 走 callAuxLLM 的供应商回退链（402/429 自动换 provider），并复用
+   * buildAuxChatFn 的 token 记账。调用方只关心纯文本输出与超时。
+   */
+  async runAuxiliaryPrompt(input: {
+    systemPrompt: string;
+    prompt: string;
+    task?: AuxTask;
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+    sessionId?: string;
+    channel?: string;
+  }): Promise<string> {
+    const main = this.providers.find((p) => p.enabled) ?? this.providers[0];
+    if (!main) throw new Error("辅助 LLM 通道不可用：无已启用模型");
+    const sessionId = input.sessionId || "auxiliary";
+    const run = callAuxLLM(
+      {
+        task: input.task ?? "generic",
+        systemPrompt: input.systemPrompt,
+        messages: [{ role: "user", content: input.prompt }],
+        maxTokens: input.maxTokens,
+        temperature: input.temperature,
+      },
+      {
+        provider: main.provider,
+        model: main.model,
+        apiKey: main.apiKey ?? undefined,
+        baseUrl: main.baseURL ?? undefined,
+      },
+      this.buildAuxChatFn(sessionId, input.channel),
+    );
+    const timeoutMs = input.timeoutMs ?? 90_000;
+    return withTimeout(run.then((r) => r.content), timeoutMs, "辅助 LLM 调用超时");
   }
 
   /**
@@ -4364,6 +4490,23 @@ export class AgentModelExecutor {
         Array.from(depsCache.registeredTools.values()).map((t) => t.definition),
         sessionId,
       );
+      // 录制本轮实际注入的技能（后置分析据此逐技能判定 applied/completed）。
+      const injected = this.getInjectedSkills(sessionId);
+      if (injected.length > 0) {
+        try {
+          recordingManager.recordSkillSelection(
+            recordingTaskId,
+            0,
+            injected.map((s) => ({
+              skillId: s.skillId,
+              name: s.name,
+              score: 0,
+              source: "selection",
+            })),
+            (rawUserMessage ?? message).slice(0, 500),
+          );
+        } catch { /* 录制失败不影响主流程 */ }
+      }
       sessionDeps.recordingTaskId = recordingTaskId;
     } catch (recErr) {
       process.stderr.write(
@@ -4382,17 +4525,52 @@ export class AgentModelExecutor {
       try {
         recordingManager.endRecording(recordingTaskId, result ? "completed" : "failed", result ? undefined : "no result");
       } catch { /* 录制收尾失败不影响结果 */ }
+      // 后置分析（fire-and-forget）：仅消费已落盘 recording，不阻塞回复。
+      this.notifyPostRunAnalysis({
+        taskId: recordingTaskId,
+        sessionId,
+        message: rawUserMessage ?? message,
+        reply: result?.reply ?? "",
+        status: result ? "completed" : "failed",
+        durationMs: Date.now() - startTime,
+        selectedSkills: this.getInjectedSkills(sessionId),
+        isSubagent: this.isSubagentSessionId(sessionId),
+      });
       return result;
     } catch (err) {
+      const cancelled = /abort|cancel/i.test(err instanceof Error ? err.message : String(err));
       try {
         recordingManager.endRecording(
           recordingTaskId,
-          /abort|cancel/i.test(err instanceof Error ? err.message : String(err)) ? "cancelled" : "failed",
+          cancelled ? "cancelled" : "failed",
           err instanceof Error ? err.message : String(err),
         );
       } catch { /* ignore */ }
+      this.notifyPostRunAnalysis({
+        taskId: recordingTaskId,
+        sessionId,
+        message: rawUserMessage ?? message,
+        reply: "",
+        status: cancelled ? "cancelled" : "failed",
+        durationMs: Date.now() - startTime,
+        selectedSkills: this.getInjectedSkills(sessionId),
+        isSubagent: this.isSubagentSessionId(sessionId),
+      });
       throw err;
     }
+  }
+
+  /** 后台触发后置分析钩子；异常只记录，不影响主流程。 */
+  private notifyPostRunAnalysis(input: PostRunAnalysisInput): void {
+    const hook = this.postRunAnalysisHook;
+    if (!hook) return;
+    void Promise.resolve()
+      .then(() => hook(input))
+      .catch((err: unknown) => {
+        process.stderr.write(
+          `[AgentModelExecutor] post-run analysis hook failed: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+      });
   }
 
   /** 懒初始化 ToolResultCacheV2（best-effort，失败返回 null）。 */
@@ -5392,4 +5570,15 @@ export class AgentModelExecutor {
     if (!this.steerManager) return null;
     return this.steerManager.steer(sessionId, instruction, { priority });
   }
+}
+/** Promise 超时包装（timer unref，测试环境不悬挂）。 */
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer.unref?.();
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }

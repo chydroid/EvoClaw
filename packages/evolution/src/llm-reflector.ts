@@ -159,19 +159,14 @@ export class LLMReflector {
     if (timeout.unref) timeout.unref();
 
     try {
-      let output: string;
-      if (typeof executor.execute === "function") {
-        const result = await executor.execute(
-          { systemPrompt, prompt: userPrompt },
-          { signal: controller.signal as AbortSignal },
-        );
-        output = result.content;
-      } else {
-        const providers = executor.getProviders().filter((p) => p.enabled);
-        if (providers.length === 0) {
-          return { confirmed: false, reason: "no enabled provider — conservative reject" };
-        }
-        output = await this.callProviderDirectly(providers[0], systemPrompt, userPrompt, controller.signal);
+      const output = await this.completeWithExecutor(
+        executor,
+        systemPrompt,
+        userPrompt,
+        controller.signal,
+      );
+      if (output === null) {
+        return { confirmed: false, reason: "no enabled provider — conservative reject" };
       }
 
       const jsonMatch = /\{[\s\S]*\}/.exec(output);
@@ -231,28 +226,13 @@ export class LLMReflector {
     if (timeout.unref) timeout.unref();
 
     try {
-      let llmOutput: string;
-
-      // 优先使用 execute 方法（更直接）
-      if (typeof executor.execute === "function") {
-        const result = await executor.execute(
-          { systemPrompt: REFLECTION_SYSTEM_PROMPT, prompt },
-          { signal: controller.signal as AbortSignal }
-        );
-        llmOutput = result.content;
-      } else {
-        // 使用 providers 直接调用
-        const providers = executor.getProviders().filter((p) => p.enabled);
-        if (providers.length === 0) return null;
-
-        const provider = providers[0];
-        llmOutput = await this.callProviderDirectly(
-          provider,
-          REFLECTION_SYSTEM_PROMPT,
-          prompt,
-          controller.signal
-        );
-      }
+      const llmOutput = await this.completeWithExecutor(
+        executor,
+        REFLECTION_SYSTEM_PROMPT,
+        prompt,
+        controller.signal,
+      );
+      if (llmOutput === null) return null;
 
       return this.parseReflectionResponse(llmOutput, trace);
     } catch (err) {
@@ -263,6 +243,37 @@ export class LLMReflector {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  /**
+   * 统一辅助 LLM 调用通道。
+   *
+   * 修复（2026-11-22）：旧实现调用 `executor.execute({systemPrompt,prompt})`，
+   * 但 AgentModelExecutor.execute 的真实签名是 DAG 执行 `(prompt, node, opts)`，
+   * 导致反思/演化确认在生产中永远走 provider 直连或保守拒绝。
+   * 现优先使用 AgentModelExecutor.runAuxiliaryPrompt（callAuxLLM 回退链），
+   * 仅在旧版执行器（无该方法）时回退到 provider 直连。
+   *
+   * @returns 文本输出；无可用 provider 时返回 null
+   */
+  private async completeWithExecutor(
+    executor: LLMExecutor,
+    systemPrompt: string,
+    prompt: string,
+    signal: AbortSignal,
+  ): Promise<string | null> {
+    if (typeof executor.runAuxiliaryPrompt === "function") {
+      return executor.runAuxiliaryPrompt({
+        systemPrompt,
+        prompt,
+        maxTokens: 2048,
+        temperature: 0.2,
+        timeoutMs: this.llmTimeoutMs,
+      });
+    }
+    const providers = executor.getProviders().filter((p) => p.enabled);
+    if (providers.length === 0) return null;
+    return this.callProviderDirectly(providers[0], systemPrompt, prompt, signal);
   }
 
   private resolveLLMExecutor(): LLMExecutor | null {
@@ -416,15 +427,14 @@ export class LLMReflector {
 
 interface LLMExecutor {
   getProviders(): ProviderInfo[];
-  execute?(
-    input: { systemPrompt: string; prompt: string },
-    context?: Record<string, unknown>
-  ): Promise<{
-    content: string;
-    usage?: { promptTokens: number; completionTokens: number };
-    model?: string;
-    finishReason?: string;
-  }>;
+  /** AgentModelExecutor 提供的辅助 LLM 单次调用（callAuxLLM 回退链）。 */
+  runAuxiliaryPrompt?(input: {
+    systemPrompt: string;
+    prompt: string;
+    maxTokens?: number;
+    temperature?: number;
+    timeoutMs?: number;
+  }): Promise<string>;
 }
 
 interface ProviderInfo {

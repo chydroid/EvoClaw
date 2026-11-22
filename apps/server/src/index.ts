@@ -41,10 +41,10 @@ import { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner, ModelF
 import type { DurableTask } from "@evoclaw/agent";
 import { GitOperations, CodeIntelligence, VisionAnalyzer, BrowserVault, runBackgroundReview, DEFAULT_REVIEW_CONFIG } from "@evoclaw/agent";
 import type { VisionChatFn, BatchToolExecutorFn, DLQRetryHandler, ReviewChatFn, ReviewMessage, BackgroundReviewConfig } from "@evoclaw/agent";
-import { KanbanBoard, MoaEngine, ToolSearchEngine } from "@evoclaw/agent";
+import { KanbanBoard, MoaEngine, ToolSearchEngine, toolQualityManager } from "@evoclaw/agent";
 import type { MoaConfig, ModelRef } from "@evoclaw/agent";
-import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, probeSqlitePersistence } from "@evoclaw/skills";
-import { EvolutionEngine, EvolutionTriggers, type SkillMetrics } from "@evoclaw/evolution";
+import { SkillManager, AutoSkillManager, SkillDispatcher, SkillCurator, SkillCircuitBreaker, SkillCapabilityEvaluator, LineageStore, probeSqlitePersistence } from "@evoclaw/skills";
+import { EvolutionEngine, EvolutionTriggers, ExecutionAnalyzer, SkillQualityStore, SkillEvolver, EvolutionCoordinator, type SkillMetrics } from "@evoclaw/evolution";
 import { MemoryHub, SemanticMemoryStore, MemoryHost } from "@evoclaw/memory";
 import { SecurityGovernor, AuditCenter, TenantManager, SelfHealingManager, PermissionManager, ErrorRecoveryManager, ToolPolicyManager, DMPairingManager, PermissionRelay, TranscriptRedactor, MCPToolPoisoningScanner, ApprovalTimeoutManager, DevicePairingManager, setActiveSecurityLevel } from "@evoclaw/security";
 import { MessageQueue, ProcessManager, FileSystemManager, BrowserController, PlaywrightBrowser, Logger, Crestodian, Observability, SandboxManager, CodeKernelRegistry, ShutdownForensics, createDefaultTTSProvider, TTSPlaybackRegistry, createTTSRegistry, createSttRegistry } from "@evoclaw/infrastructure";
@@ -109,6 +109,10 @@ export class EvoClawServer {
   private evolutionEngine: EvolutionEngine;
   private evolutionTriggers: EvolutionTriggers | null = null;
   private evolutionMonitorTimer: ReturnType<typeof setInterval> | null = null;
+  private skillQualityStore: SkillQualityStore | null = null;
+  private executionAnalyzer: ExecutionAnalyzer | null = null;
+  private skillEvolver: SkillEvolver | null = null;
+  private evolutionCoordinator: EvolutionCoordinator | null = null;
   private memoryHub: MemoryHub;
   private securityGovernor: SecurityGovernor;
   private auditCenter: AuditCenter;
@@ -694,6 +698,55 @@ export class EvoClawServer {
     );
     this.registry.registerService("evolutionTriggers", this.evolutionTriggers);
     this.agentModelExecutor.setEvolutionTriggerStatsProvider(() => this.evolutionTriggers?.getStats() ?? null);
+
+    // ── OpenSpace 对齐闭环接线（2026-11-22）──
+    // 录制已由 AgentModelExecutor/RecordingManager 落盘；此处补上消费端：
+    //   任务结束 → ExecutionAnalyzer（LLM 独立判定）→ SkillQualityStore（四计数器）
+    //   → 演化建议（LLM 二次确认）→ SkillEvolver（FIX/DERIVED/CAPTURED 直接写盘）。
+    // 全部后台化，不阻塞回复、不修改 prompt/history（缓存神圣）。
+    const auxComplete = async (input: {
+      systemPrompt: string;
+      prompt: string;
+      maxTokens?: number;
+      deadlineMs?: number;
+    }): Promise<string> =>
+      this.agentModelExecutor.runAuxiliaryPrompt({
+        systemPrompt: input.systemPrompt,
+        prompt: input.prompt,
+        maxTokens: input.maxTokens,
+        timeoutMs: input.deadlineMs,
+        task: "background_review",
+        sessionId: "evolution",
+      });
+
+    this.skillQualityStore = new SkillQualityStore({ dataDir });
+    this.registry.registerService("skillQualityStore", this.skillQualityStore);
+    this.executionAnalyzer = new ExecutionAnalyzer(auxComplete);
+    this.skillEvolver = new SkillEvolver({
+      skillsRoot: path.resolve(dataDir, "skills"),
+      dataDir,
+      complete: auxComplete,
+      lineageStore: new LineageStore(dataDir),
+      skillManager: this.skillManager,
+      eventBus: this.eventBus,
+    });
+    this.evolutionCoordinator = new EvolutionCoordinator({
+      analyzer: this.executionAnalyzer,
+      qualityStore: this.skillQualityStore,
+      evolver: this.skillEvolver,
+      confirmSuggestion: (suggestion) =>
+        this.evolutionEngine.confirmEvolutionSuggestion(suggestion),
+      toolQuality: toolQualityManager,
+      eventBus: this.eventBus,
+    });
+    this.registry.registerService("evolutionCoordinator", this.evolutionCoordinator);
+    this.agentModelExecutor.setPostRunAnalysisHook((input) =>
+      this.evolutionCoordinator?.handleRun(input).then(() => undefined) ?? Promise.resolve(),
+    );
+    this.agentModelExecutor.setSkillQualityProvider({
+      isLowQuality: (name) => this.skillQualityStore?.isLowQuality(name) ?? false,
+    });
+
     this.evolutionTriggers.on("evolution:confirmed", (suggestion: { reason: string; type: string; targetSkillIds: string[]; proposedChange: string; triggeredBy: string; triggerMetrics?: Record<string, unknown> }) => {
       void this.evolutionEngine
         .submitTriggeredEvolution(suggestion)
@@ -703,18 +756,17 @@ export class EvoClawServer {
       try {
         const triggers = this.evolutionTriggers;
         if (!triggers) return;
-        triggers.startTask(`monitor:${Date.now()}`);
+        // 后台周期监控不是新任务：不得清空 addressed/迭代上限，否则防循环失效。
+        triggers.startTask(`monitor:${Date.now()}`, {
+          resetAddressed: false,
+          resetIterations: false,
+        });
         await triggers.processToolDegradation(this.agentModelExecutor.getToolQualityReport());
-        const skills = await this.skillManager.listSkills();
-        const metrics: SkillMetrics[] = skills.map((skill) => ({
-          skillId: skill.id,
-          skillName: skill.name,
-          selections: skill.stats.invocationCount ?? 0,
-          applied: skill.stats.invocationCount ?? 0,
-          completions: skill.stats.successCount ?? 0,
-          fallbacks: skill.stats.failureCount ?? 0,
-        }));
-        await triggers.processMetricCheck(metrics);
+        // 指标来源：持久化质量库（技能 × 任务结果归因）；冷启动无样本时跳过。
+        const metrics: SkillMetrics[] = this.skillQualityStore?.toTriggerMetrics() ?? [];
+        if (metrics.length > 0) {
+          await triggers.processMetricCheck(metrics);
+        }
         triggers.endTask();
       } catch (err) {
         this.logger.warn("evolution", `trigger monitor failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1693,6 +1745,18 @@ export class EvoClawServer {
       const skillIndexPath = path.resolve(__dirname, "..", "..", "..", "data", "skill-index.json");
       await this.skillIndex.persistTo(skillIndexPath);
     } catch (e) { this.logger.error("server", `SkillIndex persist failed: ${e}`); }
+    // 演化协调器：等待质量库/在飞分析落盘（最多 3s，避免关闭被 LLM 超时拖住）
+    if (this.evolutionCoordinator) {
+      try {
+        await Promise.race([
+          this.evolutionCoordinator.flush(),
+          new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 3_000);
+            timer.unref?.();
+          }),
+        ]);
+      } catch { /* ignore */ }
+    }
     this.logger.info("server", "Stopping subsystems...");
     try { await this.eventBus.publish(SystemEvents.SYSTEM_SHUTTING_DOWN, null, "server"); } catch (e) { this.logger.error("server", `Shutdown publish failed: ${e}`); }
     // 先停止 gateway（HTTP 监听 + 通道清理），再 kill 子进程，最后停止注册服务。
@@ -2696,7 +2760,8 @@ export class EvoClawServer {
       this.agentModelExecutor,
       this.skillIndex,
       this.autoSkillManager,
-      this.skillManager
+      this.skillManager,
+      this.skillQualityStore ?? undefined,
     );
     registerShellMediaTools(
       this.agentModelExecutor,

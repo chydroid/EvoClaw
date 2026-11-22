@@ -122,13 +122,26 @@ export class EvolutionTriggers extends EventEmitter {
     this.llmConfirm = fn;
   }
 
-  /** 开始新任务的演化跟踪 */
-  startTask(taskId: string): void {
+  /**
+   * 开始新任务的演化跟踪。
+   *
+   * 后台周期监控（metric-monitor）不是「新任务」，必须传
+   * `{ resetAddressed: false, resetIterations: false }`——否则每 10 分钟
+   * 清空 addressed/迭代上限，防循环形同虚设（历史缺陷）。
+   */
+  startTask(
+    taskId: string,
+    options: { resetAddressed?: boolean; resetIterations?: boolean } = {},
+  ): void {
     this.runtimeStats.tasksStarted++;
     this.currentTaskId = taskId;
-    this.evolutionIterations = 0;
-    this.addressedDegradations.clear();
-    this.addressedMetrics.clear();
+    if (options.resetIterations !== false) {
+      this.evolutionIterations = 0;
+    }
+    if (options.resetAddressed !== false) {
+      this.addressedDegradations.clear();
+      this.addressedMetrics.clear();
+    }
   }
 
   /** 结束任务 */

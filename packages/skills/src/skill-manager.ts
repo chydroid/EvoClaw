@@ -773,6 +773,48 @@ export class SkillManager {
   }
 
   /**
+   * 从磁盘重新加载已有技能（供自演化 FIX 写盘后刷新）。
+   *
+   * 只刷新已注册技能的元数据/正文，不创建新技能、不触碰安装目录；
+   * 校验失败抛错（调用方需保留备份自行回滚）。发布 SKILL_UPDATED 让
+   * SkillIndex 重新索引。
+   *
+   * @param idOrPath 技能 id、SKILL.md 路径或技能目录
+   */
+  async reloadSkillFromDisk(idOrPath: string): Promise<Skill | undefined> {
+    const existing = Array.from(this.skills.values()).find(
+      (s) =>
+        s.id === idOrPath ||
+        s.installPath === idOrPath ||
+        path.dirname(s.installPath) === idOrPath,
+    );
+    if (!existing) return undefined;
+
+    const parsed = await this.parser.parseFromFile(existing.installPath);
+    const validation = this.validator.validate(parsed);
+    if (!validation.valid) {
+      throw new Error(`Skill reload validation failed: ${validation.errors.join("; ")}`);
+    }
+
+    existing.name = parsed.meta.name || existing.name;
+    existing.description = parsed.meta.description || existing.description;
+    existing.version = parsed.meta.version || existing.version;
+    existing.keywords = parsed.meta.keywords ?? existing.keywords;
+    existing.category = parsed.meta.category ?? existing.category;
+    existing.body = {
+      instructions: parsed.instructions,
+      scripts: parsed.scripts,
+      examples: parsed.examples,
+      hooks: parsed.hooks,
+    };
+    existing.lifecycle.lastUpdated = new Date();
+
+    this.registry.registerSkill(existing);
+    await this.eventBus.publish(SystemEvents.SKILL_UPDATED, existing, "skill-manager");
+    return existing;
+  }
+
+  /**
    * 覆盖技能的 origin 元数据（marketplace/workshop 安装时调用）。
    * 在 installSkill 之后调用以更新来源信息。
    */

@@ -36,3 +36,34 @@ export type { TestStatus } from "./evolution-ab-test";
 // 2026-11-16 重新接线：源码此前被当作死代码删除，现恢复并挂到运行时监控循环。
 export { EvolutionTriggers } from "./evolution-triggers";
 export type { EvolutionTriggerConfig, LlmConfirmationFn, SkillMetrics } from "./evolution-triggers";
+
+// OpenSpace 对齐闭环（Recording → Analyzer → QualityStore → Evolver → Coordinator）
+export { ExecutionAnalyzer } from "./execution-analyzer";
+export type {
+  AnalyzerCompleteFn,
+  AnalyzerSkillRef,
+  AnalyzeExecutionInput,
+  ExecutionAnalyzerConfig,
+} from "./execution-analyzer";
+export { SkillQualityStore } from "./skill-quality-store";
+export type {
+  SkillJudgmentRecord,
+  SkillQualityEntry,
+  SkillQualityStoreOptions,
+  SkillQualityStoreStats,
+} from "./skill-quality-store";
+export { SkillEvolver } from "./skill-evolver";
+export type {
+  EvolveContext,
+  EvolvedSkill,
+  EvolverSkill,
+  EvolverSkillManager,
+  SkillEvolverOptions,
+} from "./skill-evolver";
+export { EvolutionCoordinator, EVOLUTION_ANALYSIS_EVENT, suggestionKey } from "./evolution-coordinator";
+export type {
+  CoordinatorStats,
+  CoordinatorToolQuality,
+  EvolutionCoordinatorConfig,
+  EvolutionCoordinatorDeps,
+} from "./evolution-coordinator";

@@ -56,7 +56,7 @@ export interface SkillSelectionRecord {
   type: "skill_selection";
   timestamp: number;
   iteration: number;
-  selectedSkills: Array<{ name: string; score: number; source: string }>;
+  selectedSkills: Array<{ name: string; score: number; source: string; skillId?: string }>;
   taskDescription: string;
 }
 
@@ -277,7 +277,7 @@ export class RecordingManager {
   recordSkillSelection(
     taskId: string,
     iteration: number,
-    selectedSkills: Array<{ name: string; score: number; source: string }>,
+    selectedSkills: Array<{ name: string; score: number; source: string; skillId?: string }>,
     taskDescription: string,
   ): void {
     const active = this.activeRecordings.get(taskId);

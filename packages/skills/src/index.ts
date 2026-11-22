@@ -122,6 +122,7 @@ export type {
   LineageQueryResult,
   EvolutionSuggestion,
   ExecutionAnalysis,
+  SkillJudgment,
 } from "./evolution-types";
 export {
   requiresParent,

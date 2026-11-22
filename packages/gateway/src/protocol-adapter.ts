@@ -4794,6 +4794,80 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── OpenSpace 对齐：技能质量库 + 手动后置分析（2026-11-22）──
+    app.get("/api/evolution/quality", async (req: Request, res: Response) => {
+      try {
+        const store = this.registry.resolveService<{
+          getStats(): Record<string, unknown>;
+          getAll(): Array<Record<string, unknown>>;
+          isLowQuality(name: string): boolean;
+        }>("skillQualityStore");
+        if (!store) {
+          res.status(503).json({ error: "Skill quality store not available" });
+          return;
+        }
+        const coordinator = this.registry.resolveService<{
+          getStats(): Record<string, unknown>;
+        }>("evolutionCoordinator");
+        const limitRaw = Number(req.query.limit ?? 200);
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(1000, limitRaw)) : 200;
+        const entries = store.getAll().slice(0, limit).map((entry) => ({
+          ...entry,
+          completionRate:
+            Number(entry.totalApplied) > 0
+              ? Number(entry.totalCompleted) / Number(entry.totalApplied)
+              : 1,
+          effectiveRate:
+            Number(entry.totalSelections) > 0
+              ? Number(entry.totalCompleted) / Number(entry.totalSelections)
+              : 0,
+          fallbackRate:
+            Number(entry.totalApplied) > 0
+              ? Number(entry.totalFallbacks) / Number(entry.totalApplied)
+              : 0,
+          lowQuality: store.isLowQuality(String(entry.key ?? entry.name ?? "")),
+        }));
+        res.json({
+          stats: store.getStats(),
+          coordinator: coordinator?.getStats() ?? null,
+          skills: entries,
+        });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
+    app.post("/api/evolution/analyze", async (req: Request, res: Response) => {
+      try {
+        const coordinator = this.registry.resolveService<{
+          handleRun(input: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+        }>("evolutionCoordinator");
+        if (!coordinator) {
+          res.status(503).json({ error: "Evolution coordinator not available" });
+          return;
+        }
+        const { taskId, sessionId, message, reply, status, durationMs, isSubagent } = req.body || {};
+        if (!taskId || typeof taskId !== "string" || !message || typeof message !== "string") {
+          res.status(400).json({ error: "taskId and message are required" });
+          return;
+        }
+        const normalizedStatus =
+          status === "failed" || status === "cancelled" ? status : "completed";
+        const analysis = await coordinator.handleRun({
+          taskId,
+          sessionId: typeof sessionId === "string" ? sessionId : undefined,
+          message,
+          reply: typeof reply === "string" ? reply : "",
+          status: normalizedStatus,
+          durationMs: typeof durationMs === "number" ? durationMs : undefined,
+          isSubagent: isSubagent === true,
+        });
+        res.json({ success: true, analysis });
+      } catch (err) {
+        res.status(500).json({ error: String(err) });
+      }
+    });
+
     app.get("/api/system/audit", async (req: Request, res: Response) => {
       try {
         const auditCenter = this.registry.resolveService<{
