@@ -63,9 +63,14 @@ export function summarizeToolResult(toolName: string, result: string): string {
   //   默认 8K 首尾拼接截断会让 agent 只能看到文件头尾，中间整段丢失 → 死循环。
   if (toolName === "file_read" || toolName === "code_search") return result;
 
-  // shell_exec: 保留首尾行，压缩中间重复
-  if (toolName === "shell_exec") {
-    return summarizeShellOutput(result);
+  // ★ 2026-11-22 修复（hermes 对齐 R12）：exec 类结果**不再摘要**。
+  //   shell_exec / execute_code 的返回值是 JSON 字符串（`\n` 全被转义成
+  //   单行），旧实现按行切分时只有 1 行 → 整条结果被砍成 ~500 字符，
+  //   测试失败摘要/退出码/错误尾部全部丢失（实测 18052 → 514 字符）。
+  //   现在保真交给上游 sanitizeExecResult（>48K 才头尾截断 + spill）与
+  //   下游 60K 上限；exec 结果绝不经「内容整形」管线。
+  if (toolName === "shell_exec" || toolName === "execute_code") {
+    return result;
   }
 
   // web_search 结果：提取结构化数据
@@ -97,33 +102,6 @@ export function summarizeToolResult(toolName: string, result: string): string {
   }
 
   return result;
-}
-
-/** Summarize shell output: keep first/last lines, compress repeated patterns */
-function summarizeShellOutput(result: string): string {
-  const maxLen = 8000;
-  if (result.length <= maxLen) return result;
-
-  const lines = result.split("\n");
-  if (lines.length <= 50) {
-    // Not many lines but long content — truncate each line
-    return lines.map(l => l.length > 500 ? l.slice(0, 500) + "...[truncated]" : l).join("\n").slice(0, maxLen);
-  }
-
-  // Keep first 20 + last 15 lines, summarize middle
-  const head = lines.slice(0, 20);
-  const tail = lines.slice(-15);
-  const middleCount = lines.length - 20 - 15;
-  const summary = middleCount > 0
-    ? [`  ... [${middleCount} lines omitted, showing first 20 and last 15] ...`]
-    : [];
-  const combined = [...head, ...summary, ...tail].join("\n");
-
-  if (combined.length > maxLen) {
-    const halfLen = Math.floor(maxLen / 2);
-    return combined.substring(0, halfLen) + "\n\n... [truncated] ...\n\n" + combined.substring(combined.length - halfLen);
-  }
-  return combined;
 }
 
 /** Summarize search results: extract title+snippet+URL, limit to top results */

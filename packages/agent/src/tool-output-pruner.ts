@@ -52,6 +52,16 @@ export interface PruningStats {
   prunedChars: number;
 }
 
+/**
+ * 归档回调：摘要前把原文落盘，返回可读路径（失败返回 null）。
+ * 由调用方注入（pruner 本身不依赖文件系统，保持纯逻辑可测）。
+ */
+export type PruneArchive = (content: string, toolName: string) => string | null;
+
+export interface PruneOptions {
+  archive?: PruneArchive;
+}
+
 export interface ToolOutputPrunerConfig {
   /** 启用 Pass 1 去重 */
   enableDedup: boolean;
@@ -210,6 +220,35 @@ function summarizeToolOutput(
 function summarizeShellOutput(content: string): string {
   const maxLen = 4000;
   if (content.length <= maxLen) return content;
+  // ★ 2026-11-22（hermes 对齐 R12）：exec 结果是 JSON.stringify 后的**单行**
+  //   文本，按行切分只有 1 行，旧实现会把整条结果压成 300 字符——退出码、
+  //   error、失败摘要全部丢失。结构化结果只压缩 output 字段（头 40%/尾 60%），
+  //   其余字段（exitCode/stderr/error/command/cwd）原样保留。
+  try {
+    const parsed: unknown = JSON.parse(content);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const rec = parsed as Record<string, unknown>;
+      const output = rec.output;
+      if (typeof output === "string" && output.length > 200) {
+        const skeleton = JSON.stringify({ ...rec, output: "" }).length;
+        const budget = Math.max(600, maxLen - skeleton - 800);
+        if (output.length <= budget) return content;
+        const headLen = Math.floor(budget * 0.4);
+        const tailLen = budget - headLen;
+        return JSON.stringify({
+          ...rec,
+          output:
+            output.slice(0, headLen) +
+            `\n...[${output.length - budget} chars omitted]...\n` +
+            output.slice(-tailLen),
+          output_original_length: output.length,
+          _pruned: true,
+        });
+      }
+    }
+  } catch {
+    // 非 JSON 输出，走文本路径
+  }
   const lines = content.split("\n");
   if (lines.length <= 30) {
     return lines.map((l) => l.length > 300 ? l.slice(0, 300) + "...[truncated]" : l).join("\n").slice(0, maxLen);
@@ -307,6 +346,7 @@ function summarizeDefault(content: string): string {
 function applySummaryPass(
   messages: ToolMessage[],
   config: ToolOutputPrunerConfig,
+  archive?: PruneArchive,
 ): { messages: ToolMessage[]; summarized: number } {
   let summarized = 0;
   // 保留最近 N 条不摘要
@@ -327,12 +367,23 @@ function applySummaryPass(
     // 幂等守卫（Hermes）：带头尾截断/spill 全文路径标记的 exec 结果，
     // 摘要会破坏 full_output_path / [OUTPUT TRUNCATED] 重读通道 → 跳过。
     if (msg.content.includes('"full_output_path"') || msg.content.includes("[OUTPUT TRUNCATED -")) return msg;
+    // ★ R12 幂等守卫：本裁剪器产出的摘要（_pruned 标记 / 归档路径）不得
+    //   二次摘要——否则每轮对同一历史重新压缩，字节漂移击穿前缀缓存。
+    if (msg.content.includes('"_pruned":true') || msg.content.includes("[Full output archived at:")) return msg;
 
     const toolName = msg.name || "";
     const summarized_content = summarizeToolOutput(toolName, msg.content, config.summaryThreshold);
     if (summarized_content.length < msg.content.length) {
       summarized++;
-      return { ...msg, content: summarized_content };
+      // ★ R12（hermes compression archive）：摘要前把原文归档到磁盘，摘要末尾
+      //   附回读路径。旧实现摘要即销毁——长任务后面需要早期测试输出/搜索
+      //   结果时只能重跑命令，而重跑常因环境变化得到不同结果。
+      let content = summarized_content;
+      const archivedPath = archive?.(msg.content, toolName);
+      if (archivedPath) {
+        content += `\n\n[Full output archived at: ${archivedPath} — use file_read or code_search to inspect it]`;
+      }
+      return { ...msg, content };
     }
     return msg;
   });
@@ -565,7 +616,7 @@ export class ToolOutputPruner {
    * @param messages 消息列表
    * @returns 裁剪后的消息列表 + 统计
    */
-  prune(messages: ToolMessage[]): { messages: ToolMessage[]; stats: PruningStats } {
+  prune(messages: ToolMessage[], options: PruneOptions = {}): { messages: ToolMessage[]; stats: PruningStats } {
     const originalChars = this.countChars(messages);
     let current = messages;
     const stats: PruningStats = {
@@ -585,7 +636,7 @@ export class ToolOutputPruner {
 
     // Pass 2: 摘要
     if (this.config.enableSummary) {
-      const result = applySummaryPass(current, this.config);
+      const result = applySummaryPass(current, this.config, options.archive);
       current = result.messages;
       stats.summarized = result.summarized;
     }

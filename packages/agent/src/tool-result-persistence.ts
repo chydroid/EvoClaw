@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, readFileSync, statSync, openSync, closeSync, fsy
 import { join, resolve } from "path";
 import { homedir, tmpdir } from "os";
 import { atomicWriteFileSync } from "@evoclaw/core";
+import { wrapLongLines, truncateHeadTail } from "./tool-output-spill";
 
 // ── 类型 ────────────────────────────────────────────────────────────────────
 
@@ -169,20 +170,128 @@ function resolveStorageDir(): string {
 
 /**
  * 生成预览。
- * 借鉴 hermes-agent generate_preview：
- *   在 max_chars 内的最后一个换行处截断，保持可读性。
+ * 借鉴 hermes-agent `_head_tail_preview`（head + elision marker + tail）：
+ *   工具结果（尤其 exec JSON）把退出码 / error 等关键字段放在对象**尾部**，
+ *   只保留头部预览等于让模型永远看不到失败原因。头部按换行对齐，尾部保底
+ *   保留 30%（至少 200 字符）。
  */
 export function generatePreview(content: string, maxChars: number): { preview: string; hasMore: boolean } {
   if (content.length <= maxChars) {
     return { preview: content, hasMore: false };
   }
 
-  const slice = content.slice(0, maxChars);
-  // 在最后一个换行处截断
-  const lastNewline = slice.lastIndexOf("\n");
-  const cutAt = lastNewline > maxChars * 0.5 ? lastNewline : maxChars;
-  const preview = slice.slice(0, cutAt).trimEnd();
+  const headLen = Math.max(1, Math.floor(maxChars * 0.7));
+  let head = content.slice(0, headLen);
+  // 头段尽量在换行处收口，避免半行/半个 JSON 字段
+  const lastNewline = head.lastIndexOf("\n");
+  if (lastNewline > headLen * 0.5) head = head.slice(0, lastNewline);
+
+  const tailLen = Math.max(Math.min(200, Math.floor(maxChars * 0.3)), maxChars - head.length);
+  const tail = content.slice(-tailLen);
+  const elided = Math.max(0, content.length - head.length - tail.length);
+  const preview = `${head}\n... [${elided} chars elided] ...\n${tail}`;
   return { preview, hasMore: true };
+}
+
+/**
+ * exec 结果专用预览（hermes `_head_tail_preview` 语义）：
+ * 元数据 + 输出头 + elision 标记 + **输出尾**。
+ *
+ * 通用头尾预览作用在渲染后的全文上，尾部可能是 `--- stderr/error ---` 区块；
+ * 而失败构建的报错行通常位于 output 的**最后一行**，模型必须不读文件就能看到。
+ * 因此这里显式取 output 文本的尾部（绝不取元数据块尾部），元数据/error 摘要
+ * 放在头部 lead。仅对带 exitCode/exit_code 的命令结果生效。
+ */
+function buildExecPreview(content: string, maxChars: number): { preview: string; hasMore: boolean } | null {
+  if (content.length <= maxChars) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const rec = parsed as Record<string, unknown>;
+  if (!("exitCode" in rec || "exit_code" in rec)) return null;
+
+  const outputKey = ["output", "stdout", "content", "text"].find(
+    (key) => typeof rec[key] === "string" && (rec[key] as string).length > 0,
+  );
+  if (!outputKey) return null;
+  const output = rec[outputKey] as string;
+
+  const bodyKeys = new Set(["output", "stdout", "content", "text", "stderr", "error"]);
+  const leadLines: string[] = [];
+  for (const [key, value] of Object.entries(rec)) {
+    if (bodyKeys.has(key) || value === undefined) continue;
+    leadLines.push(`${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`);
+  }
+  for (const key of ["error", "stderr"]) {
+    const value = rec[key];
+    if (typeof value === "string" && value.length > 0) {
+      leadLines.push(`${key}: ${value.slice(0, 300)}${value.length > 300 ? "…" : ""}`);
+    }
+  }
+  const lead = `${leadLines.join("\n")}\n--- ${outputKey} (${output.length} chars) ---\n`;
+
+  const tailLen = Math.min(output.length, Math.max(400, Math.floor((maxChars - lead.length) / 5)));
+  let tail = output.slice(-tailLen);
+  const firstNewline = tail.indexOf("\n");
+  if (firstNewline >= 0 && firstNewline < tail.length - 1) tail = tail.slice(firstNewline + 1);
+  const headBudget = maxChars - lead.length - tail.length - 96;
+  if (headBudget <= 0) return null;
+  let head = output.slice(0, headBudget);
+  const lastNewline = head.lastIndexOf("\n");
+  if (lastNewline > headBudget / 2) head = head.slice(0, lastNewline + 1);
+  const hidden = output.length - head.length - tail.length;
+  if (hidden <= 0) return null;
+
+  return {
+    preview: `${lead}${head}\n[... ${hidden} chars elided; full output in the saved file ...]\n${tail}`,
+    hasMore: true,
+  };
+}
+
+/**
+ * 把落盘内容渲染成**可按行分页**的文本（hermes pageable_archive_text）。
+ *
+ * 原始 `JSON.stringify` 结果是一整行：file_read 以行 offset/limit 分页且有
+ * 16K 单页上限，单行文件永远读不到 16K 之后的内容。这里把 JSON 拆成
+ * 「元数据行 + output/stdout/content + stderr/error」的可读区块，非 JSON
+ * 文本则按 1800 字符切行。落盘的是**全文**（不丢字符），只是加了换行。
+ */
+function renderPageable(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return wrapLongLines(content);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return wrapLongLines(JSON.stringify(parsed, null, 2) ?? String(parsed));
+  }
+
+  const rec = parsed as Record<string, unknown>;
+  const bodyKeys = new Set(["output", "stdout", "content", "text", "stderr", "error"]);
+  const sections: string[] = [];
+  for (const [key, value] of Object.entries(rec)) {
+    if (bodyKeys.has(key)) continue;
+    if (value === undefined) continue;
+    sections.push(`${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`);
+  }
+  for (const key of ["output", "stdout", "content", "text"]) {
+    const value = rec[key];
+    if (typeof value === "string" && value.length > 0) {
+      sections.push(`--- ${key} (${value.length} chars) ---\n${value}`);
+    }
+  }
+  for (const key of ["stderr", "error"]) {
+    const value = rec[key];
+    if (typeof value === "string" && value.length > 0) {
+      sections.push(`--- ${key} ---\n${value}`);
+    }
+  }
+  return wrapLongLines(sections.length > 0 ? sections.join("\n") : content);
 }
 
 /**
@@ -202,7 +311,7 @@ function buildPersistedMessage(
     lines.push(`... [${originalSize - preview.length} more chars]`);
   }
   lines.push(`[Full output (${originalSize} chars) saved to: ${filePath}]`);
-  lines.push(`Use read_file to access the complete output.`);
+  lines.push(`Use read_file with offset/limit to page through the complete output.`);
   lines.push(PERSISTED_OUTPUT_END_TAG);
   return lines.join("\n");
 }
@@ -283,8 +392,12 @@ export class ToolResultPersistenceManager {
       };
     }
 
-    // 生成预览
-    const { preview, hasMore } = generatePreview(content, this.config.previewSizeChars);
+    // 生成可按行分页的全文 + 头尾预览。exec 结果优先使用「输出尾」预览
+    // （失败行通常在 output 末尾）；其余结果基于渲染文本做通用头尾预览。
+    const rendered = renderPageable(content);
+    const { preview, hasMore } =
+      buildExecPreview(content, this.config.previewSizeChars) ??
+      generatePreview(rendered, this.config.previewSizeChars);
 
     // 写入文件
     const fileName = `${toolCallId}.txt`;
@@ -295,9 +408,9 @@ export class ToolResultPersistenceManager {
       if (!existsSync(this.storageDir)) {
         mkdirSync(this.storageDir, { recursive: true });
       }
-      atomicWriteFileSync(filePath, content);
+      atomicWriteFileSync(filePath, rendered);
 
-      const persistedContent = buildPersistedMessage(preview, hasMore, content.length, filePath);
+      const persistedContent = buildPersistedMessage(preview, hasMore, rendered.length, filePath);
 
       this.turnResults.push({ toolCallId, content: persistedContent, size: content.length, persisted: true });
       this.stats.persisted++;
@@ -309,8 +422,8 @@ export class ToolResultPersistenceManager {
         filePath,
       };
     } catch (err) {
-      // 写入失败，回退到截断
-      const truncated = content.slice(0, threshold) + `\n... [truncated, ${content.length - threshold} chars omitted]`;
+      // 写入失败，回退到头尾截断（尾部错误信息优先保留）
+      const truncated = truncateHeadTail(content, threshold);
       this.turnResults.push({ toolCallId, content: truncated, size: content.length, persisted: false });
       return {
         persisted: false,

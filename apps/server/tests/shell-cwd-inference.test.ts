@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { inferCwdFromScript } from "../src/tools/shell-media-tools";
+import { inferCwdFromScript, resolveShellCwd } from "../src/tools/shell-media-tools";
 
 const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
 const evalDir = path.join(workspaceDir, "eval15", "t05-cwd");
@@ -48,5 +48,48 @@ describe("inferCwdFromScript", () => {
 
   it("脚本为绝对路径时不推断（交给安全校验处理)", () => {
     expect(inferCwdFromScript(`bash ${scriptPath}`, workspaceDir)).toBeNull();
+  });
+});
+
+describe("resolveShellCwd — 显式 cwd 缺失必须拒绝执行", () => {
+  const explicitDir = path.join(workspaceDir, "eval15", "t05-explicit-cwd");
+  beforeAll(() => {
+    fs.mkdirSync(explicitDir, { recursive: true });
+  });
+  afterAll(() => {
+    fs.rmSync(explicitDir, { recursive: true, force: true });
+  });
+
+  it("显式 cwd 存在 → 使用该目录", () => {
+    const result = resolveShellCwd(explicitDir, "echo hi", workspaceDir);
+    expect(result).toEqual({ cwd: explicitDir });
+  });
+
+  it("相对 cwd 优先按 workspace 根解析（模型不写绝对路径也能进子目录）", () => {
+    const result = resolveShellCwd("eval15/t05-explicit-cwd", "echo hi", workspaceDir);
+    expect(result).toEqual({ cwd: explicitDir });
+  });
+
+  it("显式 cwd 不存在 → exitCode 126 且命令不执行（不静默回退）", () => {
+    const missing = path.join(workspaceDir, "eval15", "definitely-missing-dir");
+    const result = resolveShellCwd(missing, "touch out.txt", workspaceDir);
+    expect("error" in result).toBe(true);
+    if ("error" in result) {
+      expect(result.exitCode).toBe(126);
+      expect(result.error).toContain("did not run");
+      expect(result.error).toContain(missing);
+    }
+  });
+
+  it("未显式 cwd 且默认目录缺失 → 回退 workspace（保持原行为）", () => {
+    // inferCwdFromScript 返回 null → 走默认 workspace；workspace 本身存在
+    const result = resolveShellCwd(null, "echo hi", workspaceDir);
+    expect(result).toEqual({ cwd: workspaceDir });
+  });
+
+  it("显式 cwd 逃逸出 workspace → 拒绝", () => {
+    const result = resolveShellCwd("/tmp", "echo hi", workspaceDir);
+    expect("error" in result).toBe(true);
+    if ("error" in result) expect(result.error).toContain("within workspace");
   });
 });

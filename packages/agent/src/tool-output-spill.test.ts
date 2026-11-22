@@ -11,7 +11,9 @@ import {
   isTruncatedOrSpilled,
   sanitizeExecResult,
   truncationNotice,
+  truncateExecJson,
   truncateHeadTail,
+  wrapLongLines,
 } from "./tool-output-spill";
 
 describe("truncateHeadTail", () => {
@@ -47,8 +49,53 @@ describe("truncateHeadTail", () => {
   });
 });
 
-describe("truncationNotice", () => {
-  it("is a single fixed-shape marker (downstream recognizes one form)", () => {
+describe("wrapLongLines", () => {
+  it("wraps single-line output so file_read offset/limit can page it", () => {
+    const text = "x".repeat(5000);
+    const wrapped = wrapLongLines(text, 1800);
+    expect(wrapped.split("\n").every((line) => line.length <= 1800)).toBe(true);
+    // 只插入换行，不丢字符
+    expect(wrapped.replace(/\n/g, "")).toBe(text);
+  });
+
+  it("leaves already-short-line text untouched", () => {
+    const text = "a\nb\nc";
+    expect(wrapLongLines(text, 1800)).toBe(text);
+  });
+});
+
+describe("truncateExecJson", () => {
+  it("truncates only the output field, preserving exitCode/error at the JSON tail", () => {
+    const output = "HEAD\n" + "m".repeat(20000) + "\nTAIL: 3 tests failed\n";
+    const text = JSON.stringify({
+      success: false,
+      exitCode: 1,
+      output,
+      stderr: "AssertionError",
+      error: "command failed",
+    });
+    const out = truncateExecJson(text, 5000);
+    expect(out).not.toBeNull();
+    const parsed = JSON.parse(out as string) as Record<string, unknown>;
+    expect(parsed.exitCode).toBe(1);
+    expect(parsed.stderr).toBe("AssertionError");
+    expect(parsed.error).toBe("command failed");
+    expect(parsed.output_truncated).toBe(true);
+    expect(parsed.output_original_length).toBe(output.length);
+    const truncatedOutput = String(parsed.output);
+    expect(truncatedOutput).toContain("[OUTPUT TRUNCATED -");
+    expect(truncatedOutput).toContain("TAIL: 3 tests failed");
+    expect((out as string).length).toBeLessThanOrEqual(5600);
+  });
+
+  it("returns null for non-applicable inputs", () => {
+    expect(truncateExecJson("plain text ".repeat(1000), 100)).toBeNull();
+    expect(truncateExecJson(JSON.stringify({ exitCode: 1, stderr: "x".repeat(500) }), 100)).toBeNull();
+    expect(truncateExecJson(JSON.stringify({ output: "short" }), 100)).toBeNull();
+  });
+});
+
+describe("truncationNotice", () => {  it("is a single fixed-shape marker (downstream recognizes one form)", () => {
     const n = truncationNotice(10, 50);
     expect(n).toContain("[OUTPUT TRUNCATED - 10 chars omitted out of 50 total]");
   });
@@ -94,9 +141,12 @@ describe("sanitizeExecResult", () => {
     expect(next.output).toContain("[OUTPUT TRUNCATED -");
     expect(next.full_output_path).toBeTruthy();
     expect(next.truncation_note).toContain("read it with file_read");
-    // 原文完整落盘（字节级保真——事故后不再做任何「内容整形」）
+    // 原文完整落盘（字节级保真——事故后不再做任何「内容整形」）。
+    // ★ R12：单行长输出按 1800 字符切行以支持 file_read 分页（只插入换行，
+    //   不增删任何字符），因此比较前先剥掉换行。
     const onDisk = fs.readFileSync(next.full_output_path as string, "utf8");
-    expect(onDisk).toBe(full);
+    expect(onDisk.replace(/\n/g, "")).toBe(full.replace(/\n/g, ""));
+    expect(onDisk.split("\n").every((line) => line.length <= 1800)).toBe(true);
     spilledFiles = fs.readdirSync(path.join(ws, "tool-spill")).map((f) => path.join(ws, "tool-spill", f));
   });
 
@@ -115,6 +165,21 @@ describe("sanitizeExecResult", () => {
     expect(onDisk).toContain("[REDACTED:");
     // 其余内容保真、长度基本不变（只替换密钥本身）
     expect(onDisk.length).toBeGreaterThan(100000 - 100);
+    spilledFiles = fs.readdirSync(path.join(ws, "tool-spill")).map((f) => path.join(ws, "tool-spill", f));
+  });
+
+  it("covers execute_code stdout/stderr fields (not only output)", () => {
+    const ws = makeWorkspace();
+    const stdout = "HEAD\n" + "z".repeat(100000) + "\nTAIL: assertion failed";
+    const out = sanitizeExecResult(ws, "call-5", { success: false, exitCode: 1, stdout }, 48000);
+    const next = out as { stdout: string; full_output_path?: string; truncation_note?: string };
+    expect(next.stdout.length).toBeLessThan(stdout.length);
+    expect(next.stdout).toContain("TAIL: assertion failed");
+    expect(next.stdout).toContain("[OUTPUT TRUNCATED -");
+    expect(next.full_output_path).toBeTruthy();
+    expect(next.truncation_note).toContain("stdout");
+    const onDisk = fs.readFileSync(next.full_output_path as string, "utf8");
+    expect(onDisk.replace(/\n/g, "")).toBe(stdout.replace(/\n/g, ""));
     spilledFiles = fs.readdirSync(path.join(ws, "tool-spill")).map((f) => path.join(ws, "tool-spill", f));
   });
 

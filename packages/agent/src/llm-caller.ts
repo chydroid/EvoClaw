@@ -33,7 +33,7 @@ import { detectPrematureStop, buildContinuationDirective, isPlaceholderOnlyReply
 import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
-import { normalizeToolActionArg } from "./tool-arg-normalization";
+import { normalizeToolActionArg, normalizeToolArgumentAliases } from "./tool-arg-normalization";
 import { coerceToolArguments, recordToolArgumentCoercion } from "./tool-argument-coercer";
 import { toolQualityManager } from "./enhancement-runtime";
 import { runWithToolCallContext } from "./tool-call-context";
@@ -136,7 +136,7 @@ import { taskStatusTracker } from "./task-status-tracker";
 import type { ExecutionCheckpointStore } from "./execution-checkpoint";
 import type { HumanApprovalManager } from "./human-approval";
 import { summarizeToolResult as summarizeToolResultFn, stripWebNoise as stripWebNoiseImpl } from "./text-processor";
-import { isTruncatedOrSpilled, sanitizeExecResult } from "./tool-output-spill";
+import { isTruncatedOrSpilled, sanitizeExecResult, truncateExecJson, truncateHeadTail, writeToolSpill } from "./tool-output-spill";
 import { sanitizeToolSchemas, reactiveSanitize, type BackendType } from "./schema-sanitizer";
 import { getToolResultPersistenceManager } from "./tool-result-persistence";
 import { getToolResultMiddleware } from "./tool-result-middleware";
@@ -1559,6 +1559,12 @@ export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_
   // JSON 结构感知截断
   const trimmed = text.trimStart();
   if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    // ★ R12：exec 结果（{success, exitCode, output, stderr, error, ...}）没有
+    //   大数组字段，旧逻辑返回 null → 落到下面「丢弃尾部」的兜底，exitCode/
+    //   error 与输出末尾的失败摘要一起丢失。先只压缩 output 字段（头尾保留）。
+    const execTrimmed = truncateExecJson(text, maxChars);
+    if (execTrimmed !== null) return execTrimmed;
+
     const jsonResult = truncateJsonResult(text, maxChars);
     if (jsonResult !== null) {
       return jsonResult + note("，已按结构保留前段完整条目");
@@ -1568,6 +1574,25 @@ export function truncateToolResult(text: string, maxChars: number = TOOL_RESULT_
   // 非 JSON 输出：保留头部（主干信息密度最高），尾部丢弃并如实告知
   const budget = Math.max(0, maxChars - 160);
   return text.slice(0, budget) + note(`，尾部 ${text.length - budget} 字符已丢弃`);
+}
+
+/**
+ * 解析单次工具执行的外层超时（毫秒）。
+ *
+ * 对标 hermes-agent `_declared_deadline_floor`：工具**声明的** deadline 不能被
+ * 外层通用超时提前截断。shell_exec 声明 `timeout` 最大 1200s，但旧实现外层
+ * 固定 300s / 并行批次 600s → 模型明确要求 `timeout: 600` 的长任务在 300s
+ * 被误杀，返回误导性的 "timed out after 300s"（工具本身才刚开始执行）。
+ * 这里取 max(300s 地板, 声明值 + 5s 宽限)，上限 1260s（工具自身上限 1200s）。
+ */
+export function resolveToolTimeoutMs(toolName: string, args: Record<string, unknown>): number {
+  if (toolName === "shell_exec" || toolName === "execute_code") {
+    const declaredSec = Number(args.timeout);
+    const declaredMs = Number.isFinite(declaredSec) && declaredSec > 0 ? declaredSec * 1000 : 0;
+    // 5s 宽限让工具自己的超时处理（kill 进程树/收集部分输出/恢复提示）先完成
+    return Math.min(Math.max(300_000, declaredMs + 5_000), 1_260_000);
+  }
+  return toolName.startsWith("browser_") ? 300_000 : 30_000;
 }
 
 /**
@@ -5116,7 +5141,12 @@ export async function tryCallLLM(
           tool_calls: m.tool_calls as typeof toolMessages[0]["tool_calls"],
           name: m.name,
         }));
-        pruneResult = pruner.prune(toolMessages);
+        pruneResult = pruner.prune(toolMessages, {
+          // R12：被摘要的旧工具输出先归档（脱敏 + 长行切分），摘要末尾带回读路径。
+          // 长任务后续需要早期测试输出时可直接 file_read，不必重跑命令。
+          archive: (content, toolName) =>
+            writeToolSpill(deps.workspacePath, `pruned-${toolName || "tool"}`, content)?.path ?? null,
+        });
         if (pruneResult.stats.deduplicated > 0 || pruneResult.stats.summarized > 0 || pruneResult.stats.argsTruncated > 0) {
           asyncLog(`[AgentModelExecutor] ToolOutputPruner: ${pruneResult.stats.deduplicated} deduped, ${pruneResult.stats.summarized} summarized, ${pruneResult.stats.argsTruncated} args truncated, saved ~${pruneResult.stats.prunedChars} chars\n`);
           // Apply pruned content back to messages
@@ -7258,6 +7288,27 @@ if (deps.contextPruningManager && !prunerNoop) {
             process.stderr.write(`[LLMCaller] Failed to parse tool arguments for ${toolName}: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}\n`);
             args = { _parseError: true, _rawArguments: tc.function.arguments?.slice(0, 200) };
           }
+          // ★ R12：参数 JSON 解析失败（多为输出截断/转义错误）时立即返回可诊断
+          //   的错误。旧逻辑带着 `_parseError` 继续走参数校验，最终报
+          //   "Missing required parameter ..."——把「JSON 坏了」误报成「没给参数」，
+          //   模型于是换着方法重发同一段坏 JSON，浪费多轮。
+          if (args._parseError === true) {
+            return {
+              role: "tool",
+              tool_call_id: tc.id,
+              name: toolName,
+              content: JSON.stringify({
+                success: false,
+                error: "malformed_tool_arguments",
+                retryable: true,
+                hint:
+                  "The tool arguments were not valid JSON (often a truncated or over-escaped emission). " +
+                  "Re-issue the call with a smaller payload and valid JSON. For large file content use " +
+                  "file_write, and for long commands write a script with file_write then run it with shell_exec.",
+                raw_arguments_prefix: typeof args._rawArguments === "string" ? args._rawArguments : undefined,
+              }),
+            };
+          }
 
           // ★ 2026-11-10（v10 Task 6 全局化）：action 枚举容错归一化。
           //   模型偶尔把枚举取值写坏（实测 file_write 收到
@@ -7272,6 +7323,19 @@ if (deps.contextPruningManager && !prunerNoop) {
               `[LLMCaller] Normalized "${toolName}" action ${JSON.stringify(actionNorm.rewrittenFrom.slice(0, 60))} -> "${actionNorm.rewrittenTo}"\n`,
             );
             args = actionNorm.args;
+          }
+
+          // ★ R12：常见参数别名归一化（workdir→cwd、file_path→path 等）。
+          //   未声明的多余参数不会触发校验错误，若不归一化就会**静默**按默认值
+          //   执行（最典型：workdir 被忽略 → 命令在 workspace 根跑，产物落错目录）。
+          const aliasNorm = normalizeToolArgumentAliases(toolName, args);
+          if (aliasNorm.applied.length > 0) {
+            process.stderr.write(
+              `[LLMCaller] Normalized "${toolName}" argument aliases: ${aliasNorm.applied
+                .map((a) => `${a.from}->${a.to}`)
+                .join(", ")}\n`,
+            );
+            args = aliasNorm.args;
           }
 
           // ★ 2026-11-16 接线：ToolArgumentCoercer 参数类型强制转换。
@@ -7596,7 +7660,9 @@ if (deps.contextPruningManager && !prunerNoop) {
             // ── Execute the tool ──
             const isNetworkTool = ["web_search", "web_fetch", "browser_navigate", "browser_act", "skill_manage"].includes(toolName);
             const isBrowser = toolName.startsWith("browser_");
-            const toolTimeout = isBrowser || toolName === "shell_exec" ? 300_000 : 30_000;
+            // ★ R12：尊重工具声明的 timeout（hermes _declared_deadline_floor），
+            //   避免外层 300s 提前截断 shell_exec 的 1200s 长任务。
+            const toolTimeout = resolveToolTimeoutMs(toolName, args);
             const toolStartedAt = Date.now();
 
             try {
@@ -7700,15 +7766,33 @@ if (deps.contextPruningManager && !prunerNoop) {
               //   20K 文件序列化后 ~22K 超过 16K 被截断 → agent 反复分块读取死循环。
               // ★ 2026-11-05：exec 类上限提到 60K（48K 输出 + stderr + JSON 开销），
               //   且截断语义已在上方 spill 落盘 + 头尾截断完成（幂等标记）。
-              const MAX_RESULT_LEN = isBrowser ? 8000 : (toolName === "shell_exec" || toolName === "execute_code" ? 60000 : (toolName === "file_read" || toolName === "code_search" ? 32000 : 16000));
+              const isExecOutput = toolName === "shell_exec" || toolName === "execute_code";
+              const MAX_RESULT_LEN = isBrowser ? 8000 : (isExecOutput ? 60000 : (toolName === "file_read" || toolName === "code_search" ? 32000 : 16000));
               if (toolResult.length > MAX_RESULT_LEN) {
-                toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
+                // ★ R12：exec 结果绝不「保留头部、丢弃尾部」——失败摘要/退出码
+                //   都在尾部。结构化结果只裁 output 字段（头 40%/尾 60%）。
+                const execTrimmed = isExecOutput ? truncateExecJson(toolResult, MAX_RESULT_LEN) : null;
+                if (execTrimmed !== null) {
+                  toolResult = execTrimmed;
+                } else if (isExecOutput) {
+                  const spill = writeToolSpill(deps.workspacePath, tc.id, toolResult);
+                  toolResult = truncateHeadTail(toolResult, MAX_RESULT_LEN);
+                  if (spill) {
+                    toolResult += `\n\n[Full output (${spill.totalChars} chars) saved to: ${spill.path} — read it with file_read instead of re-running.]`;
+                  }
+                } else {
+                  toolResult = JSON.stringify({ truncated: true, originalLength: toolResult.length, preview: toolResult.slice(0, MAX_RESULT_LEN), hint: `结果已截断(原${toolResult.length}字符)` });
+                }
               }
               // 幂等守卫（Hermes）：exec 类结果已带「头尾截断 + spill 路径」标记时，
               // 不再让 summarizeToolResult 二次改写——否则截断标记/spill 字段被吃，
               // 模型失去重读全文的入口。
-              if (isTruncatedOrSpilled(toolResult)) {
-                /* keep as-is: 标记与 spill 路径保留 */
+              // ★ R12：exec 结果**一律不摘要**。旧逻辑只对带标记的结果跳过，
+              //   8K-48K 的普通输出会进入 summarizeShellOutput；而 exec 结果是
+              //   JSON.stringify 单行文本，按行切分只有 1 行 → 整条被砍成 ~500
+              //   字符（实测 18052→514），测试失败尾部/exitCode/error 全丢。
+              if (isTruncatedOrSpilled(toolResult) || isExecOutput) {
+                /* keep as-is: 保真 + 标记与 spill 路径保留 */
               } else {
                 toolResult = summarizeToolResultFn(toolName, toolResult);
               }
@@ -8204,7 +8288,8 @@ if (deps.contextPruningManager && !prunerNoop) {
           }
           // ★ 2026-11-03 修复：file_read/code_search 使用 32K 上限，
           //   与上方 MAX_RESULT_LEN 保持一致。其他工具保持 4K 上限不变。
-          const maxChars = (toolName === "file_read" || toolName === "code_search") ? 32_000 : TOOL_RESULT_MAX_CHARS;
+          //   ★ R12：exec 类最终上限已移到下方（与 MAX_RESULT_LEN 对齐 60K），
+          //   此处不再提前声明，避免 4K 兜底把 48K 输出砍成头部 4K。
 
           // ── 渐进式子目录上下文：首次进入某子目录时把该目录的 AGENTS.md/CLAUDE.md/.cursorrules
           //    追加到工具结果（不改系统提示 → 缓存安全）。失败静默，绝不影响工具结果本身。
@@ -8268,6 +8353,15 @@ if (deps.contextPruningManager && !prunerNoop) {
             }
           }
 
+          // ★ R12：exec 类结果进入上下文的最终上限与 MAX_RESULT_LEN 对齐（60K）。
+          //   旧实现所有非 file_read/code_search 工具统一 4K，且非 JSON 兜底
+          //   只保留头部——exec 结果（单行 JSON，无大数组）永远走兜底，
+          //   48K 输出进模型只剩前 4K，失败尾部彻底丢失。
+          const maxChars = (toolName === "file_read" || toolName === "code_search")
+            ? 32_000
+            : (toolName === "shell_exec" || toolName === "execute_code")
+              ? 60_000
+              : TOOL_RESULT_MAX_CHARS;
           return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
         };
 
@@ -8277,12 +8371,15 @@ if (deps.contextPruningManager && !prunerNoop) {
           // ── ConcurrentToolExecutor：承载并行批次（信号量 + 超时 + 心跳 + 顺序还原）──
           // 该批次在进入此处之前已由 PARALLEL_SAFE_TOOLS 过滤，因此关闭二次
           // 安全分类（避免把 file_read 同路径串行化等行为变化）；浏览器工具
-          // 从不进入该批次。超时放宽到 10 分钟，避免外层 120s 默认值提前
-          // 截断长工具（内层工具已有自己的更严格超时）。
+          // 从不进入该批次。
+          // ★ R12：批次超时上限必须覆盖单个工具允许的最长声明 deadline
+          //   （shell_exec 最大 1200s + 5s 宽限），否则 executeSingleToolCall
+          //   内部的 resolveToolTimeoutMs 还没到期，外层批次就先把结果判成
+          //   timeout。单工具的精确超时由内层 timer 负责，这里只做兜底。
           const executor = getConcurrentToolExecutor({
             maxConcurrency: 8,
-            toolTimeoutMs: 600_000,
-            heartbeatTimeoutMs: 600_000,
+            toolTimeoutMs: 1_260_000,
+            heartbeatTimeoutMs: 1_260_000,
             pollIntervalMs: 30_000,
             enableSafetyClassification: false,
           });

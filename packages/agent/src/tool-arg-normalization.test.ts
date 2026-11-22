@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeToolActionArg } from "./tool-arg-normalization";
+import { normalizeToolActionArg, normalizeToolArgumentAliases } from "./tool-arg-normalization";
 
 /**
  * v10 Task 6 事故回归（2026-11-10）：
@@ -75,5 +75,38 @@ describe("normalizeToolActionArg — action 枚举容错", () => {
     const def = { parameters: { action: { enum: ["create", "recall_runs", "retry_dlq"] } } };
     const r = normalizeToolActionArg(def, { action: "RECALL_RUNS\n</parameter=name>\nx" });
     expect(r.args.action).toBe("recall_runs");
+  });
+});
+
+describe("normalizeToolArgumentAliases — 高频字段别名", () => {
+  it("shell_exec 的 workdir → cwd（否则命令静默跑在 workspace 根）", () => {
+    const r = normalizeToolArgumentAliases("shell_exec", { command: "ls", workdir: "sub" });
+    expect(r.args.cwd).toBe("sub");
+    expect(r.applied).toEqual([{ from: "workdir", to: "cwd" }]);
+  });
+
+  it("file_read 的 file_path → path", () => {
+    const r = normalizeToolArgumentAliases("file_read", { file_path: "a.txt" });
+    expect(r.args.path).toBe("a.txt");
+  });
+
+  it("显式规范值优先，绝不覆盖", () => {
+    const r = normalizeToolArgumentAliases("shell_exec", { command: "ls", cwd: "explicit", workdir: "alias" });
+    expect(r.args.cwd).toBe("explicit");
+    expect(r.applied).toEqual([]);
+  });
+
+  it("空字符串别名不生效；未登记工具原样返回", () => {
+    const r = normalizeToolArgumentAliases("shell_exec", { command: "ls", workdir: "   " });
+    expect(r.args.cwd).toBeUndefined();
+    const other = { command: "ls", workdir: "sub" };
+    expect(normalizeToolArgumentAliases("code_search", other).args).toBe(other);
+  });
+
+  it("可一次应用多个别名（cmd/timeout_seconds）", () => {
+    const r = normalizeToolArgumentAliases("shell_exec", { cmd: "make", timeout_seconds: "600" });
+    expect(r.args.command).toBe("make");
+    expect(r.args.timeout).toBe("600");
+    expect(r.applied.map((a) => a.to).sort()).toEqual(["command", "timeout"]);
   });
 });

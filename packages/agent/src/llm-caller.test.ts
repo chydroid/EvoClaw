@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -584,6 +584,46 @@ describe("truncateToolResult — JSON 结构感知截断", () => {
     expect(out).toContain("尾部");
     expect(out).toContain("已丢弃");
     expect(out.length).toBeLessThan(1200);
+  });
+
+  it("exec JSON：只压缩 output，exitCode/error 与输出尾部保留", () => {
+    const output = "HEAD\n" + "x".repeat(20000) + "\nTAIL: 2 failures";
+    const text = JSON.stringify({
+      success: false,
+      exitCode: 2,
+      output,
+      stderr: "AssertionError",
+      error: "test suite failed",
+      command: "node test.js",
+      cwd: "/ws",
+    });
+    const out = truncateToolResult(text, 5000);
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(parsed.success).toBe(false);
+    expect(parsed.exitCode).toBe(2);
+    expect(parsed.stderr).toBe("AssertionError");
+    expect(parsed.error).toBe("test suite failed");
+    expect(parsed.command).toBe("node test.js");
+    expect(String(parsed.output)).toContain("TAIL: 2 failures");
+    expect(String(parsed.output)).toContain("[OUTPUT TRUNCATED -");
+  });
+});
+
+describe("resolveToolTimeoutMs — 声明 deadline 地板", () => {
+  it("shell_exec 的 timeout 参数抬高外层超时（+5s 宽限）", () => {
+    expect(resolveToolTimeoutMs("shell_exec", { timeout: 600 })).toBe(605_000);
+    expect(resolveToolTimeoutMs("shell_exec", { timeout: 1200 })).toBe(1_205_000);
+  });
+
+  it("未声明/低于地板时至少 300s；上限 1260s", () => {
+    expect(resolveToolTimeoutMs("shell_exec", {})).toBe(300_000);
+    expect(resolveToolTimeoutMs("shell_exec", { timeout: 30 })).toBe(300_000);
+    expect(resolveToolTimeoutMs("shell_exec", { timeout: 99999 })).toBe(1_260_000);
+  });
+
+  it("其他工具维持原超时：浏览器 300s，普通 30s", () => {
+    expect(resolveToolTimeoutMs("browser_navigate", {})).toBe(300_000);
+    expect(resolveToolTimeoutMs("file_read", {})).toBe(30_000);
   });
 });
 

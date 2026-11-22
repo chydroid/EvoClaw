@@ -11,6 +11,72 @@ import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand, shellB
 import type { SandboxPolicy } from "@evoclaw/core";
 
 /**
+ * 命令输出准确保留上限（字符）。
+ *
+ * 旧实现各返回点统一 `slice(0, 50000)`：50K 之后再无尾部，且下游
+ * sanitizeExecResult 只能对**已被截断的副本**做 spill——真正的最后几行
+ * （测试失败摘要 / 编译错误）在工具层就永久丢失了。
+ * 提高到 200K 后，下游 >48K 的头尾截断 + spill 能拿到真实全文；
+ * 进程内 stdout 累积上限（5MB）仍兜底防内存失控。
+ */
+const MAX_CAPTURE_CHARS = 200_000;
+
+/**
+ * 解析 shell_exec 的 cwd（安全校验 + 存在性策略）。
+ *
+ * hermes 对齐（commit 8f95f721bfa）：**显式指定**的 workdir 不存在时必须
+ * 拒绝执行（"did not run"），不能静默回退到 workspace——命令在错误目录
+ * 里执行会产出误导性结果，模型据此做出的下一步判断全错。只有未显式指定
+ * （默认 workspace / 从脚本路径推断）时才允许回退。
+ *
+ * 相对 cwd 优先按 **workspace 根**解析（工具描述里声明的基准），workspace
+ * 内不存在时再退回进程 cwd（兼容 `data/workspace/...` 这类仓库相对写法）。
+ * 旧实现一律按进程 cwd 解析：模型传 `cwd: "v24-t5"` 想进 workspace 子目录，
+ * 却解析到仓库根同名目录 → "cwd must be within workspace" 直接失败。
+ */
+export function resolveShellCwd(
+  explicitCwd: string | null,
+  command: string,
+  workspaceDir: string,
+): { cwd: string } | { error: string; exitCode?: number } {
+  const wsRoot = path.resolve(workspaceDir);
+  let cwd = explicitCwd ?? wsRoot;
+  if (!explicitCwd) {
+    const inferredCwd = inferCwdFromScript(command, wsRoot);
+    if (inferredCwd) {
+      cwd = inferredCwd;
+      console.log(`[shell_exec] Inferred cwd from script dir: ${path.relative(wsRoot, inferredCwd)}`);
+    }
+  }
+  const resolvedCwd = path.isAbsolute(cwd)
+    ? path.resolve(cwd)
+    : fs.existsSync(path.resolve(wsRoot, cwd))
+      ? path.resolve(wsRoot, cwd)
+      : path.resolve(cwd);
+  // 安全校验：cwd 必须在工作区内，防止路径逃逸
+  if (!resolvedCwd.startsWith(wsRoot + path.sep) && resolvedCwd !== wsRoot) {
+    return { error: "cwd must be within workspace" };
+  }
+  if (!fs.existsSync(resolvedCwd)) {
+    if (explicitCwd) {
+      return {
+        exitCode: 126,
+        error:
+          `Command did not run: cwd "${explicitCwd}" does not exist (resolved to ${resolvedCwd}). ` +
+          `Create it first (mkdir -p) or omit cwd to use the workspace root (${wsRoot}).`,
+      };
+    }
+    // 未显式指定（默认/推断）：安全回退到 workspace，禁止回退到项目父目录
+    if (fs.existsSync(wsRoot)) {
+      console.log(`[shell_exec] cwd does not exist, falling back to workspace`);
+      return { cwd: wsRoot };
+    }
+    return { error: "cwd does not exist and workspace fallback unavailable" };
+  }
+  return { cwd: resolvedCwd };
+}
+
+/**
  * 剥掉命令里与当前工作目录重复的「项目相对路径」前缀。
  *
  * 事故：cwd 已是 `.../data/workspace`，模型却在命令里写
@@ -303,7 +369,7 @@ export function registerShellMediaTools(
     "shell_exec",
     {
       name: "shell_exec",
-      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. " + describeDefaultCwd + "Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution. Large output is automatically truncated (head 40% + tail 60%) with the full text saved to a spill file — the result includes full_output_path and a truncation_note; re-read it with file_read/code_search instead of re-running the command.",
+      description: "Execute a shell command securely. Supports Python (python/python3), Node.js (node), and standard shell commands. " + describeDefaultCwd + "Each call starts in the default cwd: a standalone `cd` does not persist — pass cwd or chain `cd dir && command`. Long-running tasks (crawlers) get up to 1200s timeout with periodic progress feedback every 30s. If timeout occurs, the tool returns partial output with a resume hint. Set sandbox=true to route through LocalSandboxBackend with a restrictive policy (timeout/path enforcement; network/subprocess are soft-limited — use docker backend for hard isolation). Set backend to select a cloud sandbox (singularity/modal/daytona/vercel_sandbox) for remote isolated execution. Large output is automatically truncated (head 40% + tail 60%) with the full text saved to a spill file — the result includes full_output_path and a truncation_note; re-read it with file_read/code_search instead of re-running the command.",
       parameters: {
         command: { type: "string", description: "The shell command to execute. Examples: 'python script.py', 'node script.mjs', 'pip install requests'", required: true },
         cwd: { type: "string", description: "Optional working directory for the command (default: workspace)", required: false },
@@ -317,32 +383,25 @@ export function registerShellMediaTools(
       if (!command) return { success: false, error: "Command is required" };
 
       const workspaceDir = getWorkspaceDir();
-      // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist
-      let cwd = params.cwd ? String(params.cwd) : workspaceDir;
-      // ── 推断脚本就近工作目录（2026-10-20 eval15 t05 事故） ──
-      // 未显式 cwd 时，若命令执行位于 workspace 子目录的脚本（bash/node/python），
-      // 把 cwd 推断为脚本所在目录，避免脚本内部相对路径落到 workspace 根。
-      if (!params.cwd) {
-        const inferredCwd = inferCwdFromScript(command, workspaceDir);
-        if (inferredCwd) {
-          cwd = inferredCwd;
-          console.log(`[shell_exec] Inferred cwd from script dir: ${path.relative(workspaceDir, inferredCwd)}`);
-        }
+      // Ensure cwd exists - spawn fails with ENOENT if cwd directory doesn't exist。
+      // ★ R12：显式 cwd 不存在 → 拒绝执行（exitCode 126），不静默回退。
+      const cwdResolution = resolveShellCwd(params.cwd ? String(params.cwd) : null, command, workspaceDir);
+      if ("error" in cwdResolution) {
+        return {
+          success: false,
+          ...(cwdResolution.exitCode !== undefined ? { exitCode: cwdResolution.exitCode } : {}),
+          error: cwdResolution.error,
+          command,
+          output: "",
+        };
       }
-      // 安全校验：cwd 必须在工作区内，防止路径逃逸
-      const resolvedCwd = path.resolve(cwd);
-      if (!resolvedCwd.startsWith(workspaceDir + path.sep) && resolvedCwd !== workspaceDir) {
-        return { success: false, error: `cwd must be within workspace` };
-      }
-      if (!fs.existsSync(cwd)) {
-        // 安全：cwd 不存在时仅回退到 workspaceDir，禁止回退到项目父目录（防止路径逃逸）
-        if (fs.existsSync(workspaceDir)) {
-          cwd = workspaceDir;
-          console.log(`[shell_exec] cwd does not exist, falling back to workspace`);
-        } else {
-          return { success: false, error: "cwd does not exist and workspace fallback unavailable" };
-        }
-      }
+      const cwd = cwdResolution.cwd;
+      // 每次调用都是新 shell：裸 `cd` 不会影响下一次调用。给模型一个明确提示，
+      // 避免「cd 子目录 → 下一条命令在 workspace 根跑」的静默错位。
+      const bareCdCommand = /^\s*cd(?:\s+[^\s;&|]+)?\s*;?\s*$/.test(command);
+      const bareCdHint = bareCdCommand
+        ? "注：cwd 不跨 shell_exec 调用持久化。请传 cwd 参数，或在同一条命令里用 `cd <dir> && <command>`。"
+        : undefined;
       const timeoutSec = Math.min(Math.max(parseInt(String(params.timeout ?? "120"), 10) || 120, 1), 1200);
 
       // On Windows, replace python3 with python (python3 doesn't exist on Windows)
@@ -602,7 +661,7 @@ export function registerShellMediaTools(
             managerRouted = true;
             return {
               success: result.success,
-              output: result.stdout.slice(0, 50000),
+              output: result.stdout.slice(0, MAX_CAPTURE_CHARS),
               stderr: result.stderr.slice(0, 5000) || undefined,
               exitCode: result.exitCode,
               timedOut: result.timedOut,
@@ -627,7 +686,7 @@ export function registerShellMediaTools(
           await backend.dispose();
           return {
             success: result.success,
-            output: result.stdout.slice(0, 50000),
+            output: result.stdout.slice(0, MAX_CAPTURE_CHARS),
             stderr: result.stderr.slice(0, 5000) || undefined,
             exitCode: result.exitCode,
             timedOut: result.timedOut,
@@ -753,7 +812,7 @@ export function registerShellMediaTools(
               success: false,
               timedOut: true,
               timeout: timeoutSec,
-              output: stdout.slice(0, 50000),
+              output: stdout.slice(0, MAX_CAPTURE_CHARS),
               partialOutput: partial,
               error: `命令执行超时 (${timeoutSec}秒)，已运行约 ${progressSeconds} 秒。部分输出已保留。`,
               resumeHint: "任务超时但进度已保存。你可以使用相同的命令继续执行，脚本会自动从检查点恢复。",
@@ -792,10 +851,11 @@ export function registerShellMediaTools(
                 // 供证据账本做管道首段归因（`pnpm test | tail` 全红不再被
                 // tail 的 0 掩盖）。仅 POSIX 包装路径非空。
                 pipelineStatus: pipelineStatusCapture ?? undefined,
-                output: withEbusyHint(output.slice(0, 50000)),
+                output: withEbusyHint(output.slice(0, MAX_CAPTURE_CHARS)),
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,
                 cwd,
+                ...(bareCdHint ? { hint: bareCdHint } : {}),
               });
             } else {
               resolve({
@@ -803,9 +863,10 @@ export function registerShellMediaTools(
                 exitCode: code,
                 pipelineStatus: pipelineStatusCapture ?? undefined,
                 error: withEbusyHint((errorOutput.slice(0, 10000) || output.slice(0, 10000))),
-                output: withEbusyHint(output.slice(0, 50000)),
+                output: withEbusyHint(output.slice(0, MAX_CAPTURE_CHARS)),
                 command,
                 cwd,
+                ...(bareCdHint ? { hint: bareCdHint } : {}),
               });
             }
           }
@@ -1611,7 +1672,7 @@ export function registerShellMediaTools(
 
         try { fs.unlinkSync(scriptFile); } catch { /* best-effort */ }
 
-        const MAX_OUTPUT = 100_000;
+        const MAX_OUTPUT = MAX_CAPTURE_CHARS;
         const truncate = (s: string) => (s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n... [output truncated]" : s);
         return {
           success,
@@ -1724,7 +1785,7 @@ export function registerShellMediaTools(
             timeoutMs: timeoutSec * 1000,
             reset: params.reset === true,
           });
-          const MAX_OUTPUT_K = 100_000;
+          const MAX_OUTPUT_K = MAX_CAPTURE_CHARS;
           const truncateK = (s: string): string => (s.length > MAX_OUTPUT_K ? s.slice(0, MAX_OUTPUT_K) + "\n... [output truncated]" : s);
           if (cell.status === "success") {
             return {
@@ -1856,7 +1917,7 @@ export function registerShellMediaTools(
         sandboxSessionCreatedAt = Date.now();
 
         // 截断超长输出
-        const MAX_OUTPUT = 100_000;
+        const MAX_OUTPUT = MAX_CAPTURE_CHARS;
         const truncate = (s: string) => (s.length > MAX_OUTPUT ? s.slice(0, MAX_OUTPUT) + "\n... [output truncated]" : s);
 
         return {
