@@ -366,20 +366,30 @@ export function resolveStatusSentinelExitCode(
   if (!command || !rawResult || typeof rawResult !== "object") return null;
   if (/(^|[^|])\|([^|]|$)/.test(command) || /\|\|/.test(command)) return null;
   const segs = topLevelSegments(command);
-  if (segs.length !== 2) return null;
-  if (classifyVerificationCommand(segs[0]) === null) return null;
-  const tmpl = statusSentinelTemplate(segs[1]);
-  if (!tmpl) return null;
+  if (segs.length < 2) return null;
   const rawOutput = (rawResult as { output?: unknown }).output;
   if (typeof rawOutput !== "string" || rawOutput.length === 0) return null;
   const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`^\\s*${escRe(tmpl[0])}(\\d+)${escRe(tmpl[1])}\\s*$`);
   const lines = rawOutput.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const m = re.exec(lines[i]);
-    if (!m) continue;
-    const code = Number(m[1]);
-    return Number.isInteger(code) && code >= 0 && code <= 255 ? code : null;
+  // ★ 2026-11-22（v25 Task 6 举一反三）：不再要求整条命令恰好两段。
+  //   `$?` 只反映**紧邻前一条**命令的退出码，因此只要某个哨兵片段的
+  //   直接前驱是验证命令，该哨兵值就仍可归因——前置的 `cd`/准备命令、
+  //   尾部的其它 echo 都无法篡改它。旧实现要求两段，最常见的
+  //   `cd dir; pytest -q; echo "EXIT=$?"` 形态永远拿不到证据。
+  //   从后向前取「哨兵 + 紧邻验证命令」的最后一对；该对标记行缺失时
+  //   继续向前找（同一条命令、同一轮输出，仍属本次运行）。
+  for (let j = segs.length - 1; j >= 1; j--) {
+    const tmpl = statusSentinelTemplate(segs[j]);
+    if (!tmpl) continue;
+    if (classifyVerificationCommand(segs[j - 1]) === null) continue;
+    const re = new RegExp(`^\\s*${escRe(tmpl[0])}(\\d+)${escRe(tmpl[1])}\\s*$`);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = re.exec(lines[i]);
+      if (!m) continue;
+      const code = Number(m[1]);
+      if (Number.isInteger(code) && code >= 0 && code <= 255) return code;
+      return null; // 标记行命中但码越界：输出不可信，fail-closed
+    }
   }
   return null;
 }

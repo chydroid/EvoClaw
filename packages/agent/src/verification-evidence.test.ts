@@ -361,7 +361,7 @@ describe("resolveStatusSentinelExitCode（cmd; echo \"EXIT=$?\"）", () => {
       { output: "\x1b[31mEXIT=5\x1b[0m" },
     )).toBe(5);
   });
-  it("管道 / 或链 / 单引号 / printf / 非两段 → null（fail-closed）", () => {
+  it("管道 / 或链 / 单引号 / printf → null（fail-closed）", () => {
     expect(resolveStatusSentinelExitCode(
       'pytest -q | tail -5; echo "EXIT=$?"', { output: "EXIT=0" },
     )).toBe(null);
@@ -374,9 +374,30 @@ describe("resolveStatusSentinelExitCode（cmd; echo \"EXIT=$?\"）", () => {
     expect(resolveStatusSentinelExitCode(
       'pytest -q; printf "EXIT=%d\\n" $?', { output: "EXIT=0" },
     )).toBe(null);
+  });
+  it("★ 多段链：哨兵紧邻验证命令即可归因（v25 Task 6 举一反三）", () => {
+    // 旧实现要求恰好两段 → `cd dir; pytest; echo $?` 拿不到证据。
+    // `$?` 只反映紧邻前一条命令，前置 cd/尾部 echo 都篡改不了它。
+    expect(resolveStatusSentinelExitCode(
+      'cd /w; pytest -q; echo "EXIT=$?"', { output: "EXIT=0" },
+    )).toBe(0);
     expect(resolveStatusSentinelExitCode(
       'pytest -q; echo "EXIT=$?"; echo done', { output: "EXIT=0\ndone" },
+    )).toBe(0);
+    expect(resolveStatusSentinelExitCode(
+      'cd /w; node --check a.js; node --test a.test.js; echo "EXIT=$?"',
+      { output: "EXIT=1" },
+    )).toBe(1);
+    // 哨兵紧邻的不是验证命令（CLI 冒烟）→ 不归因
+    expect(resolveStatusSentinelExitCode(
+      'cd /w; node --test a.test.js; node cli.js run; echo "EXIT=$?"',
+      { output: "EXIT=0" },
     )).toBe(null);
+    // 有多对时取最后一对有效哨兵
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "A=$?"; pytest -q; echo "B=$?"',
+      { output: "A=0\nB=1" },
+    )).toBe(1);
   });
   it("首段不是验证命令 / 输出缺模板行 / 越界码 → null", () => {
     expect(resolveStatusSentinelExitCode(

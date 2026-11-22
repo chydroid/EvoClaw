@@ -145,6 +145,20 @@ export async function preprocessSearch(
     return { newsContext, searchReason, shouldSearch };
   }
 
+  // ★ 2026-11-22（v25 Task 2/6/7 实证）：本地工程交付任务不需要联网。
+  //   v25 压测中 3/9 个「在指定目录写零依赖工具 + 冻结夹具」任务被关键词
+  //   兜底误判（T6/T7 只因正文出现一次「分析」「比较」），各自注入
+  //   9-28KB 无关网页内容，并让模型收到「基于以下搜索结果整理并回复」
+  //   的错误指令；T2 还因此把 4000 字符消息额度耗在网页预热上。
+  //   显式的联网请求词优先——只有「搜索/最新/调研/推荐/评测」等真实
+  //   检索意图才放行；「对比/比较/分析」属于工程/算法常用词，不算。
+  const explicitWebIntent = /(?:搜索|搜一下|查一下|最新|调研|推荐|评测|选型|哪家|哪个好|给我找)/i.test(userMessage);
+  const isLocalEngineeringTask = /(?:零依赖|仅(?:使用)?标准库|冻结夹具|禁止修改夹具|CommonJS 导出|导出\s*\{)/.test(userMessage);
+  if (isLocalEngineeringTask && !explicitWebIntent) {
+    process.stdout.write(`[SearchPreprocessor] Local engineering task detected — skipping search pre-processing\n`);
+    return { newsContext, searchReason, shouldSearch };
+  }
+
   // Try to use TaskClassifier for semantic intent detection
   const taskClassifier = registry.resolveService<{
     classify(task: string): { primaryCategory: string; confidence: number; intentSimilarity?: Record<string, number> };
@@ -166,18 +180,17 @@ export async function preprocessSearch(
 
   // Fallback to keyword-based detection if TaskClassifier is not available
   if (!shouldSearch) {
-    const lowerMsg = userMessage.toLowerCase();
-    const isNewsQuery = (lowerMsg.includes("新闻") || lowerMsg.includes("热搜") || lowerMsg.includes("热点") ||
-                        lowerMsg.includes("AI") || lowerMsg.includes("人工智能") || lowerMsg.includes("科技") ||
-                        lowerMsg.includes("分析报告") || lowerMsg.includes("发展情况") || lowerMsg.includes("分析") ||
-                        lowerMsg.includes("横评") || lowerMsg.includes("评测") || lowerMsg.includes("对比") ||
-                        lowerMsg.includes("性价比") || lowerMsg.includes("排名") || lowerMsg.includes("推荐") ||
-                        lowerMsg.includes("测评") || lowerMsg.includes("比较")) &&
-      (lowerMsg.includes("搜索") || lowerMsg.includes("整理") || lowerMsg.includes("找") || lowerMsg.includes("查") ||
-       lowerMsg.includes("分析") || lowerMsg.includes("报告") || lowerMsg.includes("情况") || lowerMsg.includes("做个") ||
-       lowerMsg.includes("横评") || lowerMsg.includes("评测") || lowerMsg.includes("对比") || lowerMsg.includes("性价比") ||
-       lowerMsg.includes("排名") || lowerMsg.includes("推荐") || lowerMsg.includes("测评") || lowerMsg.includes("比较"));
-    const isSearchIntent = /(?:搜索|查找|搜一下|查一下|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快|横评|评测|性价比|排名|对比|测评)/i.test(userMessage);
+    // ★ 2026-11-22（v25 Task 2/6/7 举一反三）：旧 isNewsQuery 要求「主题词
+    //   与请求词两组都命中」，但两组都含「分析/比较/对比」——正文里出现
+    //   **同一个**「比较」即可同时满足两组，于是任何带「分析/比较」的
+    //   工程任务都被判成资讯检索。现拆成「资讯主题」+「时效/检索请求」
+    //   两个**不同维度**的条件，且从请求词中移除工程常用词。
+    const hasNewsTopic = /(?:新闻|热搜|热点|资讯|行业动态|发展情况|市场情况|时事)/i.test(userMessage);
+    const hasFreshnessRequest = /(?:搜索|查一下|搜一下|整理|汇总|最新|今天|今日|本周|这周|最近|近期|今年|20\d\d)/i.test(userMessage);
+    const isNewsQuery = hasNewsTopic && hasFreshnessRequest;
+    // 「对比/比较」不再算检索意图（工程/算法任务高频）；评测/横评/测评/
+    // 性价比/排名仍保留——这些词基本只出现在消费级产品调研里。
+    const isSearchIntent = /(?:搜索|搜一下|查一下|查找|有没有|最新|最近.*?(?:火|热门|上升|流行)|本周.*?(?:重大|热门|重要)|github.*?(?:开源|项目|上升)|开源.*?项目|比较火|上升快|横评|评测|测评|性价比|排名)/i.test(userMessage);
     const isEvaluationQuery = /(?:看看|怎么样|如何|好不好|好用吗|值得|评价|评估|介绍|了解|说说|聊聊|讲讲|分析下|看下|了解下|介绍下)/i.test(userMessage);
     const isEntityInfoQuery = /(?:情况|信息|动态|新闻|进展|发布|新品|产品|公告|财报|动向|近况|现状|趋势|发展)/i.test(userMessage);
     const isModelOrProductQuery = /(?:模型|大模型|LLM|GPT|Claude|Gemini|Qwen|DeepSeek|Llama|Mistral|MiMo|GLM|文心|通义|千问|豆包|Kimi|MiniMax|百川|Yi|零一|商汤|讯飞|智谱|小米|华为|百度|阿里|腾讯|字节|OpenAI|Anthropic|Google|Meta|Microsoft|NVIDIA|苹果|三星|比亚迪|蔚来|理想|小鹏|大疆|OPPO|vivo|荣耀|中兴)/i.test(userMessage);
@@ -189,7 +202,7 @@ export async function preprocessSearch(
               ? "实体评价查询触发"
               : isEntityInfoQuery && isModelOrProductQuery
                 ? "实体信息查询触发"
-                : "关键词匹配触发")
+                : "资讯主题 + 时效请求触发")
       : "";
   }
 

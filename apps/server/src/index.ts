@@ -1896,30 +1896,16 @@ export class EvoClawServer {
 
   /**
    * 每次 agent 任务完成后自动 commit 所有变更。
-   * 用 child_process.execSync 执行 git，失败时仅记录日志不中断主流程。
+   * 具体 git 调用在 auto-commit.ts（execFileSync 参数数组，不经 shell），
+   * 失败时仅记录日志不中断主流程。
    */
   private async autoCommitAfterTask(userMessage: string, agentResponse: string): Promise<void> {
-    const { execSync } = await import("child_process");
-    const repoRoot = process.cwd();
-    try {
-      // 确认是 git 仓库
-      execSync("git rev-parse --git-dir", { cwd: repoRoot, stdio: "pipe" });
-      // 检查是否有变更
-      const status = execSync("git status --porcelain", { cwd: repoRoot, encoding: "utf-8" });
-      if (!status.trim()) return; // 无变更，跳过
-
-      // 构建 commit message：取 agent 回复的前 200 字符
-      const replyPreview = agentResponse.replace(/[#*`>\-]/g, "").replace(/\s+/g, " ").trim().slice(0, 200);
-      const msgSubject = replyPreview || userMessage.slice(0, 80) || "auto commit";
-      const msgBody = `\n\n---\n🤖 Auto-commit after agent task\nUser: ${userMessage.slice(0, 120)}`;
-      const fullMsg = `${msgSubject}${msgBody}`;
-
-      execSync(`git add -A`, { cwd: repoRoot, stdio: "pipe" });
-      execSync(`git commit -m ${JSON.stringify(fullMsg)}`, { cwd: repoRoot, stdio: "pipe" });
-      this.logger.info("server", `auto-commit: ${msgSubject.slice(0, 60)}...`);
-    } catch (err) {
-      const e = err as { stderr?: string; message?: string };
-      this.logger.warn("server", `auto-commit failed: ${e.stderr || e.message || String(err)}`);
+    const { autoCommit } = await import("./auto-commit.js");
+    const res = autoCommit(process.cwd(), userMessage, agentResponse);
+    if (res.committed) {
+      this.logger.info("server", `auto-commit: ${(res.message ?? "").slice(0, 60)}...`);
+    } else if (res.reason === "error") {
+      this.logger.warn("server", `auto-commit failed: ${res.error}`);
     }
   }
 

@@ -46,6 +46,65 @@ function makeTools() {
   ]);
 }
 
+describe("search-preprocessor > 工程任务误触发检索（v25 Task 2/6/7 回归）", () => {
+  const noSearch = {
+    classify: () => ({ primaryCategory: "unknown", confidence: 0 }),
+    needsWebSearch: () => ({ needed: false, confidence: 0, reason: "" }),
+  };
+
+  it("本地工程交付任务（零依赖/冻结夹具）即使分类器要求联网也跳过", async () => {
+    const registry = makeRegistry({
+      classify: () => ({ primaryCategory: "coding", confidence: 0.9 }),
+      needsWebSearch: () => ({ needed: true, confidence: 0.95, reason: "宽松判定" }),
+    });
+    const tools = makeTools();
+    const { shouldSearch, newsContext } = await preprocessSearch(
+      { registry, registeredTools: tools },
+      "在 /home/chy/EvoClaw/data/workspace/v25-t2/ 交付零依赖 Python 电子表格公式引擎（仅标准库）。冻结夹具 sheet.json，禁止修改夹具。条件支持数值比较。",
+    );
+    expect(shouldSearch).toBe(false);
+    expect(newsContext).toBe("");
+    expect(tools.get("web_search")!.handler).not.toHaveBeenCalled();
+  });
+
+  it("正文出现「分析」「比较」不再单独触发检索", async () => {
+    const tools = makeTools();
+    for (const msg of [
+      "容器镜像层去重分析 + 拉取计划工具（Node，零依赖）",
+      "对比两个 JSON 文件并输出差异摘要，比较各字段",
+      "分析这段代码并做性能优化",
+    ]) {
+      const { shouldSearch } = await preprocessSearch(
+        { registry: makeRegistry(noSearch), registeredTools: tools },
+        msg,
+      );
+      expect(shouldSearch, msg).toBe(false);
+    }
+    expect(tools.get("web_search")!.handler).not.toHaveBeenCalled();
+  });
+
+  it("真实资讯检索仍触发：主题 + 时效请求", async () => {
+    for (const msg of ["帮我搜索本周 AI 新闻并整理", "整理最近的热点新闻", "查一下今天科技资讯"]) {
+      const tools = makeTools();
+      const { shouldSearch } = await preprocessSearch(
+        { registry: makeRegistry(noSearch), registeredTools: tools },
+        msg,
+      );
+      expect(shouldSearch, msg).toBe(true);
+      expect(tools.get("web_search")!.handler).toHaveBeenCalled();
+    }
+  });
+
+  it("工程任务里显式写「搜索/最新/调研」仍放行检索", async () => {
+    const tools = makeTools();
+    const { shouldSearch } = await preprocessSearch(
+      { registry: makeRegistry(noSearch), registeredTools: tools },
+      "调研最新的零依赖 Python 表格库并推荐",
+    );
+    expect(shouldSearch).toBe(true);
+  });
+});
+
 describe("search-preprocessor > astronomy queries", () => {
   // TC-001: 日出日落查询不再触发搜索预处理（改走本地 Open-Meteo 快速通道）
   it("TC-001: 信阳市平桥区日出日落查询不应触发搜索预处理", async () => {

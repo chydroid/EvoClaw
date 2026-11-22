@@ -4675,7 +4675,11 @@ export async function tryCallLLM(
   const overloadAttemptsByProvider = new Map<string, number>();
 
   // P0-3：走缓存版——同一 turn 内 message 不变 + 历史长度档不变时直接复用
-  const maxToolRounds = computeDynamicToolLimitCached(message, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
+  // ★ 2026-11-22（v25 Task 2 实证）：轮次上限必须按**用户原始输入**判定。
+  //   旧接线用增强后的 message（含搜索上下文/系统指令），注入文本里的
+  //   「如何/是否」会命中 hasActionIntent 的排除词，把本应 25 轮的工程任务
+  //   压到 base=10 —— T2 正是在 10 轮耗尽后 Grace Call 收尾、任务未完成。
+  const maxToolRounds = computeDynamicToolLimitCached(rawMessage, BASE_MAX_TOOL_ROUNDS, MAX_TOOL_ROUNDS_CAP, deps.conversationHistory, sessionId);
   asyncLog(`[AgentModelExecutor] Dynamic tool limit for session "${sessionId}": ${maxToolRounds} (base=${BASE_MAX_TOOL_ROUNDS}, cap=${MAX_TOOL_ROUNDS_CAP})\n`);
 
   let totalTokensUsed = 0;
@@ -5449,7 +5453,9 @@ if (deps.contextPruningManager && !prunerNoop) {
         asyncLog(`[AgentModelExecutor] Search pre-done: keeping all tools for cache stability (${tools.length} tools)\n`);
       }
 
-      const isAction = hasActionIntentFn(message);
+      // 意图判定用 rawMessage：增强消息里的搜索上下文会污染「动作意图」
+      // （注入文本含「如何/是否」直接命中排除词），v25 Task 2 实证。
+      const isAction = hasActionIntentFn(rawMessage);
 
       let conversationMessages = [...messages];
       // ★ P0-8：transient 消息不持久化到 history。
@@ -6823,7 +6829,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               diskMissingPaths.length > 0 ||
               landingMismatch.length > 0 ||
               syntaxBroken.length > 0 ||
-              hasActionIntentFn(message);
+              hasActionIntentFn(rawMessage);
             // ★ 2026-10-26 修复：创造性任务的首次响应可能较短但已包含实质内容
             //   （1307 chars），不应触发 auto-continuation——续跑会额外消耗
             //   60-100s（第二轮 LLM call），总时间超 300s。只有当创造性任务
