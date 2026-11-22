@@ -24,7 +24,9 @@ for (const line of fs.readFileSync(envPath, 'utf-8').split('\n')) {
 export const JWT_SECRET = envVars.JWT_SECRET || 'change-me-to-a-random-secret-min-16-chars';
 export const TOKEN = jwt.sign({ userId: 'test-user', roles: ['user', 'admin'] }, JWT_SECRET, { expiresIn: '24h' });
 export const PORT = process.env.EvoClaw_PORT || envVars.EvoClaw_PORT || '27789';
-export const RUN_START = Date.now();
+// CHECK_ONLY 复核模式（无新跑）用 HARNESS_RUN_START=1 关掉新鲜度门槛——
+// 否则现有交付物必然早于本进程启动时间，被误判「陈旧」。
+export const RUN_START = Number(process.env.HARNESS_RUN_START) || Date.now();
 export const WS = '/home/chy/EvoClaw/data/workspace';
 
 export const FIXTURE_HASHES = new Map();
