@@ -7,6 +7,7 @@ import {
   isVerificationExitAttributable,
   pipelineLeadsLastPipe,
   resolvePipelineHeadExitCode,
+  resolveStatusSentinelExitCode,
 } from "./verification-evidence";
 
 // ═══════════════════════════════════════════════════════════
@@ -323,6 +324,73 @@ describe("resolvePipelineHeadExitCode（PIPESTATUS[0] 读取）", () => {
     expect(resolvePipelineHeadExitCode({ pipelineStatus: "7 0" })).toBe(null);
     expect(resolvePipelineHeadExitCode(null)).toBe(null);
     expect(resolvePipelineHeadExitCode("result")).toBe(null);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 状态哨兵退出码恢复（2026-11-22，v24 压测举一反三）
+// `python3 test_x.py; echo "EXIT=$?"` 的 shell 退出码被 echo 掩盖，但 stdout
+// 里写着真值——严格两段式 + 模板整行匹配才归因，其余维持 fail-closed。
+// ═══════════════════════════════════════════════════════════
+describe("resolveStatusSentinelExitCode（cmd; echo \"EXIT=$?\"）", () => {
+  it("从输出恢复失败退出码", () => {
+    expect(resolveStatusSentinelExitCode(
+      'cd /w && python3 test_crdt.py; echo "EXIT=$?"',
+      { output: "FAIL=2\nEXIT=1" },
+    )).toBe(1);
+  });
+  it("支持任意前后缀模板（---TEST-EXIT: $?---）", () => {
+    expect(resolveStatusSentinelExitCode(
+      'python3 test_lineage.py; echo "---TEST-EXIT: $?---"',
+      { output: "18/18 PASS\n---TEST-EXIT: 0---" },
+    )).toBe(0);
+  });
+  it("从末行向前找，哨兵输出在最后（不误取检查命令自己的同形输出）", () => {
+    expect(resolveStatusSentinelExitCode(
+      'node --test x.js; echo "EXIT=$?"',
+      { output: "EXIT=0\nassert failed\nEXIT=2" },
+    )).toBe(2);
+  });
+  it("无引号 / ${?} 形态", () => {
+    expect(resolveStatusSentinelExitCode("pytest -q; echo rc=$?", { output: "rc=3" })).toBe(3);
+    expect(resolveStatusSentinelExitCode("pytest -q; echo rc=${?}", { output: "rc=0" })).toBe(0);
+  });
+  it("ANSI 颜色不干扰整行匹配", () => {
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "EXIT=$?"',
+      { output: "\x1b[31mEXIT=5\x1b[0m" },
+    )).toBe(5);
+  });
+  it("管道 / 或链 / 单引号 / printf / 非两段 → null（fail-closed）", () => {
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q | tail -5; echo "EXIT=$?"', { output: "EXIT=0" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q || true; echo "EXIT=$?"', { output: "EXIT=0" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      "pytest -q; echo 'EXIT=$?'", { output: "EXIT=$?" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; printf "EXIT=%d\\n" $?', { output: "EXIT=0" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "EXIT=$?"; echo done', { output: "EXIT=0\ndone" },
+    )).toBe(null);
+  });
+  it("首段不是验证命令 / 输出缺模板行 / 越界码 → null", () => {
+    expect(resolveStatusSentinelExitCode(
+      'cat log.txt; echo "EXIT=$?"', { output: "EXIT=0" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "EXIT=$?"', { output: "no marker here" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "EXIT=$?"', { output: "EXIT=999" },
+    )).toBe(null);
+    expect(resolveStatusSentinelExitCode(
+      'pytest -q; echo "EXIT=$?"', {},
+    )).toBe(null);
   });
 });
 

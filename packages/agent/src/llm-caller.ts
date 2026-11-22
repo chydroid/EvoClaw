@@ -161,6 +161,7 @@ import {
   isVerificationExitAttributable,
   resolveVerificationExitCode,
   resolvePipelineHeadExitCode,
+  resolveStatusSentinelExitCode,
   pipelineLeadsLastPipe,
 } from "./verification-evidence";
 import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
@@ -7934,6 +7935,13 @@ if (deps.contextPruningManager && !prunerNoop) {
                 const pipelineHeadCode = toolName === "shell_exec"
                   ? resolvePipelineHeadExitCode(rawResult)
                   : null;
+                // ★ 2026-11-22（v24 压测举一反三）：`cmd; echo "EXIT=$?"` 的 shell
+                //   退出码被哨兵掩盖，但哨兵输出里就写着检查命令的真值。旧逻辑
+                //   一概 markUnattributedRun → 模型最常用的验证手法永远留不下
+                //   证据（v24 一轮 14 次）。能从 stdout 恢复时按可归因处理。
+                const sentinelExitCode = toolName === "shell_exec"
+                  ? resolveStatusSentinelExitCode(verifyCommand, rawResult)
+                  : null;
                 // ★ 2026-11-16（对标 hermes verification_evidence 的 unattributed run）：
                 //   形如 `node --test x.js 2>&1 | tail -20` 时，shell 的退出码来自
                 //   管道尾部（tail 恒 0）——测试全红也会以 exit 0 返回，被记成
@@ -7942,11 +7950,12 @@ if (deps.contextPruningManager && !prunerNoop) {
                 //   只登记未归因命令，让工作区保持 unverified、验证门继续要求复验。
                 //   ★ PIPESTATUS 可用且检查命令在管道首段时升级为可归因。
                 const attributable = toolName !== "shell_exec"
+                  || sentinelExitCode !== null
                   || (pipelineHeadCode !== null && pipelineLeadsLastPipe(verifyCommand))
                   || isVerificationExitAttributable(verifyCommand);
                 // ★ 2026-11-17（v15 Task 3）：缺少 exitCode（超时 / spawn 失败 /
                 //   execute_code 异常早退）与管道掩盖等价——不能按 0 记成通过。
-                const exitCode = resolveVerificationExitCode(rawResult);
+                const exitCode = sentinelExitCode ?? resolveVerificationExitCode(rawResult);
                 if (!attributable) {
                   evidenceStore.markUnattributedRun(verifyCommand);
                   asyncLog(

@@ -294,6 +294,96 @@ function lastTopLevelSegment(command: string): string {
   return command.slice(start);
 }
 
+/** 引号感知地把命令切成顶层 `;` 片段。 */
+function topLevelSegments(command: string): string[] {
+  const segs: string[] = [];
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") { quote = ch; continue; }
+    if (ch === ";") {
+      segs.push(command.slice(start, i));
+      start = i + 1;
+    }
+  }
+  segs.push(command.slice(start));
+  return segs;
+}
+
+/**
+ * 识别 `echo "EXIT=$?"` 形态的状态哨兵，返回 `$?` 两侧的字面模板。
+ * 单引号（不展开）、printf、模板内不含/含多个 `$?` 均返回 null（fail-closed）。
+ */
+function statusSentinelTemplate(segment: string): [string, string] | null {
+  const seg = segment.trim();
+  const m = /^echo\s+(.+)$/s.exec(seg);
+  if (!m) return null;
+  let arg = m[1].trim();
+  if (arg.startsWith("'")) return null; // 单引号内 $? 是字面量，输出里没有退出码
+  if (arg.startsWith('"')) {
+    if (arg.length < 2 || !arg.endsWith('"')) return null;
+    arg = arg.slice(1, -1);
+  }
+  const parts: string[] = [];
+  let last = 0;
+  let count = 0;
+  const marker = /\$\?|\$\{\?\}/g;
+  for (let hit = marker.exec(arg); hit !== null; hit = marker.exec(arg)) {
+    count++;
+    parts.push(arg.slice(last, hit.index));
+    last = hit.index + hit[0].length;
+  }
+  if (count !== 1) return null;
+  parts.push(arg.slice(last));
+  return [parts[0], parts[1]];
+}
+
+/**
+ * ★ 2026-11-22（v24 压测举一反三）：从 `检查命令; echo "EXIT=$?"` 的**输出**中
+ * 恢复检查命令自身的退出码。
+ *
+ * 这类命令的 shell 顶层退出码来自 echo（恒 0），旧逻辑一概 markUnattributedRun，
+ * 于是模型最常用的「跑测试并打印退出码」手法永远留不下可归因证据：账本空白 →
+ * 验证门反复 nudge「不要接管道」→ 连续 3 次还触发红门，而 stdout 里明明写着
+ * 真值（v24 一轮出现 14 次，占全部未归因运行绝大多数）。
+ *
+ * 归因口径（严格 fail-closed）：只接受「两段式」`<验证命令> ; echo <含单个 $?>`
+ * - 带管道/`||` 一律不认（`$?` 是管道尾部/兜底命令的状态，不是检查命令的）；
+ * - 第一段必须仍被 classifyVerificationCommand 判为验证类；
+ * - 哨兵模板必须精确匹配输出的一整行（`---TEST-EXIT: $?---` 也能匹配），
+ *   从末行向前找，只认 0..255 的整数。多段（两次检查各接 echo）不认。
+ */
+export function resolveStatusSentinelExitCode(
+  command: string,
+  rawResult: unknown,
+): number | null {
+  if (!command || !rawResult || typeof rawResult !== "object") return null;
+  if (/(^|[^|])\|([^|]|$)/.test(command) || /\|\|/.test(command)) return null;
+  const segs = topLevelSegments(command);
+  if (segs.length !== 2) return null;
+  if (classifyVerificationCommand(segs[0]) === null) return null;
+  const tmpl = statusSentinelTemplate(segs[1]);
+  if (!tmpl) return null;
+  const rawOutput = (rawResult as { output?: unknown }).output;
+  if (typeof rawOutput !== "string" || rawOutput.length === 0) return null;
+  const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^\\s*${escRe(tmpl[0])}(\\d+)${escRe(tmpl[1])}\\s*$`);
+  const lines = rawOutput.replace(/\x1b\[[0-9;]*m/g, "").split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const m = re.exec(lines[i]);
+    if (!m) continue;
+    const code = Number(m[1]);
+    return Number.isInteger(code) && code >= 0 && code <= 255 ? code : null;
+  }
+  return null;
+}
+
 // 恒返回 0 的收尾命令：`检查; echo "test-exit=$?"` 的退出码来自 echo，
 // 检查失败会被完全掩盖（v16 Task 4 实证：test_redact.py 2 失败仍记 exit 0）。
 const STATUS_SENTINEL = /^\s*(?:echo|printf|true)(?:\s|$)|^\s*:\s|^\s*exit\s+0(?:\s|$)/;
