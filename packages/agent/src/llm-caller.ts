@@ -6226,7 +6226,9 @@ if (deps.contextPruningManager && !prunerNoop) {
             try {
               const refunded = await budget.refundForCompaction();
               if (refunded > 0) {
-                asyncLog(`[AgentModelExecutor] Compaction refund: returned ${refunded} iteration(s) to budget for session "${sessionId}"\n`);
+                // 压缩重启不是一次决策：退款同样延长循环上限（见 extendRoundLimitForRefund）。
+                roundLimit = extendRoundLimitForRefund(roundLimit, maxToolRounds, refunded);
+                asyncLog(`[AgentModelExecutor] Compaction refund: returned ${refunded} iteration(s) to budget for session "${sessionId}" (limit now ${roundLimit})\n`);
               }
             } catch { /* best-effort — refund must never block recovery */ }
           }
