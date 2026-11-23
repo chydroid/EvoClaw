@@ -2023,7 +2023,24 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       // ★ v26 smoke 实证：与工具侧 stripWorkspacePrefix 同源——模型照抄任务原文的
       //   `data/workspace/x` 相对写法时先剥前缀，避免拼出 `<ws>/data/workspace/x`
       //   双前缀 → 虚假 disk_files_missing → 无谓续跑。
-      explicitRelativePaths.add(path.resolve(baseDir!, stripWorkspaceDirPrefix(rel).value));
+      // ★ 2026-11-23 v29e T3 实证（D5d）：解析基准优先取前面提及的任务目录
+      //   （`data/workspace/<dir>`）——旧行为一律按 ws 根解析，bullet 清单
+      //   「（`data/workspace/v29e-t3/`）」下的 `fixtures/leak.txt` 被声称到
+      //   `<ws>/fixtures/leak.txt`（实际落点 `<ws>/v29e-t3/…`）→ 3 处落点
+      //   漂移误报 + 2 次 promise_future_action 无谓续跑（557k tokens）。
+      //   500 字符窗口与 mentionedDirs「最近提及」同口径；路径自身已带该
+      //   任务目录段时不双拼。
+      let ctxTaskDir = "";
+      {
+        const head = reply.slice(Math.max(0, at - 500), at);
+        const refs = [...head.matchAll(/data\/workspace\/([\w.-]+)/g)];
+        if (refs.length > 0) ctxTaskDir = refs[refs.length - 1][1];
+      }
+      const strippedRel = stripWorkspaceDirPrefix(rel).value;
+      const ctxBase = ctxTaskDir && !strippedRel.startsWith(`${ctxTaskDir}/`)
+        ? path.join(baseDir!, ctxTaskDir)
+        : baseDir!;
+      explicitRelativePaths.add(path.resolve(ctxBase, strippedRel));
     }
   }
   for (const p of explicitRelativePaths) paths.add(p);
@@ -2150,10 +2167,26 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   //   误报「任务未完成」+ 无谓续跑。`data/workspace/v29-t4/...` 这类带子段的
   //   写法由 explicitRelativePaths（策略 0）先行登记，裸名拼接对其跳过，互不冲突。
   if (hasBase) {
-    const wsAliasRe = /(?<![\w.-])data\/workspace(?![\w.-])/g;
-    for (const m of reply.matchAll(wsAliasRe)) {
+    // ★ 2026-11-23 v29e T3 实证（D5d）：提及分两种形态——
+    //   1. 裸别名 `data/workspace`（无子段）→ ws 根的别名，登记 dir=baseDir；
+    //   2. `data/workspace/<任务目录>/`（带子段）→ 任务目录本身，登记
+    //      dir=resolve(baseDir, <任务目录>)。旧行为只认 1，2 漏登记 →
+    //      bullet 清单「（`data/workspace/v29e-t3/`）」下的 `fixtures/leak.txt`
+    //      相对路径拼不到任务目录（策略 0 只认无斜杠裸名+无目录段相对路径，
+    //      `fixtures/leak.txt` 走的是 2.5 裸名拼接/策略 0 relPathRe 都不命中）
+    //      → 声称拼到 ws 根 → 3 处落点漂移误报 + 2 次 promise_future_action
+    //      无谓续跑（557k tokens）。
+    const wsMentionRe = /(?<![\w.-])data\/workspace((?:\/[\w.-]+)*)\/?(?![\w.-])/g;
+    for (const m of reply.matchAll(wsMentionRe)) {
       if (inFence(m.index ?? 0)) continue;
-      mentionedDirs.push({ dir: baseDir, end: (m.index ?? 0) + m[0].length });
+      const sub = m[1] ?? "";
+      // 带子段形态：sub 形如 /v29e-t3（含前导 /）——path.join 会把前导 /
+      // 视为普通段拼到 baseDir 下（path.resolve 则会误当绝对路径），
+      // 须剥掉前导 / 再 join。
+      const dir = sub
+        ? path.join(baseDir, sub.replace(/^\/+/, ""))
+        : baseDir;
+      mentionedDirs.push({ dir, end: (m.index ?? 0) + m[0].length });
     }
     // 裸名拼接查找按 end 升序取「最近提及」，插入后须重排
     mentionedDirs.sort((a, b) => a.end - b.end);

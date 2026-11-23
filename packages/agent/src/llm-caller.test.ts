@@ -2962,6 +2962,41 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).toContain("/home/u/ws/a.js");
     expect(paths).not.toContain("/home/u/ws/data/workspace/a.js");
   });
+
+  // ★ 2026-11-23 v29e T3 实证（D5d）：bullet 清单引导行写「（`data/workspace/
+  //   v29e-t3/`）」后条目行用 `fixtures/leak.txt` 相对路径——相对路径的解析
+  //   基准须取前面提及的任务目录，而非一律 ws 根；`data/workspace` 裸别名
+  //   提及同样须识别带子段形态。
+  it("★ v29e T3：相对路径解析基准取前文提及的任务目录（data/workspace/<dir>）", () => {
+    const reply = [
+      "任务完成。",
+      "**交付物**（`data/workspace/v29e-t3/`，均已落盘）：",
+      "- `scanner.js` — 扫描器",
+      "- `scanner.test.js` — 自测",
+      "- `fixtures/leak.txt` — 含伪造密钥",
+      "- `fixtures/clean.txt` — 纯配置",
+      "- `fixtures/encoded.txt` — base64 编码",
+      "任务已闭环。",
+    ].join("\n");
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/v29e-t3/fixtures/leak.txt");
+    expect(paths).toContain("/home/u/ws/v29e-t3/fixtures/clean.txt");
+    expect(paths).toContain("/home/u/ws/v29e-t3/fixtures/encoded.txt");
+    expect(paths).toContain("/home/u/ws/v29e-t3/scanner.js");
+    expect(paths).not.toContain("/home/u/ws/fixtures/leak.txt");
+  });
+
+  it("★ v29e T3：无任务目录提及时相对路径仍按 ws 根解析（D5d 不越权）", () => {
+    const reply = [
+      "任务完成。",
+      "**交付物**（已落盘）：",
+      "- `out/summary.json` — 结果",
+      "已闭环。",
+    ].join("\n");
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/out/summary.json");
+    expect(paths).not.toContain("/home/u/ws/data/workspace/out/summary.json");
+  });
 });
 
 describe("extractExecutedShellCommands", () => {
