@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -3269,5 +3269,35 @@ describe("R11 GAP-20 — 错误体有界读", () => {
     const recorded = String(recordFailure.mock.calls[0][1]);
     expect(recorded.length).toBeLessThan(200 * 1024); // 64KB 上限 + chunk 超冲 + 分类包装
     expect(recorded).toContain("Z".repeat(1024)); // 前缀内容在
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// 测试套件：动态工具轮次上限（v27 T8 回归）
+// 覆盖：从属问句词不得否决工程任务的 +15 轮次；短问句维持 base。
+// ═══════════════════════════════════════════════════════════
+describe("computeDynamicToolLimitCached", () => {
+  const noHistory = new Map<string, never[]>();
+
+  it("长工程任务含从属「是否」时仍获得 +15 轮", () => {
+    const task = [
+      "你是编译器工程师。在 data/workspace/x/ 交付零依赖 Node 表达式编译器。",
+      "必须交付：expr.js、expr.test.js、README.md、report.json。",
+      "词法/语法：整数、标识符、函数调用、括号、一元运算、二元运算、三元。",
+      "必须真实运行 CLI 并在回复中写明 value、folded_ast 是否含 var，以及 bad_expr 的退出码。",
+    ].join("");
+    expect(computeDynamicToolLimitCached(task, 10, 30, noHistory, "dyn-eng")).toBe(25);
+  });
+
+  it("短问句维持 base 轮次", () => {
+    expect(computeDynamicToolLimitCached("163 邮箱的 IMAP 服务器地址是什么？", 10, 30, noHistory, "dyn-q")).toBe(10);
+  });
+
+  it("历史过长时回落到 base 上限", () => {
+    const longHistory = new Map<string, Array<{ role: string; content: string }>>([
+      ["dyn-h", Array.from({ length: 31 }, () => ({ role: "user", content: "x" }))],
+    ]);
+    const task = "实现一个 LSM 树并运行测试";
+    expect(computeDynamicToolLimitCached(task, 10, 30, longHistory as never, "dyn-h")).toBe(20);
   });
 });
