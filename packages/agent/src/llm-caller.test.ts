@@ -2569,6 +2569,31 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).not.toContain("/workspace/v29-t4/ratelimit.js");
   });
 
+  // ★ 2026-11-23 v29b T3 实证（D2 补漏）：行内目录拼接基准（lineDir）旧代码
+  //   未归一化 `/workspace/…`，跨行回退基准归一化了但行内没跟上 → 裸名仍拼到
+  //   不存在的 /workspace 根 → 落点漂移误报。bullet 绝对路径条目（策略 2.7）
+  //   同理。
+  it("★ v29b T3：行内 `/workspace/…` 提及 + 裸名拼接归一化到 baseDir（lineDir 补漏）", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const reply = [
+      "已完成。`data/workspace/v29b-t3/scanner.js` 与 `data/workspace/v29b-t3/scanner.test.js` 已创建，",
+      "fixtures/ 下生成 3 个样例文件 leak.txt、clean.txt、encoded.txt。自测通过。",
+    ].join("\n");
+    const paths = extractClaimedFilePaths(reply, ws);
+    expect(paths).toContain(`${ws}/v29b-t3/scanner.js`);
+    expect(paths).toContain(`${ws}/v29b-t3/scanner.test.js`);
+    // 裸名不再拼到幻觉 /workspace 根
+    expect(paths.filter((p) => p.startsWith("/workspace/"))).toEqual([]);
+  });
+
+  it("★ v29b T3：bullet 行 `/workspace/…` 绝对路径条目同口径归一化", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const reply = "完成。文件：\n- /workspace/v29b-t3/out.md";
+    const paths = extractClaimedFilePaths(reply, ws);
+    expect(paths).toContain(`${ws}/v29b-t3/out.md`);
+    expect(paths).not.toContain("/workspace/v29b-t3/out.md");
+  });
+
   it("★ 运行时写目标（记录到/输出到）不视为声称创建的文件", () => {
     // 复测 Task 7 误报：monitor.sh 脚本运行期把告警写入 alert.log，
     // 回复「超阈值时记录到 `/tmp/v4-monitor/alert.log`」是脚本行为描述，

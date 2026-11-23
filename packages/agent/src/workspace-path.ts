@@ -11,6 +11,9 @@
  * （工具正确落到 `<ws>/v26-smoke2/a.txt`），契约核验却拼出双前缀路径，
  * 连续 3 次自动续跑、8 次工具调用才收尾。
  */
+
+import * as path from "node:path";
+
 export interface StrippedWorkspacePath {
   /** 归一化后的路径（已剥掉重复的 data/workspace/ 前缀） */
   value: string;
@@ -28,4 +31,20 @@ export function stripWorkspaceDirPrefix(p: string): StrippedWorkspacePath {
     stripped = true;
   }
   return { value: candidate, stripped };
+}
+
+/**
+ * 回执/落点路径归一化（★ 2026-11-23 v29b T3 实证）。
+ *
+ * 工具回执（createdFiles）存的是**工具侧原始 path**——模型传什么记什么，
+ * 常是带 `data/workspace/` 前缀的相对路径；而声称路径
+ * （extractClaimedFilePaths）按 workspace 根解析成绝对路径。两侧坐标系
+ * 不一致时，回执对账的「同名落点」比较永远失配 → 真实落点对的交付物被
+ * 误报为落点漂移（v29b T3：3 次 file_landed_wrong_path 无谓续跑，
+ * T3 总 token 408k）。归一到同一坐标系：剥 data/workspace/ 前缀、
+ * 相对路径按 baseDir（workspace 根）resolve；绝对路径原样直通。
+ */
+export function resolveWsReceiptPath(baseDir: string, p: string): string {
+  const s = stripWorkspaceDirPrefix(p);
+  return path.isAbsolute(s.value) ? s.value : path.resolve(baseDir, s.value);
 }

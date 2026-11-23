@@ -172,7 +172,7 @@ import {
 } from "./verification-evidence";
 import { extractRequiredDeliverables, evaluateDeliverables, extractFrozenInputs, snapshotFrozenInputs, findFrozenMutations, type FrozenSnapshot, type FrozenMutation } from "./deliverable-contract";
 import { summarizeAcceptance, buildAcceptanceCorrection, buildAcceptanceFooter, buildWrapUpNotice, type AcceptanceSummary } from "./acceptance-notice";
-import { stripWorkspaceDirPrefix } from "./workspace-path";
+import { stripWorkspaceDirPrefix, resolveWsReceiptPath } from "./workspace-path";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
 import { getErrorRecoveryExecutor, type RecoveryMessage } from "./error-recovery-executor";
@@ -1943,6 +1943,13 @@ function stripSyntheticFooters(reply: string): string {
 }
 
 /**
+ * 行内 `fixtures/`（或 `fixture/`）目录提及——D4 声称侧重定向用（v29b T3）。
+ * 边界集含 CJK `。`/`、`/全角括号（与 deliverable-contract.ts 同口径）。
+ * 模块级共享 + 每次使用前重置 lastIndex（exec 循环内复用，避免每行重编译）。
+ */
+const fixtureMentionInLineRe = /(?:^|[\s。、,，:：（(])fixtures?[\\/]/gi;
+
+/**
  * 从回复中提取被声称创建/写入的文件路径（供磁盘核验使用）。
  * 导出仅供测试（回归用例见 llm-caller.test.ts）。
  */
@@ -2207,7 +2214,14 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
     {
       const dirsInLine = [...rawLine.matchAll(dirMentionRe)];
       if (dirsInLine.length > 0) {
-        const last = dirsInLine[dirsInLine.length - 1][0].replace(/\/+$/, "");
+        let last = dirsInLine[dirsInLine.length - 1][0].replace(/\/+$/, "");
+        // ★ 2026-11-23 v29b T3 实证（D2 补漏）：行内提及须与 mentionedDirs 同口径
+        //   归一化——旧代码只归一化跨行回退基准（mentionedDirs），行内拼接基准
+        //   lineDir 仍用原始 `/workspace/…` 幻觉根 → 裸名拼到不存在的 /workspace 根。
+        if (hasBase && (last === "/workspace" || last.startsWith("/workspace/"))) {
+          const rest = last === "/workspace" ? "" : last.slice("/workspace".length);
+          last = rest ? path.posix.join(baseDir as string, rest) : baseDir as string;
+        }
         const base = last.split("/").pop() || "";
         if (base.includes(".")) {
           const parent = last.slice(0, -(base.length + 1));
@@ -2241,6 +2255,26 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
           }
         }
         if (!base) continue;
+        // ★ 2026-11-23 v29b T3 实证（D4 声称侧）：「fixtures/ 下生成 3 个样例
+        //   文件：leak.txt…」——fixtures/ 目录此时是**交付目标**而非任务输入。
+        //   裸名若拼到任务目录根（…/v29b-t3/leak.txt），与回执真实落点
+        //   （…/v29b-t3/fixtures/leak.txt）不符 → 落点漂移误报 + 无谓续跑。
+        //   名称之前最近的 `fixtures/` 提及与名称之间含交付意图词时，拼到
+        //   `<base>/fixtures/` 下。无意图词（「读取 fixtures/ 下的样例」）不重定向。
+        const nameIdx = m.index ?? 0;
+        let fxEnd = -1;
+        let fxMatch: RegExpExecArray | null;
+        const fxLineRe = fixtureMentionInLineRe;
+        fxLineRe.lastIndex = 0;
+        while ((fxMatch = fxLineRe.exec(rawLine)) !== null && fxMatch.index < nameIdx) {
+          fxEnd = fxMatch.index + fxMatch[0].length;
+        }
+        if (fxEnd > 0) {
+          const clause = rawLine.slice(fxEnd, nameIdx);
+          if (/(?:生成|创建|写入|产出|必交|交付|deliver|create|generate|write)/i.test(clause)) {
+            base = `${base}/fixtures`;
+          }
+        }
         const joined = `${base}/${name}`;
         if (isCandidateFilePath(joined)) paths.add(joined);
       }
@@ -2266,7 +2300,7 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       if (!b) continue;
       // 路径须紧跟 bullet ——「详见/参考/位于 /tmp/x」这类引用语境外自然不匹配
       const p = b[1].replace(/\/+$/, "");
-      if (isCandidateFilePath(p)) paths.add(p);
+      if (isCandidateFilePath(p)) paths.add(normalizeWsAlias(p));
     }
   }
 
@@ -6974,9 +7008,16 @@ if (deps.contextPruningManager && !prunerNoop) {
             let acceptanceSummary: AcceptanceSummary = summarizeAcceptance([]);
             try {
               const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
+              // ★ 2026-11-23 v29b T3 实证（D3b）：回执存的是工具侧原始 path
+              //   （模型传什么记什么，常带 data/workspace/ 前缀的相对路径）；
+              //   声称路径按 workspace 根解析成绝对路径。两侧坐标系不一致
+              //   → 同名落点比较永远失配 → 真实落点对的交付物误报落点漂移。
+              //   归一到同一坐标系（resolveWsReceiptPath：剥前缀 + 按根 resolve）。
+              const receiptBase = deps.workspacePath || process.cwd();
               const receiptPaths = createdFiles
                 .map((f) => f.path)
-                .filter((p): p is string => typeof p === "string" && p.length > 0);
+                .filter((p): p is string => typeof p === "string" && p.length > 0)
+                .map((p) => resolveWsReceiptPath(receiptBase, p));
               const rec = reconcileClaimedAgainstReceipts(
                 claimedPaths,
                 receiptPaths,
@@ -8221,19 +8262,21 @@ if (deps.contextPruningManager && !prunerNoop) {
                 //   shim（ratelimit.js）再删除它，回执残留 → 回合末磁盘核验把
                 //   已删文件当「声称但缺失」→ 误报任务未完成 + 无谓续跑。
                 //   口径：入参 path（工具原始落点，与 push 时 entry.path 同源）
-                //   与回执 path 各做一次归一化匹配（同 workspace 根下 resolve）。
+                //   与回执 path 各做一次坐标系归一化匹配——工具侧
+                //   stripWorkspacePrefix 会剥 data/workspace/ 前缀再落盘，
+                //   匹配必须同口径（resolveWsReceiptPath），否则「写
+                //   data/workspace/v29b-t3/x 再删 data/workspace/v29b-t3/x」
+                //   的相对入参与绝对回执永远对不上。
                 if (toolName === "file_delete") {
                   const deletedRaw = (typeof args.path === "string" && args.path) || "";
                   if (deletedRaw) {
-                    const deletedNorm = path.resolve(
-                      deps.workspacePath || process.cwd(),
-                      deletedRaw,
-                    );
+                    const receiptBase2 = deps.workspacePath || process.cwd();
+                    const deletedNorm = resolveWsReceiptPath(receiptBase2, deletedRaw);
                     for (let i = createdFiles.length - 1; i >= 0; i--) {
                       const f = createdFiles[i];
                       const hit =
                         f.path === deletedRaw ||
-                        path.resolve(deps.workspacePath || process.cwd(), f.path) === deletedNorm;
+                        resolveWsReceiptPath(receiptBase2, f.path) === deletedNorm;
                       if (hit) createdFiles.splice(i, 1);
                     }
                   }
@@ -9109,9 +9152,13 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   - 声称缺失且无对应回执 / 回执缺失 → 仍报"任务未完成"（旧语义）。
         try {
           const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
+          // ★ 2026-11-23 v29b T3 实证（D3b）：回执与声称须归一到同一坐标系
+          //   （resolveWsReceiptPath），否则真实落点对齐的交付物误报落点漂移。
+          const receiptBase = deps.workspacePath || process.cwd();
           const receiptPaths = createdFiles
             .map((f) => f.path)
-            .filter((p): p is string => typeof p === "string" && p.length > 0);
+            .filter((p): p is string => typeof p === "string" && p.length > 0)
+            .map((p) => resolveWsReceiptPath(receiptBase, p));
           const { landingMismatch: landingMismatches, trulyMissing } =
             reconcileClaimedAgainstReceipts(
               claimedPaths,
