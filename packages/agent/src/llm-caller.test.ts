@@ -2897,6 +2897,41 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).toContain("/tmp/base/todo-cli/README.md");
     expect(paths).toContain("/tmp/base/todo-cli/pyproject.toml");
   });
+
+  // ★ 2026-11-23 v29c T3 实证（D5）：树条目带 `#` 注释时，注释不得并入声称路径。
+  it("★ v29c T3：树条目 # 注释剥离（不误报带注释假路径缺失）", () => {
+    const reply =
+      "任务已全部完成。\n```\nscanner.js          # 零依赖 ESM 扫描器\n" +
+      "scanner.test.js     # 5 项断言全绿\n" +
+      "fixtures/\n  ├── leak.txt      # 检出 2（openai_sk）\n" +
+      "  └── clean.txt     # 检出 0\n```";
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/fixtures/leak.txt");
+    expect(paths).toContain("/home/u/ws/fixtures/clean.txt");
+    for (const p of paths) {
+      expect(p).not.toContain("#");
+    }
+  });
+
+  // ★ 2026-11-23 v29c T3 实证（D5b）：树块紧跟「（`v29c-t3/`）」上下文行时，
+  //   树条目（含 fixtures/ 目录段）须拼到该任务目录下，而非 workspace 根。
+  it("★ v29c T3：树块前上下文行提及任务目录时，条目拼到该目录下", () => {
+    const reply =
+      "**最终交付物（`v29c-t3/`）：**\n```\nscanner.js          # 零依赖扫描器\n" +
+      "fixtures/\n  ├── leak.txt      # 检出 2\n```";
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/v29c-t3/fixtures/leak.txt");
+    expect(paths).not.toContain("/home/u/ws/fixtures/leak.txt");
+    expect(paths).not.toContain("/home/u/ws/v29c-t3/leak.txt");
+  });
+
+  it("★ v29c T3：树块上下文提及 ws 别名（workspace/）时不改变基准（拼到 ws 根）", () => {
+    const reply =
+      "产物（`workspace/`）已就绪。\n```\n├── a.js          # 说明\n```\n完成。";
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/a.js");
+    expect(paths).not.toContain("/home/u/ws/workspace/a.js");
+  });
 });
 
 describe("extractExecutedShellCommands", () => {

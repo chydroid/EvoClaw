@@ -2325,30 +2325,73 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
     // 目录栈：[{ depth, relDir }]——depth = 前导缩进列数 / 2（│ 视觉占 2 列、空格 1 列）
     // 弹栈用 `>=`：遇到同级条目时弹出上一级目录，保持栈顶始终是最近的父目录
     const dirStack: Array<{ depth: number; relDir: string }> = [];
+    // ★ 2026-11-23 v29c T3 实证（D5b）：树块常紧跟任务目录上下文行
+    //   （「**最终交付物（`v29c-t3/`）：**」后接树）。旧行为树条目一律拼到
+    //   workspace 根 → 声称 `<ws>/fixtures/leak.txt` 与回执
+    //   `<ws>/v29c-t3/fixtures/leak.txt` 失配 → 假缺失/落点漂移。
+    //   开块时取上一非空行尾部的相对目录提及为本块基准目录（优先级高于
+    //   块内 xxx/ 树根）；`data/workspace/` 这类 ws 别名提及（末段
+    //   workspace/data）不认——它们本就指向 ws 根。
+    let blockBase = "";
+    let prevLine = "";
+    const treeBlockBaseRe = /(?<=[（(\s`])([A-Za-z0-9][A-Za-z0-9._-]*)\//g;
     for (const rawLine of lines) {
       if (/^\s*```/.test(rawLine)) {
+        if (!inCodeBlock) {
+          const refs = [...prevLine.matchAll(treeBlockBaseRe)];
+          const lastRef = refs.length > 0 ? refs[refs.length - 1][1] : "";
+          const contextualized =
+            lastRef !== "" &&
+            (/`/.test(prevLine) || /(?:交付|放在|位于|目录|产物)/.test(prevLine));
+          if (contextualized && !/^(?:workspace|data)$/i.test(lastRef)) {
+            blockBase = lastRef;
+          }
+        } else {
+          blockBase = "";
+        }
         inCodeBlock = !inCodeBlock;
         // 代码块切换：重置目录栈与根目录，避免跨块串味
         blockRoot = null;
         dirStack.length = 0;
         continue;
       }
-      if (!inCodeBlock) continue;
+      if (!inCodeBlock) {
+        if (rawLine.trim()) prevLine = rawLine;
+        continue;
+      }
       const t = treeEntryRe.exec(rawLine);
       if (!t) {
-        // 树的根目录行通常无树形前缀（如 `todo-cli/`），仅出现在块首附近；
-        // 在尚无根的情况下，把「xxx/」形式的首个非空行视为树根
-        const rootRe = /^(\S[^\s/]*)\/$/;
+        // 目录声明行（`xxx/` 无树形前缀，如 v29c T3 树块首行 `fixtures/`）：
+        // 登记树根目录名的同时**入目录栈**——旧行为只记 blockRoot，嵌套树条目
+        // （`  ├── leak.txt`）的父目录段（fixtures/）在 withRoot 拼接时丢失，
+        // 声称 `v29c-t3/leak.txt` 与回执 `v29c-t3/fixtures/leak.txt` 失配。
+        const rootRe = /^(\S[^\s/]*)\/\s*$/;
         const r = rootRe.exec(rawLine.trim());
         if (r && !blockRoot) {
           blockRoot = r[1];
+        }
+        if (r) {
+          const leadCols = rawLine.length - rawLine.trimStart().length;
+          const d = Math.floor(leadCols / 2);
+          while (dirStack.length > 0 && dirStack[dirStack.length - 1].depth >= d) {
+            dirStack.pop();
+          }
+          const parentSeg = dirStack.length > 0 ? dirStack[dirStack.length - 1].relDir : "";
+          dirStack.push({ depth: d, relDir: `${parentSeg}${r[1]}/` });
         }
         continue;
       }
       // 前导「│」视觉上占 2 列，空格占 1 列；统一折算为列数再 /2 得深度
       const cols = t[1].replace(/│/g, "  ").length;
       const depth = Math.floor(cols / 2);
-      let rel = t[2].replace(/\s*(?:\([^)]*\)|[—–-]\s*\d+\s*(?:行|bytes|KB|MB))?\s*$/, "").trim();
+      // ★ 2026-11-23 v29c T3 实证（D5）：树条目常带 `#` 注释（`leak.txt      # 检出 2`）。
+      //   旧代码只剥 `(...)`/`— N 行` 注解，注释原样并入声称路径 → 落点核验对
+      //   不存在的「带注释文件名」误报缺失 + 无谓续跑（v29c T3 末轮 3 个假声称）。
+      //   仅剥「空白 + #」起的注释（`a#b.js` 这类 # 紧跟名身的保留）。
+      let rel = t[2]
+        .replace(/\s+#.*$/, "")
+        .replace(/\s*(?:\([^)]*\)|[—–-]\s*\d+\s*(?:行|bytes|KB|MB))?\s*$/, "")
+        .trim();
       if (!rel) continue;
       // 子目录行：以 `/` 结尾（如 `todo_cli/`）或末段无扩展名
       const looksDir = rel.endsWith("/") || !/\./.test((rel.split("/").pop() || ""));
@@ -2365,10 +2408,17 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       }
       if (/^[/~]/.test(rel)) continue; // 已是绝对路径，走策略 1/2
       if (/^https?:\/\//i.test(rel)) continue;
-      // 树根目录下的条目补上前缀（如 `todo-cli/README.md`）
-      const withRoot = blockRoot && !full.startsWith(`${blockRoot}/`) && full !== blockRoot
-        ? `${blockRoot}/${full}`
-        : full;
+      // 基准目录优先级（★ 2026-11-23 v29c T3 实证 D5b）：
+      //   块外上下文提及的任务目录（blockBase）> 块内 xxx/ 树根（blockRoot）。
+      // 无上下文时保持旧行为（仅 blockRoot）。
+      let withRoot: string;
+      if (blockBase && !full.startsWith(`${blockBase}/`)) {
+        withRoot = `${blockBase}/${full}`;
+      } else if (blockRoot && !full.startsWith(`${blockRoot}/`) && full !== blockRoot) {
+        withRoot = `${blockRoot}/${full}`;
+      } else {
+        withRoot = full;
+      }
       const resolved = path.isAbsolute(withRoot) ? withRoot : path.join(baseDir, withRoot);
       if (isCandidateFilePath(resolved)) paths.add(resolved);
     }
