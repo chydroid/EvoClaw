@@ -241,7 +241,7 @@ apply_patch 失败根因：模型输出无内联路径的 `<<<<<<< SEARCH` 块�
 - **t15-03**：日志含 3 类指纹，聚合器映射检出 2/3（CACHE_EXHAUSTED、TIMEOUT），NPE 落入 OTHER 桶（OTHER 占 131/384≈34%）——归一化规则未覆盖 NPE 指纹。
 - **t15-05 会话污染**：`nope-99999.txt` 的错误回报前，模型先用 file_write 写了占位文件——压测任务措辞未禁止，非工具缺陷。
 - **t15-08**：`detect_fix.py`/`aggregate_log.py` 等产物脚本存在 cwd 耦合（复跑需按生成时目录执行）；模型在会话内 cwd 正确所以首跑成功——产物脚本鲁棒性记录在案。
-- **verify15.sh（评测脚本自身）**：`chk` 的 `eval "cd ... && ..."` 会把 shell cwd 永久留在子目录，污染后续相对路径检查（t03a 假 FAIL）。修复方式：`cd` 入 `( )` 子 shell 执行。
+- **verify15.sh（评测脚本自身）**：`chk` 的 `eval "cd ... && ..."` 会把 shell cwd 永久留在子目录，污染后续相对路径检查（t03a 假 FAIL）。修复方式：`cd` 入 `( )` 子 shell 执行。2026-11-24 该 harness 已按上述教训重建并固化为仓库资产 `scripts/verify15.sh`（cd 子 shell + 整串条件入单参数 + `--self-test` 自检三行为；原 /tmp 一次性脚本已丢失）。
 
 ### 7.4 全量回归
 
