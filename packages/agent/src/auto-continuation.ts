@@ -266,9 +266,22 @@ export function detectPrematureStop(
   // 2) 承诺后续动作 / 自述工作尚未完成——只有本轮没执行工具时才算
   //    ★ v28 压测：模型常以「进度报告」形式收尾（还没做 / 尚未执行 /
   //    下一步：修正…），旧 PROMISE 列表只认未来时承诺，漏掉这类自述。
+  // ★ 2026-11-23 v29e T3 实证（D5e）：承诺匹配前先剥掉条件从句——
+  //   「如果您有新增需求（…），告诉我具体内容，我立刻动手改代码。」这类
+  //   **条件于用户后续动作**的承诺是正常收尾话术而非停工：任务已闭环，
+  //   自动回灌「继续执行」只会让模型把「没有新增需求」当指令空转
+  //   （v29e T3：2 次 promise_future_action 无谓续跑，557k tokens）。
+  //   剥离规则：自条件词（如果/一旦/若/等你/只要…）起至句尾整段移除；
+  //   无条件标记的真承诺（「请在弹窗中批准，我立刻开工」）仍判停顿。
+  //   「若」须排除「若干」（若(?![干])）——否则「已创建若干示例，接下来我会
+  //   补全测试」被剥成空句 → 真承诺漏判。
+  const CONDITIONAL_CLAUSE_RE =
+    /(?:如果|一旦|若(?!干)|等你|等您|只要你|倘若|假如)[^。！？\n]*[。！？]?/g;
+  const unconditionalText = text.replace(CONDITIONAL_CLAUSE_RE, "");
   if (
     !opts.toolCallsThisRound &&
-    (PROMISE_FUTURE_PATTERNS.some((re) => re.test(text)) || hasUnfinishedWorkMarker(text))
+    (PROMISE_FUTURE_PATTERNS.some((re) => re.test(unconditionalText)) ||
+      hasUnfinishedWorkMarker(text))
   ) {
     return "promise_future_action";
   }

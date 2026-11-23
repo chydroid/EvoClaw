@@ -221,6 +221,41 @@ describe("detectPrematureStop — 进度报告式收尾（v28 Task 1/4 回归）
   });
 });
 
+describe("detectPrematureStop — 条件从句承诺剥离（v29e T3 回归 D5e）", () => {
+  it("★ 条件于用户后续动作的承诺（如果您有…告诉我，我立刻动手）是正常收尾话术，不判停顿", () => {
+    expect(
+      detectPrematureStop(
+        "任务已闭环。如果您有新增需求（更多密钥模式、排除规则等），告诉我具体内容，我立刻动手改代码。",
+        { toolCallsThisRound: false },
+      ),
+    ).toBeNull();
+  });
+
+  it("★ 无条件承诺仍判停顿（请在弹窗中批准，我立刻开工）", () => {
+    expect(
+      detectPrematureStop("请在弹窗中批准文件创建请求，我立刻开工。", {
+        toolCallsThisRound: false,
+      }),
+    ).toBe("promise_future_action");
+  });
+
+  it("★「若干」不被条件词「若」误剥（真承诺漏判回归）", () => {
+    expect(
+      detectPrematureStop("已创建若干示例，接下来我会补全测试并运行。", {
+        toolCallsThisRound: false,
+      }),
+    ).toBe("promise_future_action");
+  });
+
+  it("★ 条件从句剥净后仍有未完成自述 → 仍判停顿", () => {
+    expect(
+      detectPrematureStop("代码已写完。如果跑完再报告；我还没运行最终测试。", {
+        toolCallsThisRound: false,
+      }),
+    ).toBe("promise_future_action");
+  });
+});
+
 describe("shouldGrantFinalRoundContinuation — 末轮一次性续跑宽限（v28 Task 7）", () => {
   const base = {
     atFinalRound: true,
