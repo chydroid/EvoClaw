@@ -203,41 +203,62 @@ export function createGuardrailsStage(guardrailsManager: any): PipelineStage {
 /**
  * Runs before_agent_start plugin hooks via the plugin manager.
  * Allows plugins to inspect and modify the input before the agent processes it.
+ *
+ * ★ 2026-11-23 修复：旧实现调用 `pluginManager.runHook`（单数）——PluginManager
+ *   只提供 runHooks / runHooksMerged / runHooksRaw，`typeof` 守卫把缺失的方法
+ *   静默吞掉，导致 before_agent_start 在生产主路径上**从未派发**：
+ *   Memory Enhancer 的会话初始化、System Logger 的请求日志全部空转。
  */
-export function createPluginPreProcessStage(pluginManager: any): PipelineStage {
+export function createPluginPreProcessStage(pluginManager: PluginHookDispatcher | null | undefined): PipelineStage {
   return {
     name: "plugin-pre-process",
     async execute(ctx: PipelineContext): Promise<PipelineContext> {
-      if (!pluginManager || typeof pluginManager.runHook !== "function") {
+      if (!pluginManager || typeof pluginManager.runHooksMerged !== "function") {
+        return ctx;
+      }
+      if (typeof pluginManager.hasHooks === "function" && !pluginManager.hasHooks("before_agent_start")) {
         return ctx;
       }
 
       try {
-        const hookResult = await pluginManager.runHook("before_agent_start", {
+        const { blocked, cancelled, blockReason, merged } = await pluginManager.runHooksMerged({
+          type: "before_agent_start",
+          context: {
+            sessionId: ctx.sessionId,
+            agentId: ctx.agentId,
+            channel: ctx.channel,
+            peerId: ctx.peerId,
+          },
           message: ctx.effectiveMessage,
-          sessionId: ctx.sessionId,
-          channel: ctx.channel,
-          peerId: ctx.peerId,
-          agentId: ctx.agentId,
           attachments: ctx.attachments,
-          metadata: ctx.metadata,
         });
 
-        // If a plugin returns a modified message, apply it
-        if (hookResult && typeof hookResult === "object") {
-          if (typeof hookResult.message === "string") {
-            ctx.effectiveMessage = hookResult.message;
-          }
-          if (typeof hookResult.shortCircuit === "boolean" && hookResult.shortCircuit) {
-            ctx.shortCircuit = true;
-            ctx.shortCircuitReply = hookResult.reply ?? hookResult.shortCircuitReply;
-          }
-          if (Array.isArray(hookResult.warnings)) {
-            ctx.warnings.push(...hookResult.warnings);
-          }
-          if (hookResult.metadata && typeof hookResult.metadata === "object") {
-            Object.assign(ctx.metadata, hookResult.metadata);
-          }
+        // 拦截语义与 executor 内联路径一致：blocked/cancelled 都短路整轮。
+        if (blocked || cancelled) {
+          ctx.shortCircuit = true;
+          ctx.shortCircuitReply =
+            blockReason ?? "Message blocked by a before_agent_start plugin hook";
+          return ctx;
+        }
+
+        const result = merged as Partial<{
+          message: string;
+          syntheticReply: string;
+          appendSystemContext: string;
+        }>;
+
+        if (typeof result.message === "string" && result.message.length > 0) {
+          ctx.effectiveMessage = result.message;
+        }
+        if (typeof result.syntheticReply === "string" && result.syntheticReply.length > 0) {
+          ctx.shortCircuit = true;
+          ctx.shortCircuitReply = result.syntheticReply;
+          return ctx;
+        }
+        // appendSystemContext 无法在本阶段落位（system prompt 尚未组装），
+        // 交给 metadata 由 executor 在 buildSystemPrompt 之后取用。
+        if (typeof result.appendSystemContext === "string" && result.appendSystemContext.length > 0) {
+          ctx.metadata.pluginAppendSystemContext = result.appendSystemContext;
         }
       } catch (error) {
         ctx.warnings.push(
@@ -248,6 +269,30 @@ export function createPluginPreProcessStage(pluginManager: any): PipelineStage {
       return ctx;
     },
   };
+}
+
+/**
+ * 本阶段需要的 PluginManager 最小面。
+ * 结构化声明（而非 import PluginManager）让 agent 包不依赖 core 的具体类。
+ */
+export interface PluginHookDispatcher {
+  runHooksMerged(hook: {
+    type: "before_agent_start";
+    context: {
+      sessionId?: string;
+      agentId?: string;
+      channel?: string;
+      peerId?: string;
+    };
+    message: string;
+    attachments?: Array<{ name: string; type: string; size: number; data?: string | null }>;
+  }): Promise<{
+    blocked: boolean;
+    cancelled: boolean;
+    blockReason?: string;
+    merged: Record<string, unknown>;
+  }>;
+  hasHooks?(hookType: "before_agent_start"): boolean;
 }
 
 /**

@@ -535,10 +535,25 @@ export class AgentModelExecutor {
     process.stdout.write(`[AgentModelExecutor] Context engine integrated\n`);
   }
 
-  /** Set copilot router */
-  setCopilotRouter(config?: Partial<CopilotRouterConfig>): void {
-    this.copilotRouter = new CopilotRouter(config);
+  /**
+   * Set copilot router.
+   *
+   * ★ 2026-11-23 修复（双实例缺陷）：旧签名只接受 Partial<Config>，内部 new 出一个
+   * 新实例。而 server 另有一个注册为 `copilotRouter` 服务的实例，网关的
+   * `updateUserProviders()` 只灌到那个实例上 —— 真正做路由的执行器手里这份
+   * userProviders 永远是 []，`shouldDowngrade` 恒为 false，降级从未发生。
+   * 现在优先接受现成实例（同一引用），config 形式保留以兼容旧调用。
+   */
+  setCopilotRouter(routerOrConfig?: CopilotRouter | Partial<CopilotRouterConfig>): void {
+    this.copilotRouter = routerOrConfig instanceof CopilotRouter
+      ? routerOrConfig
+      : new CopilotRouter(routerOrConfig);
     process.stdout.write(`[AgentModelExecutor] Copilot router integrated (enabled=${this.copilotRouter !== null})\n`);
+  }
+
+  /** Accessor for wiring/tests: the instance actually used for routing */
+  getCopilotRouter(): CopilotRouter | null {
+    return this.copilotRouter;
   }
 
   /** Token usage tracker for recording LLM call metrics */
@@ -1278,6 +1293,9 @@ export class AgentModelExecutor {
       lifecycleManager: this.lifecycleManager,
       sessionManager: this.sessionManager,
       memoryHub: this.memoryHub,
+      // P2 接线：压缩前后派发 before/after_compaction 插件钩子
+      pluginManager: this.pluginManager,
+      compactionReason: "auto",
       // LLM 摘要生成器：调用 callLLMOnce 用第一个 provider 生成摘要。
       // 对标 Hermes ContextCompressor 的辅助 LLM 调用。
       llmSummarizer: async (prompt: string): Promise<string> => {
@@ -1994,6 +2012,9 @@ export class AgentModelExecutor {
 
   clearChatHistory(sessionId?: string): void {
     if (sessionId) {
+      // P2 接线：会话被清理 = 会话终止信号。派发 session_end（Memory Enhancer
+      // 借此把会话洞察落盘）。全局清理（无 sessionId）不逐个派发，避免洪泛。
+      this.runSessionEndHook(sessionId, "reset");
       this.conversationHistory.delete(sessionId);
       this.sequentialThinkingHistory.delete(sessionId);
       this.executionTraces.delete(sessionId);
@@ -2234,6 +2255,19 @@ export class AgentModelExecutor {
       ledger.append("session_start", { channel, peerId }, { agentId, sessionId });
     }
 
+    // ── P2 接线：session_start 插件钩子 ──
+    // ★ 2026-11-23：此前零派发点，注册 session_start 的插件（如跨会话记忆
+    //   预热）从不触发。此处每轮 chat() 入口触发一次；handler 自行决定是否
+    //   只在新会话首轮回执（幂等），执行器不替它判断。
+    if (this.pluginManager?.hasHooks("session_start")) {
+      this.pluginManager
+        .runHooks({
+          type: "session_start",
+          context: { sessionId, agentId, channel, peerId },
+        })
+        .catch((err) => asyncErr(`[AgentModelExecutor] session_start hook failed: ${err}\n`));
+    }
+
     // ── Input Pipeline: run through preprocessing stages ──
     // Inspired by OpenClaw's pipeline pattern. The pipeline handles:
     // 1. XSS sanitization
@@ -2244,6 +2278,8 @@ export class AgentModelExecutor {
     // 6. Guardrails input validation
     // 7. Plugin pre-process hooks
     let effectiveMessage = message;
+    /** before_agent_start 插件返回的追加 system 上下文（动态尾注入） */
+    let pluginAppendSystemContext = "";
     const attachments = context?.attachments as Array<{ name: string; type: string; size: number; data?: string | null }> | undefined;
     
     const inputPipeline = (this as any).inputPipeline as import("./input-pipeline").PipelineRunner | undefined;
@@ -2281,6 +2317,13 @@ export class AgentModelExecutor {
       }
       
       effectiveMessage = result.effectiveMessage;
+      // before_agent_start 插件返回的 appendSystemContext（如 Memory Enhancer
+      // 的跨会话恢复）在管线阶段无法落位——此时 system prompt 尚未组装。
+      // 暂存到本次调用的局部变量，稍后并入 dynamicSystemTail。
+      const pluginAppend = result.metadata.pluginAppendSystemContext;
+      if (typeof pluginAppend === "string" && pluginAppend.length > 0) {
+        pluginAppendSystemContext = pluginAppend;
+      }
     } else {
       // Fallback: inline processing (original behavior)
       // ── Plugin hook: before_agent_start ──
@@ -2312,6 +2355,10 @@ export class AgentModelExecutor {
           return { reply: mergedBA.syntheticReply, tokensUsed: 0, contextTokens: 0, duration: Date.now() - startTime, permissionRequests: [], toolsExecuted: false, files: [] };
         }
         if (mergedBA.message) effectiveMessage = mergedBA.message;
+        const fallbackAppend = (merged as Partial<{ appendSystemContext: string }>).appendSystemContext;
+        if (typeof fallbackAppend === "string" && fallbackAppend.length > 0) {
+          pluginAppendSystemContext = fallbackAppend;
+        }
       }
 
       // ── Inject attachment content into the message ──
@@ -3049,6 +3096,46 @@ export class AgentModelExecutor {
     await this.prewarmSkillNames();
     const systemPrompt = this.buildSystemPrompt(undefined, { channel, sessionId });
 
+    // ── Plugin hook: before_prompt_build ──
+    // ★ 2026-11-23 接线：此前该钩子零派发点，Memory Enhancer 的跨会话恢复、
+    //   Conversation Summarizer 的滚动摘要、Claude Code Tools 的工具指引
+    //   全部从未生效。
+    // 缓存安全：插件对 systemPrompt 的追加/前置**不进稳定主体**，而是转成
+    //   动态尾增量（dynamicSystemTail）——主体保持逐轮字节恒定，前缀缓存不失效。
+    let pluginPromptPrepend = "";
+    let pluginPromptAppend = "";
+    if (this.pluginManager?.hasHooks("before_prompt_build")) {
+      try {
+        const promptHook = {
+          type: "before_prompt_build" as const,
+          context: { sessionId, agentId, channel },
+          messages: (this.conversationHistory.get(sessionId) || []).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          systemPrompt,
+        };
+        const { merged } = await this.pluginManager.runHooksMerged(promptHook);
+        const mergedPB = merged as Partial<{
+          appendSystemContext: string;
+          prependSystemContext: string;
+          prependContext: string;
+        }>;
+        // 插件可能直接改写 hook.systemPrompt（如 Memory Enhancer），
+        // 也可能是返回值。两种都取，只取相对稳定主体的**增量**。
+        let appended = promptHook.systemPrompt;
+        if (appended.startsWith(systemPrompt)) appended = appended.slice(systemPrompt.length);
+        else appended = "";
+        pluginPromptAppend = [appended, mergedPB.appendSystemContext ?? ""].filter(Boolean).join("\n");
+        pluginPromptPrepend = mergedPB.prependSystemContext ?? "";
+        // prependContext 是「本轮 user 消息前缀」语义，与 system 无关，
+        // 直接并入动态尾即可（不污染历史）。
+        if (mergedPB.prependContext) pluginPromptAppend += `\n${mergedPB.prependContext}`;
+      } catch (err) {
+        asyncErr(`[AgentModelExecutor] before_prompt_build hook failed: ${err}\n`);
+      }
+    }
+
     // ── 解析本次生效的上下文窗口（分母）──
     // 顺序：用户显式设置 > 内置模型库按当前模型解析 > 兜底。
     // 这个值同时用于 ContextEngine 的截断预算，避免 1M 窗口的模型
@@ -3271,6 +3358,13 @@ export class AgentModelExecutor {
       memoryContext,
       planContext ? "\n\n[执行计划]\n" + planContext : "",
       chainContext,
+      // before_agent_start 插件追加的上下文（如跨会话记忆恢复）。
+      // 放在动态尾而非稳定主体，保持前缀缓存逐轮字节恒定。
+      pluginAppendSystemContext,
+      // before_prompt_build 插件的前置/追加内容（Memory Enhancer 恢复、
+      // Conversation Summarizer 摘要、Claude Code Tools 指引）。
+      pluginPromptPrepend,
+      pluginPromptAppend,
     ].filter(Boolean).join("");
 
     // ── Structured Output: inject schema instruction if applicable ──
@@ -3332,29 +3426,71 @@ export class AgentModelExecutor {
     let routedProviders = enabledProviders;
     let routingDecision: RoutingDecision | null = null;
 
-    if (this.copilotRouter && enabledProviders.length > 0) {
+    if (enabledProviders.length > 0) {
       const primaryProvider = enabledProviders[0];
-      routingDecision = this.copilotRouter.route(
-        effectiveMessage,
-        primaryProvider.model,
-        primaryProvider.provider || "openai",
-      );
-      if (routingDecision.shouldDowngrade) {
-        asyncLog(`[AgentModelExecutor] CopilotRouter: downgrading from ${routingDecision.originalModel} to ${routingDecision.routedModel} (${routingDecision.reason})\n`);
-        // Create a modified provider list with the routed model
-        routedProviders = enabledProviders.map((p, i) => {
-          if (i === 0) {
-            return {
-              ...p,
-              model: routingDecision!.routedModel,
-              provider: routingDecision!.routedProvider,
-              _originalModel: p.model,
-              _originalProvider: p.provider,
-            } as ProviderConfig;
+      // ★ 传 provider.id（不是 provider.provider 类型名）：CopilotRouter 的
+      //   userProviders 以 id 为键，用类型名比较会让 shouldDowngrade 永远为真。
+      routingDecision = this.copilotRouter
+        ? this.copilotRouter.route(effectiveMessage, primaryProvider.model, primaryProvider.id)
+        : null;
+
+      // ── Plugin hook: before_model_resolve ──
+      // ★ 2026-11-23 接线：该钩子此前零派发点，内置 copilot-router 插件是死码。
+      //   插件可覆盖路由决策（自定义规则 / 成本策略）；未覆盖时沿用内联路由。
+      if (this.pluginManager?.hasHooks("before_model_resolve")) {
+        try {
+          const { merged } = await this.pluginManager.runHooksMerged({
+            type: "before_model_resolve",
+            context: { sessionId, agentId, channel },
+            text: effectiveMessage,
+            model: routingDecision?.routedModel ?? primaryProvider.model,
+            provider: routingDecision?.routedProvider ?? primaryProvider.id,
+          });
+          const resolved = merged as Partial<{ model: string; provider: string }>;
+          if (resolved.model || resolved.provider) {
+            const base = routingDecision ?? {
+              shouldDowngrade: false,
+              originalModel: primaryProvider.model,
+              originalProvider: primaryProvider.id,
+              routedModel: primaryProvider.model,
+              routedProvider: primaryProvider.id,
+              reason: "before_model_resolve plugin override",
+            };
+            routingDecision = {
+              ...base,
+              routedModel: resolved.model ?? base.routedModel,
+              routedProvider: resolved.provider ?? base.routedProvider,
+              shouldDowngrade:
+                (resolved.model ?? base.routedModel) !== primaryProvider.model ||
+                (resolved.provider ?? base.routedProvider) !== primaryProvider.id,
+              reason: "before_model_resolve plugin override",
+            };
           }
-          return p;
-        });
-      } else {
+        } catch (err) {
+          asyncErr(`[AgentModelExecutor] before_model_resolve hook failed: ${err}\n`);
+        }
+      }
+
+      if (routingDecision?.shouldDowngrade) {
+        // 命中目标 provider 时把它提到队首，并只改它的 model；找不到时
+        // 退化为「沿用原 provider、只换 model」（如自定义规则指定了别名模型）。
+        const targetId = routingDecision.routedProvider;
+        const targetIdx = enabledProviders.findIndex((p) => p.id === targetId);
+        if (targetIdx >= 0) {
+          const target = enabledProviders[targetIdx];
+          const rest = enabledProviders.filter((_, i) => i !== targetIdx);
+          routedProviders = [{ ...target, model: routingDecision.routedModel }, ...rest];
+        } else {
+          routedProviders = [
+            { ...primaryProvider, model: routingDecision.routedModel },
+            ...enabledProviders.slice(1),
+          ];
+        }
+        asyncLog(
+          `[AgentModelExecutor] CopilotRouter: downgrading ${routingDecision.originalProvider}/${routingDecision.originalModel}` +
+          ` → ${routingDecision.routedProvider}/${routingDecision.routedModel} (${routingDecision.reason})\n`,
+        );
+      } else if (routingDecision) {
         asyncLog(`[AgentModelExecutor] CopilotRouter: no downgrade (${routingDecision.reason})\n`);
       }
     }
@@ -3403,6 +3539,46 @@ export class AgentModelExecutor {
             guardrailedReply = `[输出安全过滤] ${outputCheck.reason}`;
           } else if (outputCheck.sanitizedOutput) {
             guardrailedReply = outputCheck.sanitizedOutput;
+          }
+        }
+
+        // ── Plugin hook: before_agent_reply ──
+        // ★ 2026-11-23 接线：此前零派发点，Response Validator 的自动修复
+        //   （截断补注、重复句清理）、Code Analyzer 的回复期报告全部失效。
+        // 位置在 guardrails 之后、返回之前：插件只处理已通过安全过滤的文本，
+        // 且改写结果直接作为最终回复。合成回复（syntheticReply）可整轮接管。
+        if (this.pluginManager?.hasHooks("before_agent_reply") && guardrailedReply) {
+          try {
+            const replyMessages = [
+              ...(this.conversationHistory.get(sessionId) || []).map((m) => ({
+                role: m.role,
+                content: m.content,
+              })),
+              { role: "assistant", content: guardrailedReply },
+            ];
+            const { merged } = await this.pluginManager.runHooksMerged({
+              type: "before_agent_reply",
+              context: { sessionId, agentId, channel },
+              messages: replyMessages,
+              model: this.getActiveModelName() ?? "unknown",
+              provider: "auto",
+            });
+            const mergedBAR = merged as Partial<{
+              syntheticReply: string;
+              appendSystemContext: string;
+            }>;
+            if (typeof mergedBAR.syntheticReply === "string" && mergedBAR.syntheticReply.length > 0) {
+              guardrailedReply = mergedBAR.syntheticReply;
+            } else {
+              // 插件按约定原地修改 messages 末条 assistant 内容（Response
+              // Validator 就是这样修截断的），取其结果作为最终回复。
+              const lastAssistant = [...replyMessages].reverse().find((m) => m.role === "assistant");
+              if (typeof lastAssistant?.content === "string" && lastAssistant.content.length > 0) {
+                guardrailedReply = lastAssistant.content;
+              }
+            }
+          } catch (err) {
+            asyncErr(`[AgentModelExecutor] before_agent_reply hook failed: ${err}\n`);
           }
         }
 
@@ -3527,6 +3703,31 @@ export class AgentModelExecutor {
       }
     }
 
+    // ── Plugin hook: before_agent_reply（skill-fallback 出口同样派发）──
+    if (this.pluginManager?.hasHooks("before_agent_reply") && reply) {
+      try {
+        const replyMessages = [{ role: "assistant", content: reply }];
+        const { merged } = await this.pluginManager.runHooksMerged({
+          type: "before_agent_reply",
+          context: { sessionId, agentId, channel },
+          messages: replyMessages,
+          model: this.getActiveModelName() ?? "unknown",
+          provider: "local",
+        });
+        const synthetic = (merged as Partial<{ syntheticReply: string }>).syntheticReply;
+        if (typeof synthetic === "string" && synthetic.length > 0) {
+          reply = synthetic;
+        } else {
+          const lastAssistant = [...replyMessages].reverse().find((m) => m.role === "assistant");
+          if (typeof lastAssistant?.content === "string" && lastAssistant.content.length > 0) {
+            reply = lastAssistant.content;
+          }
+        }
+      } catch (err) {
+        asyncErr(`[AgentModelExecutor] before_agent_reply hook failed (fallback path): ${err}\n`);
+      }
+    }
+
     // ── Observability: end trace ──
     if (this.observability && currentTraceId) {
       this.observability.endTrace(currentTraceId);
@@ -3573,17 +3774,41 @@ export class AgentModelExecutor {
     result: { reply: string; tokensUsed: number; duration: number; permissionRequests: Array<{ id: string; operation: string; description: string; target: string }> },
   ): void {
     if (!this.pluginManager?.hasHooks("agent_end")) return;
+    // ★ 2026-11-23 P2 修复：此前只传 [{role:"assistant"}] + toolCalls:0，
+    //   Conversation Summarizer 的 userTurnCount 恒为 0（永不触发摘要），
+    //   Cost Tracker 拿不到模型名（恒按通用价估算）。
+    //   现在：真实会话历史 + 本轮模型 + 真实工具调用数。
+    const history = this.conversationHistory.get(sessionId) || [];
+    const toolCalls = history.reduce((n, m) => n + (Array.isArray((m as { tool_calls?: unknown[] }).tool_calls) ? (m as { tool_calls: unknown[] }).tool_calls.length : 0), 0);
+    const messages = [
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "assistant", content: result.reply },
+    ];
     this.pluginManager.runHooks({
       type: "agent_end",
       context: { sessionId, agentId, channel },
-      messages: [{ role: "assistant", content: result.reply }],
+      messages,
       metadata: {
         tokensUsed: result.tokensUsed,
         duration: result.duration,
-        toolCalls: 0,
+        toolCalls,
         success: true,
+        model: this.getActiveModelName(),
       },
     }).catch(err => asyncErr(`[AgentModelExecutor] agent_end hook failed: ${err}\n`));
+  }
+
+  /** Run the session_end plugin hook asynchronously (fire and forget) */
+  private runSessionEndHook(sessionId: string, reason: "completed" | "timeout" | "error" | "reset" | "new_session"): void {
+    if (!this.pluginManager?.hasHooks("session_end")) return;
+    const agentId = this._currentAgentBySession.get(sessionId) ?? "default";
+    this.pluginManager
+      .runHooks({
+        type: "session_end",
+        context: { sessionId, agentId },
+        reason,
+      })
+      .catch((err) => asyncErr(`[AgentModelExecutor] session_end hook failed: ${err}\n`));
   }
 
   /** Asynchronously save an interaction to long-term memory */

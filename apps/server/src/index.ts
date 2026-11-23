@@ -33,7 +33,7 @@ const SERVER_VERSION = getServerVersion();
 // 设置全局版本号，供 gateway健康检查和 /api/version 端点使用
 (globalThis as Record<string, unknown>).__EVOCLAW_VERSION__ = SERVER_VERSION;
 
-import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager, getWorkspaceDir } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, SystemEvents, ConfigManager, PluginManager, ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, printMigrationHints, FeatureFlagStore, discoverExtensions, loadExtensions, classifyExtension, PersonaManager, EnvManager, getWorkspaceDir, type BeforeModelResolveHook } from "@evoclaw/core";
 import { GatewayServer, ChannelManager, ProtocolHandler, WeixinPluginAdapter, ReplyReferenceManager, DeadLetterQueue, VoiceService, GatewayMetadataCache, WebhookManager } from "@evoclaw/gateway";
 import type { ChannelMessage } from "@evoclaw/gateway";
 import { TaskOrchestrator, AgentPoolManager, ActorSystem, AgentModelExecutor, TaskPlanner, BootstrapManager, CompactionManager, AgentLifecycleManager, QueueManager, SessionManager, ContextEngine, AgentRouter, SubagentRegistry, DelegateEngine, AutoReplyEngine, CommitmentManager, EventLedger, ExecutionCheckpointStore, HumanApprovalManager, TokenUsageTracker, RoomManager, getClarifyGateway } from "@evoclaw/agent";
@@ -859,13 +859,12 @@ export class EvoClawServer {
 
     // ── CopilotRouter: route simple tasks to cheaper models ──
     // v0.42.0: No longer defaults to gpt-4o-mini. Uses user's LLM config order.
-    // When local model is available, simple tasks route to local Qwen2.5-0.5B.
-    this.agentModelExecutor.setCopilotRouter({
-      enabled: true,
-      defaultModel: "",  // Will use first enabled user provider
-      defaultProvider: "",  // Will use first enabled user provider
-    });
-    process.stdout.write(`[Server] CopilotRouter initialized (respects user LLM config order)\n`);
+    // ★ 2026-11-23 修复（双实例缺陷）：这里曾用 setCopilotRouter({...}) 新建一个
+    //   实例，而网关 applyLLMConfig() 的 updateUserProviders() 只灌到构造期
+    //   注册的 `copilotRouter` 服务（上面 this.copilotRouter）——执行器那份
+    //   userProviders 永远为空，降级从未发生。现在把同一引用交给执行器。
+    this.agentModelExecutor.setCopilotRouter(this.copilotRouter);
+    process.stdout.write(`[Server] CopilotRouter wired to executor (same instance; respects user LLM config order)\n`);
 
     // ── R11 P0 死码接线：ModelFailoverManager ──
     // 台账：类完整（707 行）+ 两 API 路由（/api/system/failover/status|reset）+
@@ -884,6 +883,12 @@ export class EvoClawServer {
     this.channelManager = new ChannelManager(this.eventBus);
     this.agentModelExecutor.setChannelManager(this.channelManager as any);
     this.registry.registerService("channelManager", this.channelManager);
+    // P2 接线（2026-11-23）：把 PluginManager 注入渠道层，使
+    // message_received / message_sending / message_sent 钩子真正派发
+    // （Security Middleware 的 ContentGuard 入站/出站扫描此前是死码）。
+    // 注意：security-middleware 插件在下方 registerHooks 阶段才注册，
+    // 但 setPluginManager 只存引用，hasHooks() 在消息流经时才求值 → 顺序无碍。
+    this.channelManager.setPluginManager(this.pluginManager);
     // R11 P0：入站分发去重（channel+messageId，处理失败不记账允许平台重投）
     this.channelManager.enableDispatchDedupe({
       persistPath: path.resolve(__dirname, "..", "..", "..", "data", "dispatch-dedupe.json"),
@@ -1563,25 +1568,29 @@ export class EvoClawServer {
 
     this.securityMiddleware.registerHooks(this.pluginManager);
 
+    // copilot-router：路由决策的唯一实现是执行器内联调用（agent-model-executor
+    // 每轮 `copilotRouter.route(...)`）。此插件只做「可见性 + 可审计」：把同一
+    // 实例的最近决策暴露到 /api/plugins，不再重复挂 before_model_resolve
+    // （该钩子自 2026-11-23 起才真正派发；双份路由会互相覆盖）。
     await this.pluginManager.registerPlugin({
-      manifest: { name: "copilot-router", version: "1.0.0", description: "Routes low-value tasks to cheaper models" },
+      manifest: { name: "copilot-router", version: "1.1.0", description: "Routes low-value tasks to cheaper models" },
       hooks: [
         {
           hookType: "before_model_resolve",
           priority: "normal" as const,
-          handler: async (hook: any) => {
-            const taskDesc = hook?.context?.text || hook?.context?.message || "";
-            if (!taskDesc || !this.copilotRouter) return;
-            const currentModel = hook?.model || "unknown";
-            const currentProvider = hook?.provider || "unknown";
-            const decision = this.copilotRouter.route(taskDesc, currentModel, currentProvider);
-            if (decision.shouldDowngrade) {
-              hook.model = decision.routedModel;
-              hook.provider = decision.routedProvider;
-              this.logger.info("copilot", `Routed to ${decision.routedModel} (${decision.routedProvider}): ${decision.reason}`);
-              return { model: decision.routedModel, provider: decision.routedProvider };
-            }
-            return;
+          handler: async (hook) => {
+            // 兜底路径：执行器内联路由之外的调用方（如直接走 llm-caller 的
+            // 请求）也能拿到降级决策。与内联路径共享同一实例，结果幂等。
+            const h = hook as BeforeModelResolveHook;
+            const taskDesc = h.text || "";
+            if (!taskDesc || !this.copilotRouter) return undefined;
+            const decision = this.copilotRouter.route(taskDesc, h.model, h.provider);
+            if (!decision.shouldDowngrade) return undefined;
+            this.logger.info(
+              "copilot",
+              `Routed to ${decision.routedModel} (${decision.routedProvider}): ${decision.reason}`,
+            );
+            return { model: decision.routedModel, provider: decision.routedProvider };
           },
         },
       ],
