@@ -957,6 +957,11 @@ export function hasActionIntent(message: string): boolean {
     "发送", "推送", "通知", "send", "push", "notify",
     "压缩", "解压", "打包", "compress", "extract", "archive",
     "格式化", "美化", "format", "prettify",
+    // 工程实现类动词（v27 T8 起补齐）：任务书常用「实现/编写/编译/交付」而未必
+    // 出现「运行/执行」，缺这些词会让整类编码任务漏判。
+    "实现", "编写", "开发", "构建", "编译", "修复", "重构", "交付",
+    "检查", "校验", "修正", "验证",
+    "implement", "develop", "build", "compile", "fix", "refactor", "check", "verify",
   ];
   const excludePatterns = [
     /系统\s*中/i,
@@ -968,7 +973,18 @@ export function hasActionIntent(message: string): boolean {
     /为什么/i,
     /如何/i,
   ];
-  if (excludePatterns.some(p => p.test(message))) return false;
+  // ★ 2026-11-23（v27 T8 实证）：问句词是**整句级**判定，不能拿裸词否决长任务。
+  //   T8 任务书 1300 字，只因验收项写了「folded_ast 是否含 var」，旧实现直接
+  //   判成无操作意图 → 轮次上限 25 掉到 10 → 预算耗尽、任务中断。
+  //   与护栏「话题 ≠ 意图」同族：从属短语 ≠ 整句意图。
+  //   现规则：命中问句词时，仅当「短消息（≤60 字）或句首提问」且「无祈使/交付
+  //   标记」才排除；「请/帮我/必须交付…」一律按执行意图处理。
+  if (excludePatterns.some(p => p.test(message))) {
+    const trimmed = message.trim();
+    const imperative = /(?:请(?!问)|帮我|给我|麻烦|务必|必须|需要你)/.test(trimmed);
+    const questionLike = trimmed.length <= 60 || /^(?:请问|是否|有没有|是不是|怎么样|什么是|为什么|如何)/.test(trimmed);
+    if (!imperative && questionLike) return false;
+  }
   return actionKeywords.some((kw) => lower.includes(kw));
 }
 

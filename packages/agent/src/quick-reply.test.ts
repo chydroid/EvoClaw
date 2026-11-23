@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { tryAstronomyReply } from "./quick-reply";
+import { tryAstronomyReply, hasActionIntent } from "./quick-reply";
 
 // ═══════════════════════════════════════════════════════════
 // 测试套件：天文时刻本地计算快速通道（tryAstronomyReply）
@@ -126,5 +126,37 @@ describe("quick-reply > tryAstronomyReply", () => {
   it("API 异常时应返回 null 并优雅降级", async () => {
     const reply = await tryAstronomyReply("告诉我北京的日出日落时间");
     expect(reply).toBeNull();
+  });
+});
+
+describe("quick-reply > hasActionIntent（问句词不当否决执行意图）", () => {
+  it("短问句仍按提问处理", () => {
+    expect(hasActionIntent("163 邮箱的 IMAP 服务器地址是什么？")).toBe(false);
+    expect(hasActionIntent("如何创建一个文件夹？")).toBe(false);
+    expect(hasActionIntent("请问什么是 RAG")).toBe(false);
+  });
+
+  it("长工程任务里出现从属问句词不应否决（v27 T8 回归）", () => {
+    // 1300 字任务书，验收项写「folded_ast 是否含 var」——旧实现整条判 false，
+    // 轮次上限 25→10。任务书含交付/运行意图时必须为 true。
+    const task = [
+      "你是编译器工程师。在 data/workspace/x/ 交付零依赖 Node 表达式编译器。",
+      "必须交付：expr.js、expr.test.js、README.md、report.json。",
+      "词法/语法：整数、标识符、函数调用、括号、一元运算、二元运算、三元。",
+      "必须真实运行 CLI 并在回复中写明 value、folded_ast 是否含 var，以及 bad_expr 的退出码。",
+    ].join("");
+    expect(hasActionIntent(task)).toBe(true);
+  });
+
+  it("祈使句中的问句词按执行意图处理", () => {
+    expect(hasActionIntent("请分析一下这段代码为什么这么慢")).toBe(true);
+    expect(hasActionIntent("为什么任务失败了，帮我修复")).toBe(true);
+    expect(hasActionIntent("帮我看看配置是否生效并修正")).toBe(true);
+  });
+
+  it("工程实现类动词可独立触发意图", () => {
+    expect(hasActionIntent("实现一个 LSM 树")).toBe(true);
+    expect(hasActionIntent("编写 README 并编译验证")).toBe(true);
+    expect(hasActionIntent("交付 report.json")).toBe(true);
   });
 });

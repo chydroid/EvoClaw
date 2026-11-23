@@ -6367,7 +6367,11 @@ if (deps.contextPruningManager && !prunerNoop) {
         // ★ 2026-10-30 提升至 1.8M：与 action-intent 轮次上限 25 配套。
         // v7 压测实测：Task 7 每轮 ~40K tokens（795K/20轮），Task 8 每轮 ~61K
         // （1.23M/20轮）。25 轮 × 61K ≈ 1.53M，1.8M 留余量给总结调用。
-        const TOKEN_BUDGET = 1800000;
+        // ★ 2026-11-23（v27 实证）再提至 3.0M：任务书变长后每轮降到 ~75-90K
+        //   （T10: 932K/约 10 轮，T3: 1.86M 触发强制总结），1.8M 会在 25 轮上限
+        //   之前先耗尽——token 预算与轮次上限必须同口径（25 轮 × 90K ≈ 2.25M，
+        //   3.0M 留出收尾/总结余量）。安全网仍是轮次上限 + 循环检测器。
+        const TOKEN_BUDGET = 3000000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
           pendingTransient.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
