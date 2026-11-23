@@ -3286,11 +3286,11 @@ describe("computeDynamicToolLimitCached", () => {
       "词法/语法：整数、标识符、函数调用、括号、一元运算、二元运算、三元。",
       "必须真实运行 CLI 并在回复中写明 value、folded_ast 是否含 var，以及 bad_expr 的退出码。",
     ].join("");
-    expect(computeDynamicToolLimitCached(task, 10, 30, noHistory, "dyn-eng")).toBe(25);
+    expect(computeDynamicToolLimitCached(task, 10, 40, noHistory, "dyn-eng")).toBe(30);
   });
 
   it("短问句维持 base 轮次", () => {
-    expect(computeDynamicToolLimitCached("163 邮箱的 IMAP 服务器地址是什么？", 10, 30, noHistory, "dyn-q")).toBe(10);
+    expect(computeDynamicToolLimitCached("163 邮箱的 IMAP 服务器地址是什么？", 10, 40, noHistory, "dyn-q")).toBe(10);
   });
 
   it("历史过长时回落到 base 上限", () => {
@@ -3298,6 +3298,6 @@ describe("computeDynamicToolLimitCached", () => {
       ["dyn-h", Array.from({ length: 31 }, () => ({ role: "user", content: "x" }))],
     ]);
     const task = "实现一个 LSM 树并运行测试";
-    expect(computeDynamicToolLimitCached(task, 10, 30, longHistory as never, "dyn-h")).toBe(20);
+    expect(computeDynamicToolLimitCached(task, 10, 40, longHistory as never, "dyn-h")).toBe(25);
   });
 });

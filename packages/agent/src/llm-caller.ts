@@ -1826,8 +1826,10 @@ function computeDynamicToolLimit(
   if (hasActionIntentFn(message)) {
     // ★ 2026-10-30 提升 +10→+15：v7 压测复跑实证——Task 7/8（运维/算法类）
     //   标题不匹配 complexPatterns 但 hasActionIntent=true，旧 +10 给出 20 轮
-    //   不够完成多文件脚手架+测试+部署。+15 → 25 轮，配合 TOKEN_BUDGET=1.8M。
-    limit = Math.min(cap, limit + 15);
+    //   不够完成多文件脚手架+测试+部署。
+    // ★ 2026-11-23 提升 +15→+20（→30 轮）：v27 T8 在 25 轮（退款前）+ 2 轮退款
+    //   后仍在收尾阶段耗尽，3 个必交产物缺失；工程任务需要约 30 轮。
+    limit = Math.min(cap, limit + 20);
   }
 
   const sessionHistory = conversationHistory.get(sessionId) || [];
@@ -4668,11 +4670,14 @@ export async function tryCallLLM(
   //   任务，cap=20 为极复杂场景留足空间。每轮可并行多个工具调用。
   // ★ 2026-10-30 提升 cap 至 30：v7 压测复跑实证——Task 1/7/8 均在 round 20
   //   撞顶时仍有大量工作未完成（Task 7 刚写完 17 个 .tf 文件还没部署/写 README；
-  //   Task 8 写完实现+测试还没跑测试）。30 轮 × ~36K tokens/轮 ≈ 1.1M tokens，
-  //   与下方 TOKEN_BUDGET=1.2M 配套。循环安全仍靠 MAX_AUTO_CONTINUE=3 +
-  //   overlapRatio>0.7 守卫兜底，勿删。
+  //   Task 8 写完实现+测试还没跑测试）。30 轮 × ~36K tokens/轮 ≈ 1.1M tokens。
+  // ★ 2026-11-23（v27 T8 两轮实证）cap 提至 40：编译器类任务（实现+字节码+tests+
+  //   README+report）在 25-30 轮仍会在收尾前耗尽——首轮 limit=10（问句词误判，
+  //   已修）停在 16 轮；修复后 limit=25 + 退款扩到 30 轮仍在第 30 轮被迫总结，
+  //   3 个必交产物未写。40 轮 × 实测 ≤90K/轮 ≈ 3.6M，与 TOKEN_BUDGET 同口径。
+  //   循环安全仍靠 MAX_AUTO_CONTINUE=3 + overlapRatio>0.7 守卫兜底，勿删。
   const BASE_MAX_TOOL_ROUNDS = 10;
-  const MAX_TOOL_ROUNDS_CAP = 30;
+  const MAX_TOOL_ROUNDS_CAP = 40;
   const MAX_CONSECUTIVE_ERRORS = 3;
   // 自动续跑上限：检测到「该继续却停下来问人」时，最多自动回灌多少轮。
   // 上限存在的意义是兜底：万一模型每轮都重复同样的停顿话术，不能无限循环。
@@ -6364,14 +6369,14 @@ if (deps.contextPruningManager && !prunerNoop) {
           onProgress?.({ type: "usage", detail: "上下文用量已更新", progress: 100, promptTokens: result.promptTokens });
         }
 
-        // ★ 2026-10-30 提升至 1.8M：与 action-intent 轮次上限 25 配套。
+        // ★ 2026-10-30 提升至 1.8M：与 action-intent 轮次上限配套。
         // v7 压测实测：Task 7 每轮 ~40K tokens（795K/20轮），Task 8 每轮 ~61K
-        // （1.23M/20轮）。25 轮 × 61K ≈ 1.53M，1.8M 留余量给总结调用。
-        // ★ 2026-11-23（v27 实证）再提至 3.0M：任务书变长后每轮降到 ~75-90K
-        //   （T10: 932K/约 10 轮，T3: 1.86M 触发强制总结），1.8M 会在 25 轮上限
-        //   之前先耗尽——token 预算与轮次上限必须同口径（25 轮 × 90K ≈ 2.25M，
-        //   3.0M 留出收尾/总结余量）。安全网仍是轮次上限 + 循环检测器。
-        const TOKEN_BUDGET = 3000000;
+        // （1.23M/20轮）。
+        // ★ 2026-11-23（v27 实证）提至 3.6M：任务书变长后每轮 ~45-90K
+        //   （T8: 1.36M/29 轮，T10: 932K/约 10 轮，T3: 1.86M 触发强制总结）。
+        //   轮次 cap=40 时必须同口径：40 × 90K = 3.6M，否则 token 预算会先于
+        //   轮次上限触发强制总结。安全网仍是轮次上限 + 循环检测器。
+        const TOKEN_BUDGET = 3600000;
         if (totalTokensUsed > TOKEN_BUDGET * 0.5 && totalTokensUsed <= TOKEN_BUDGET * 0.5 + result.tokensUsed) {
           process.stderr.write(`[AgentModelExecutor] Token budget 50% reached: ${totalTokensUsed}/${TOKEN_BUDGET} for session "${sessionId}"\n`);
           pendingTransient.push({ role: "user", content: PromptRegistry.getInstance().format("token_budget.warning_50", {}) });
