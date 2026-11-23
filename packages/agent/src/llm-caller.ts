@@ -2361,23 +2361,33 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
       }
       const t = treeEntryRe.exec(rawLine);
       if (!t) {
-        // 目录声明行（`xxx/` 无树形前缀，如 v29c T3 树块首行 `fixtures/`）：
-        // 登记树根目录名的同时**入目录栈**——旧行为只记 blockRoot，嵌套树条目
-        // （`  ├── leak.txt`）的父目录段（fixtures/）在 withRoot 拼接时丢失，
-        // 声称 `v29c-t3/leak.txt` 与回执 `v29c-t3/fixtures/leak.txt` 失配。
-        const rootRe = /^(\S[^\s/]*)\/\s*$/;
-        const r = rootRe.exec(rawLine.trim());
-        if (r && !blockRoot) {
-          blockRoot = r[1];
+        // 目录声明行（纯路径 + 尾 `/`、无树形前缀）：
+        // - 单段 `xxx/`（如 v29c T3 的 `fixtures/`、既有 `todo-cli/`）：登记树根
+        //   目录名的同时**入目录栈**——嵌套树条目的父目录段在 withRoot 拼接时
+        //   丢失的缺陷（旧行为只记 blockRoot）由此修复；
+        // - ★ 2026-11-23 v29d T3 实证（D5c）：多段任务目录声明
+        //   （`data/workspace/v29d-t3/`）——单段 rootRe 匹配不上 → 整块丢失
+        //   基准 → 全部条目声称到 workspace 根（3 次落点漂移误报）。
+        //   剥 ws 别名前缀（data/workspace/ 即 ws 根，与工具侧
+        //   stripWorkspacePrefix 同口径）后整段作为块基准，与单段同待遇。
+        const dirDeclRe = /^[\w.-]+(?:\/[\w.-]+)*\/$/;
+        const decl = dirDeclRe.test(rawLine.trim()) ? rawLine.trim() : "";
+        let seg = "";
+        if (decl) {
+          seg = decl.replace(/^data\/workspace\//i, "");
+          if (seg === "") continue; // 纯 `data/workspace/` 即 ws 根，条目本就拼到根
         }
-        if (r) {
+        if (seg && !blockRoot) {
+          blockRoot = seg;
+        }
+        if (seg) {
           const leadCols = rawLine.length - rawLine.trimStart().length;
           const d = Math.floor(leadCols / 2);
           while (dirStack.length > 0 && dirStack[dirStack.length - 1].depth >= d) {
             dirStack.pop();
           }
           const parentSeg = dirStack.length > 0 ? dirStack[dirStack.length - 1].relDir : "";
-          dirStack.push({ depth: d, relDir: `${parentSeg}${r[1]}/` });
+          dirStack.push({ depth: d, relDir: `${parentSeg}${seg}/` });
         }
         continue;
       }

@@ -2932,6 +2932,36 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).toContain("/home/u/ws/a.js");
     expect(paths).not.toContain("/home/u/ws/workspace/a.js");
   });
+
+  // ★ 2026-11-23 v29d T3 实证（D5c）：树块首行写多段任务目录
+  //   （`data/workspace/v29d-t3/`）时，单段 rootRe 匹配不上 → 整块丢基准 →
+  //   全部条目声称到 workspace 根（3 次 file_landed_wrong_path 无谓续跑）。
+  //   多段声明剥 ws 别名前缀后整段作块基准。
+  it("★ v29d T3：多段任务目录声明（data/workspace/<dir>/）作为树块基准", () => {
+    const reply =
+      "交付物齐全且路径正确：\n```\n" +
+      "data/workspace/v29d-t3/\n" +
+      "├── scanner.js          (2111 B)\n" +
+      "├── scanner.test.js     (1008 B)\n" +
+      "└── fixtures/\n" +
+      "    ├── leak.txt        (检出 2)\n" +
+      "    └── clean.txt       (检出 0)\n```\n完成。";
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/v29d-t3/scanner.js");
+    expect(paths).toContain("/home/u/ws/v29d-t3/scanner.test.js");
+    expect(paths).toContain("/home/u/ws/v29d-t3/fixtures/leak.txt");
+    expect(paths).toContain("/home/u/ws/v29d-t3/fixtures/clean.txt");
+    expect(paths).not.toContain("/home/u/ws/scanner.js");
+    expect(paths).not.toContain("/home/u/ws/fixtures/leak.txt");
+  });
+
+  it("★ v29d T3：纯 `data/workspace/` 声明即 ws 根，条目拼到 ws 根（不产生别名段）", () => {
+    const reply =
+      "产物如下：\n```\ndata/workspace/\n├── a.js          (100 B)\n```\n完成。";
+    const paths = extractClaimedFilePaths(reply, "/home/u/ws");
+    expect(paths).toContain("/home/u/ws/a.js");
+    expect(paths).not.toContain("/home/u/ws/data/workspace/a.js");
+  });
 });
 
 describe("extractExecutedShellCommands", () => {
