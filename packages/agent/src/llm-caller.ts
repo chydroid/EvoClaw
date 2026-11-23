@@ -2587,6 +2587,9 @@ function getSessionPersistenceDeps(deps: LLMCallerDeps): SessionPersistenceDeps 
     lifecycleManager: deps.lifecycleManager,
     sessionManager: deps.sessionManager,
     memoryHub: deps.memoryHub,
+    // P2 接线：压缩前后派发 before/after_compaction 插件钩子
+    pluginManager: deps.pluginManager,
+    compactionReason: "auto",
     // LLM 摘要生成器：调用 callLLMOnce 用第一个 provider 生成摘要。
     // 对标 Hermes ContextCompressor 的辅助 LLM 调用（auxiliary.compression）。
     llmSummarizer: async (prompt: string): Promise<string> => {

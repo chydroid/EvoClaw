@@ -5439,6 +5439,29 @@ export class ProtocolAdapter {
       }
     });
 
+    // ── Cost Tracker 查询端点（★ 2026-11-23 P2 接线）──
+    // 此前 getCostSummary/getSessionCost 是零消费死码。挂在 /api/plugins/:name
+    // 之前（Express 注册顺序），把成本追踪器接给运维/前端（TokenUsagePage 可复用）。
+    app.get("/api/plugins/cost-summary", async (_req: Request, res: Response) => {
+      try {
+        const { getCostSummary, getSessionCost } = await import("@evoclaw/agent/plugins");
+        const summary = getCostSummary();
+        res.json({ success: true, summary });
+      } catch (err) {
+        this.handleError(err, res, "Failed to fetch cost summary");
+      }
+    });
+
+    app.get("/api/plugins/session-cost/:sessionId", async (req: Request, res: Response) => {
+      try {
+        const { getSessionCost } = await import("@evoclaw/agent/plugins");
+        const sessionId = String(req.params.sessionId);
+        res.json({ success: true, sessionCost: getSessionCost(sessionId) });
+      } catch (err) {
+        this.handleError(err, res, "Failed to fetch session cost");
+      }
+    });
+
     app.post("/api/plugins/install", async (req: Request, res: Response) => {
       try {
         let { name, version, source } = req.body;

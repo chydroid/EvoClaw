@@ -101,11 +101,16 @@ export function createCostTrackerPlugin(): Plugin {
         hookType: "agent_end",
         priority: "normal",
         handler: (hook: AgentEndHook) => {
+          const model = hook.metadata.model;
           const entry: CostEntry = {
             timestamp: new Date(),
             sessionId: hook.context.sessionId,
             tokensUsed: hook.metadata.tokensUsed ?? 0,
-            estimatedCost: estimateCost(hook.metadata.tokensUsed ?? 0),
+            // ★ 2026-11-23 P2：把模型名传给 estimateCost（此前恒为 undefined →
+            //   所有成本都按通用价 0.001/0.002 估算，各模型差异全部丢失）。
+            estimatedCost: estimateCost(hook.metadata.tokensUsed ?? 0, model),
+            model,
+            provider: hook.context.channel,
           };
           recordCost(entry);
 

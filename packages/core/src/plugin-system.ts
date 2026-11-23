@@ -92,6 +92,11 @@ export interface AgentEndHook {
     toolCalls: number;
     success: boolean;
     error?: string;
+    /**
+     * 本轮实际使用的模型（★ 2026-11-23 P2：Cost Tracker 按模型单价估算成本。
+     * 缺省时 Cost Tracker 回退到通用价，精度下降但不报错。）
+     */
+    model?: string;
   };
 }
 
@@ -103,6 +108,12 @@ export interface AgentEndResult extends HookBaseResult {
 export interface BeforeModelResolveHook {
   type: "before_model_resolve";
   context: HookContext;
+  /**
+   * 本轮任务文本（用户消息）。
+   * ★ 2026-11-23：旧定义只有 model/provider，插件无法据此判断任务复杂度——
+   *   内置 copilot-router 处理器读 hook.context.text 永远得到 undefined。
+   */
+  text: string;
   /** Current model config */
   model: string;
   provider: string;

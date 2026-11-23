@@ -7,7 +7,7 @@
  */
 
 import * as crypto from "node:crypto";
-import type { EventBus } from "@evoclaw/core";
+import type { EventBus, PluginManager } from "@evoclaw/core";
 // R11 P0 死码接线（台账第 5 项）：DispatchDedupeStore / BotLoopProtection 此前
 // 仅 barrel 导出、零实例化。接入点选在 ChannelManager.handleIncomingMessage——
 // 全部渠道适配器（telegram/feishu/discord/...）的 onMessage 都汇入此处。
@@ -150,9 +150,72 @@ export class ChannelManager {
   private loopProtectionByGroup = new Map<string, BotLoopProtection>();
   /** 循环防护动作日志去抖：同一群短时间内不重复告警。 */
   private lastLoopActionByGroup = new Map<string, { action: string; at: number }>();
+  /**
+   * P2 接线（2026-11-23）：入站 message_received / 出站 message_sending+message_sent
+   * 插件钩子派发器。此前 Security Middleware（ContentGuard）注册的
+   * message_received / message_sending 钩子零派发点——注入/PII 扫描在渠道消息
+   * 上从不运行。server 启动时经 setPluginManager 注入。
+   */
+  private pluginManager: PluginManager | null = null;
 
   constructor(eventBus?: EventBus) {
     this.eventBus = eventBus ?? null;
+  }
+
+  /** 注入 PluginManager 以启用 message_received / message_sending / message_sent 钩子派发。 */
+  setPluginManager(pm: PluginManager): void {
+    this.pluginManager = pm;
+  }
+
+  /** 派发 message_received 钩子（Security Middleware 的 ContentGuard 入站扫描）。 */
+  private async dispatchMessageReceived(msg: ChannelMessage): Promise<{ blocked: boolean; reason?: string; text?: string }> {
+    if (!this.pluginManager?.hasHooks("message_received")) return { blocked: false };
+    try {
+      const { blocked, blockReason, cancelled, merged } = await this.pluginManager.runHooksMerged({
+        type: "message_received",
+        context: { channel: msg.channel, peerId: msg.from },
+        text: msg.text ?? "",
+        metadata: {
+          messageId: msg.messageId,
+          isDirect: msg.isDirect,
+          isGroup: msg.isGroup,
+          attachments: msg.attachments?.length ?? 0,
+        },
+      });
+      // block:true（带 blockReason）与 cancel:true（ContentGuard 的拦截语义，
+      // error 字段携带原因）都是终止语义 → 一律丢弃本条消息。
+      if (blocked || cancelled) {
+        const reason = blockReason ?? "message_received hook cancelled the message";
+        return { blocked: true, reason, text: (merged as Partial<{ text: string }>).text };
+      }
+      return { blocked: false, text: (merged as Partial<{ text: string }>).text };
+    } catch (err) {
+      // 钩子失败不拦消息（fail-open：与 P0 时代渠道消息从不被插件钩子拦截的行为一致）
+      process.stderr.write(`[ChannelManager] message_received hook failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      return { blocked: false };
+    }
+  }
+
+  /** 派发 message_sending 钩子（Security Middleware 的 ContentGuard 出站扫描）。 */
+  private async dispatchMessageSending(channel: ChannelType, target: string, text: string): Promise<{ blocked: boolean; reason?: string; text?: string }> {
+    if (!this.pluginManager?.hasHooks("message_sending")) return { blocked: false };
+    try {
+      const { blocked, blockReason, cancelled, merged } = await this.pluginManager.runHooksMerged({
+        type: "message_sending",
+        context: { channel },
+        text,
+        target,
+      });
+      // cancel:true 即 message_sending 的取消语义（"Set to true to cancel message sending"）
+      if (blocked || cancelled) {
+        const reason = blockReason ?? "message_sending hook cancelled the send";
+        return { blocked: true, reason, text: (merged as Partial<{ text: string }>).text };
+      }
+      return { blocked: false, text: (merged as Partial<{ text: string }>).text };
+    } catch (err) {
+      process.stderr.write(`[ChannelManager] message_sending hook failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      return { blocked: false };
+    }
   }
 
   /**
@@ -389,6 +452,17 @@ export class ChannelManager {
     // Forward to message handler
     if (this.messageHandler) {
       try {
+        // P2 接线（2026-11-23）：message_received 插件钩子（ContentGuard 入站扫描）。
+        // blocked → 丢弃本条消息（与 DM policy/blocklist 拦截同语义，只记日志不回发）；
+        // text 改写 → 覆盖 msg.text（ContentGuard sanitize 路径）。
+        const receivedHook = await this.dispatchMessageReceived(msg);
+        if (receivedHook.blocked) {
+          process.stdout.write(`[ChannelManager] message_received hook blocked ${msg.channel}/${msg.from}: ${receivedHook.reason}\n`);
+          return;
+        }
+        if (receivedHook.text !== undefined && receivedHook.text !== (msg.text ?? "")) {
+          msg.text = receivedHook.text;
+        }
         await this.messageHandler(msg);
         // 分发成功 → 记账（失败不记，平台重投允许再次分发）
         if (dedupePending && this.dedupeStore && msg.messageId) {
@@ -438,7 +512,31 @@ export class ChannelManager {
       return { success: false, error, channel };
     }
 
-    const result = await adapter.sendMessage(target, text, options);
+    // P2 接线（2026-11-23）：message_sending 插件钩子（ContentGuard 出站扫描）。
+    // blocked → 取消发送；text 改写 → 用 sanitize 后的内容发送。
+    const sendingHook = await this.dispatchMessageSending(channel, target, text);
+    if (sendingHook.blocked) {
+      this.sendFailureHandler?.(channel, target, text, `message_sending hook blocked: ${sendingHook.reason}`);
+      process.stdout.write(`[ChannelManager] message_sending hook blocked send to ${channel}/${target}: ${sendingHook.reason}\n`);
+      return { success: false, error: `Blocked by message_sending hook: ${sendingHook.reason}`, channel };
+    }
+    const outboundText = sendingHook.text !== undefined ? sendingHook.text : text;
+
+    const result = await adapter.sendMessage(target, outboundText, options);
+
+    // P2 接线：message_sent 通知钩子（fire-and-forget，不影响结果）。
+    if (this.pluginManager?.hasHooks("message_sent")) {
+      this.pluginManager
+        .runHooks({
+          type: "message_sent",
+          context: { channel, peerId: target },
+          text: outboundText,
+          target,
+          success: result.success,
+        })
+        .catch((err) => process.stderr.write(`[ChannelManager] message_sent hook failed: ${err instanceof Error ? err.message : String(err)}\n`));
+    }
+
     if (!result.success && result.error) {
       this.sendFailureHandler?.(channel, target, text, result.error);
     }

@@ -3,7 +3,7 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import type { MemoryEntry, MemorySearchQuery, MemorySearchResult } from "@evoclaw/core";
+import type { MemoryEntry, MemorySearchQuery, MemorySearchResult, PluginManager } from "@evoclaw/core";
 import { estimateMessagesTokens } from "./error-classifier";
 import { redactContent, redactMetadata } from "./transcript-redactor";
 import type { CompactionManager } from "./compaction-manager";
@@ -108,6 +108,14 @@ export interface SessionPersistenceDeps {
    * （apps/server tools/todo-tools.ts），packages/agent 经此回调解耦。
    */
   todoSnapshotProvider?: (sessionId: string) => string | null;
+  /**
+   * ★ 2026-11-23 P2 接线：插件管理器。compactConversationHistory 在压缩前后
+   *   分别派发 before_compaction / after_compaction 钩子（Memory Enhancer
+   *   借此在压缩前落盘会话洞察）。未提供则零开销（此前零派发点）。
+   */
+  pluginManager?: PluginManager | null;
+  /** 压缩触发原因（钩子载荷）：auto=token 超限，manual=斜杠命令，byte_guard=字节守卫。 */
+  compactionReason?: "auto" | "manual" | "overflow" | "byte_guard";
 }
 
 /** Compute the file path for a session's JSONL persistence file */
@@ -423,6 +431,21 @@ export async function compactConversationHistory(
   const recentEntries = history.slice(-keepRecentTurns * 2);
   const olderEntries = history.slice(0, -(keepRecentTurns * 2));
 
+  // ★ 2026-11-23 P2 接线：before_compaction（Memory Enhancer 借此在压缩前
+  //   落盘会话洞察；instructions 返回目前无消费方，仅透传结果不阻断压缩）。
+  if (deps.pluginManager?.hasHooks("before_compaction")) {
+    try {
+      await deps.pluginManager.runHooks({
+        type: "before_compaction",
+        context: { sessionId },
+        turnCount: olderEntries.length,
+        reason: deps.compactionReason ?? "auto",
+      });
+    } catch (err) {
+      process.stderr.write(`[SessionPersistence] before_compaction hook failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
+
   // Use CompactionManager if available for richer summary with successor transcripts
   let summary = "";
   let successorId = sessionId;
@@ -567,6 +590,21 @@ export async function compactConversationHistory(
   // R11 GAP-2：压缩成功 = 会话边界 → 丢弃预压缩候选（若有残余/在飞 pass）。
   discardPreparedCompaction(sessionId);
   process.stdout.write(`[SessionPersistence] Compacted session "${sessionId}" -> "${successorId}": ${olderEntries.length} older turns summarized, ${recentEntries.length} recent turns kept.\n`);
+
+  // ★ 2026-11-23 P2 接线：after_compaction（Memory Enhancer 记录压缩完成日志）。
+  if (deps.pluginManager?.hasHooks("after_compaction")) {
+    try {
+      await deps.pluginManager.runHooks({
+        type: "after_compaction",
+        context: { sessionId },
+        summary: summary || "[Previous conversation has been compacted.]",
+        turnCount: olderEntries.length,
+        successorSessionId: successorId,
+      });
+    } catch (err) {
+      process.stderr.write(`[SessionPersistence] after_compaction hook failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    }
+  }
 
   // Fallback: Store compacted summary in long-term memory (only when CompactionManager not available, as it already handles this)
   if (!deps.compactionManager && deps.memoryHub && summary) {
