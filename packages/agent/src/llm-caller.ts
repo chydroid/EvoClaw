@@ -29,7 +29,13 @@ import {
 import { SubdirectoryHintTracker } from "./subdirectory-hints";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
-import { detectPrematureStop, buildContinuationDirective, isPlaceholderOnlyReply } from "./auto-continuation";
+import {
+  detectPrematureStop,
+  buildContinuationDirective,
+  isPlaceholderOnlyReply,
+  shouldGrantFinalRoundContinuation,
+  FINAL_ROUND_CONTINUATION_EXTENSION,
+} from "./auto-continuation";
 import { runTurnFinalizer, buildVerificationFailureFooter, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
@@ -5717,6 +5723,8 @@ if (deps.contextPruningManager && !prunerNoop) {
       let consecutiveReadOnlyRounds = 0;
       // Run-budget wrap-up notice 是否已注入（每 turn 只注入一次）
       let wrapUpNoticeInjected = false;
+      // 末轮续跑宽限是否已用（v28 Task 7：末轮说「继续我就接着执行」时无人续跑）
+      let finalRoundContinuationGranted = false;
       // 工具循环实际上限：execute_code 退款按轮延长（见 extendRoundLimitForRefund）。
       let roundLimit = maxToolRounds;
 
@@ -6784,6 +6792,36 @@ if (deps.contextPruningManager && !prunerNoop) {
             process.stderr.write(
               `[AgentModelExecutor] post_tool_empty retries exhausted (${retryCount}). Breaking with empty reply.\n`,
             );
+          }
+
+          // ── 末轮续跑宽限（v28 Task 7 实证）─────────────────────────────
+          // 下方续跑门要求 round < roundLimit - 1（末轮不 nudge，由兜底总结接管）。
+          // 但模型在末轮常以「测试还没跑通，说继续我就接着执行」收尾——兜底总结
+          // 没有工具权限，任务就带着未完成交付结束。末轮检测到明确停顿且 token
+          // 预算仍有 ≥10% 余量时，一次性把上限 +2 轮，让续跑门接管（每 turn 最多一次）。
+          if (
+            finalReply &&
+            round === roundLimit - 1 &&
+            pendingPermissions.length === 0
+          ) {
+            const finalRoundPremature = detectPrematureStop(finalReply, { toolCallsThisRound: false });
+            if (
+              shouldGrantFinalRoundContinuation({
+                atFinalRound: true,
+                premature: finalRoundPremature,
+                alreadyGranted: finalRoundContinuationGranted,
+                autoContinueCount,
+                maxAutoContinue: MAX_AUTO_CONTINUE,
+                tokensUsed: totalTokensUsed,
+                tokenBudget: TOKEN_BUDGET,
+              })
+            ) {
+              finalRoundContinuationGranted = true;
+              roundLimit += FINAL_ROUND_CONTINUATION_EXTENSION;
+              asyncLog(
+                `[AgentModelExecutor] Final-round premature stop (${finalRoundPremature}); extending round limit by ${FINAL_ROUND_CONTINUATION_EXTENSION} (now ${roundLimit}) for session "${sessionId}"\n`,
+              );
+            }
           }
 
           // ── 自动续跑：检测到"该继续却停下来问人"时，回灌指令让模型继续 ──

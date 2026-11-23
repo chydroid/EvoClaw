@@ -198,6 +198,40 @@ export function isPlaceholderOnlyReply(reply: string | null | undefined): boolea
 }
 
 /**
+ * 末轮续跑宽限：一次性的轮次扩展量（v28 Task 7 实证）。
+ *
+ * 现有续跑门要求 `round < roundLimit - 1`——最后一轮不再 nudge，由兜底总结
+ * 接管。但模型在末轮常给出「测试还没跑通，说继续我就接着执行」的收尾，
+ * 兜底总结没有工具权限，无法继续干活，任务就此带着未完成交付结束。
+ * 宽限在**末轮且明确检测到停顿**时一次性 +2 轮，让续跑门接管；token 预算
+ * 仍由调用方的 TOKEN_BUDGET 硬约束，扩展次数由 alreadyGranted 限制为每 turn 一次。
+ */
+export const FINAL_ROUND_CONTINUATION_EXTENSION = 2;
+
+/** 宽限只在 token 预算仍有 ≥10% 余量时生效，避免把预算耗尽的 turn 再拉长 */
+export const FINAL_ROUND_CONTINUATION_TOKEN_RATIO = 0.9;
+
+/** 是否应在末轮为「过早停顿」追加轮次（纯判定，便于单测） */
+export function shouldGrantFinalRoundContinuation(opts: {
+  atFinalRound: boolean;
+  premature: PrematureStopKind | null;
+  alreadyGranted: boolean;
+  autoContinueCount: number;
+  maxAutoContinue: number;
+  tokensUsed: number;
+  tokenBudget: number;
+}): boolean {
+  return (
+    opts.atFinalRound &&
+    opts.premature !== null &&
+    !opts.alreadyGranted &&
+    opts.autoContinueCount < opts.maxAutoContinue &&
+    opts.tokenBudget > 0 &&
+    opts.tokensUsed < opts.tokenBudget * FINAL_ROUND_CONTINUATION_TOKEN_RATIO
+  );
+}
+
+/**
  * 判断回复是否属于「过早停顿」。
  *
  * @param reply 模型本轮生成的文本
