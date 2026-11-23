@@ -3,6 +3,7 @@ import {
   detectPrematureStop,
   buildContinuationDirective,
   isPlaceholderOnlyReply,
+  shouldGrantFinalRoundContinuation,
 } from "./auto-continuation";
 
 describe("detectPrematureStop — 识别「该继续却停下来问人」", () => {
@@ -217,5 +218,46 @@ describe("detectPrematureStop — 进度报告式收尾（v28 Task 1/4 回归）
         toolCallsThisRound: false,
       }),
     ).toBeNull();
+  });
+});
+
+describe("shouldGrantFinalRoundContinuation — 末轮一次性续跑宽限（v28 Task 7）", () => {
+  const base = {
+    atFinalRound: true,
+    premature: "promise_future_action" as const,
+    alreadyGranted: false,
+    autoContinueCount: 0,
+    maxAutoContinue: 3,
+    tokensUsed: 1_000,
+    tokenBudget: 100_000,
+  };
+
+  it("末轮 + 检测到停顿 + 未用过 + 预算充足 → 授予", () => {
+    expect(shouldGrantFinalRoundContinuation(base)).toBe(true);
+  });
+
+  it("非末轮不授予（常规续跑门负责）", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, atFinalRound: false })).toBe(false);
+  });
+
+  it("没有检测到停顿不授予", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, premature: null })).toBe(false);
+  });
+
+  it("已授予过（每 turn 一次）不重复授予", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, alreadyGranted: true })).toBe(false);
+  });
+
+  it("自动续跑次数已用尽不授予", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, autoContinueCount: 3 })).toBe(false);
+  });
+
+  it("token 用量达到预算 90% 不授予", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, tokensUsed: 90_000 })).toBe(false);
+    expect(shouldGrantFinalRoundContinuation({ ...base, tokensUsed: 89_999 })).toBe(true);
+  });
+
+  it("预算为 0（未知）不授予", () => {
+    expect(shouldGrantFinalRoundContinuation({ ...base, tokenBudget: 0 })).toBe(false);
   });
 });
