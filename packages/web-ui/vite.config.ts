@@ -5,6 +5,20 @@ import { resolve } from "path";
 
 const rootPkg = JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf-8"));
 
+// 后端端口：优先 EvoClaw_PORT，其次根 .env 里的值，最后默认 27788。
+// 旧配置写死 localhost:3000，而服务端从不监听 3000（默认 27788），
+// 于是 `pnpm dev` 的界面所有 /api 请求都代理到空端口。
+function resolveGatewayPort(): string {
+  if (process.env.EvoClaw_PORT) return process.env.EvoClaw_PORT;
+  try {
+    const envText = readFileSync(resolve(__dirname, "../../.env"), "utf-8");
+    const line = envText.split(/\r?\n/).find((l) => /^\s*EvoClaw_PORT\s*=/.test(l));
+    const value = line?.split("=")[1]?.trim().replace(/^["']|["']$/g, "");
+    if (value) return value;
+  } catch { /* no .env — fall through */ }
+  return "27788";
+}
+
 export default defineConfig({
   plugins: [react()],
   define: {
@@ -14,7 +28,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: `http://127.0.0.1:${resolveGatewayPort()}`,
         changeOrigin: true,
       },
     },

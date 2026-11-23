@@ -156,8 +156,15 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
   // ── External MCP server management ───────────────────────────
   // 管理 EvoClaw 消费的外部 MCP server（如 firecrawl、github 等）
 
-  mcp
-    .command("external list")
+  // ★ commander 的 .command("a b") 只注册名为 "a"、必填参数 "b" 的单条命令，
+  //   不是嵌套子命令；旧写法让第二次 .command("external …") 直接抛
+  //   "cannot add command 'external'"，整个 mcp 模块加载失败（oauth/serve 全丢）。
+  const external = mcp
+    .command("external")
+    .description("Manage external MCP servers consumed by EvoClaw");
+
+  external
+    .command("list")
     .description("List external MCP servers consumed by EvoClaw")
     .option("--json", "Output as JSON")
     .action(async (opts: Record<string, unknown>) => {
@@ -200,8 +207,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       }
     });
 
-  mcp
-    .command("external add <name> [config-json]")
+  external
+    .command("add <name> [config-json]")
     .description("Add and connect an external MCP server")
     .action(async (name: string, configJson: string | undefined) => {
       const serverAlive = await checkServer();
@@ -236,8 +243,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       }
     });
 
-  mcp
-    .command("external remove <name>")
+  external
+    .command("remove <name>")
     .description("Remove an external MCP server")
     .action(async (name: string) => {
       const serverAlive = await checkServer();
@@ -257,8 +264,8 @@ export function register(program: Command, _shared: (c: Command) => Command, _ap
       }
     });
 
-  mcp
-    .command("external reconnect <name>")
+  external
+    .command("reconnect <name>")
     .description("Reconnect an external MCP server")
     .action(async (name: string) => {
       const serverAlive = await checkServer();
