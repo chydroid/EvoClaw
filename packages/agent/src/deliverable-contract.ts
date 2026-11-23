@@ -18,6 +18,7 @@
  */
 
 import * as path from "path";
+import { createHash } from "crypto";
 import { stripWorkspaceDirPrefix } from "./workspace-path";
 
 /** 视为「交付文件」的扩展名（代码/数据/文档/压缩产物） */
@@ -106,6 +107,27 @@ const NON_DELIVERABLE_BARE = new Set([
 
 /** 判断 index 所在的子句（以句读分隔）是否包含交付意图词 */
 const CLAUSE_BOUNDARY_RE = /[。；;，,\n]/;
+
+/**
+ * 逐字符判定句子边界（`。`/`；`/`;`/换行/`!`/英文句点+空白）。
+ * 不能用正则 `test(单字符)`——英文句点规则带 `(?=\s)` 前瞻，只测一个字符
+ * 时永远不成立。这里显式看后一个字符。
+ */
+function isSentenceBoundaryAt(text: string, i: number): boolean {
+  if (i < 0 || i >= text.length) return false;
+  const ch = text[i];
+  if (ch === "。" || ch === "；" || ch === ";" || ch === "!" || ch === "\n") return true;
+  if (ch === ".") return i + 1 >= text.length || /\s/.test(text[i + 1]);
+  return false;
+}
+
+/** [from, to) 区间内是否含句子边界 */
+function hasSentenceBoundary(text: string, from: number, to: number): boolean {
+  for (let i = Math.max(0, from); i < to; i++) {
+    if (isSentenceBoundaryAt(text, i)) return true;
+  }
+  return false;
+}
 function clauseHasDeliveryIntent(text: string, index: number): boolean {
   let start = index;
   while (start > 0 && !CLAUSE_BOUNDARY_RE.test(text[start - 1])) start--;
@@ -114,11 +136,101 @@ function clauseHasDeliveryIntent(text: string, index: number): boolean {
   return DELIVERY_TOKEN_RE.test(text.slice(start, end));
 }
 
+/** 显式大小下限：`≥300 字节` / `至少 300 bytes` / `300 字节以上` */
+const MIN_BYTES_RE =
+  /(?:[≥>=]+\s*(\d+)\s*(?:字节|bytes?\b|b\b)|(?:至少|不少于|不低于|不小于|大于)\s*(\d+)\s*(?:字节|bytes?\b)|(\d+)\s*(?:字节|bytes?\b)\s*(?:以上|或以上))/i;
+
+/** 显式断言数下限：`至少 8 个断言` / `≥8 assertions` / `断言数 ≥ 8` */
+const MIN_ASSERTIONS_RE =
+  /(?:(?:至少|不少于|不小于|[≥>=]+)\s*(\d+)\s*(?:个)?\s*(?:断\s*言|assertions?\b|asserts?\b)|(?:断\s*言|assertions?)\s*(?:数|数量)?\s*(?:至少|不少于|不小于|[≥>=]+)\s*(\d+))/i;
+
+/** 任务文本中的阈值归属于「同一句内最近的、位于其前的文件 token」 */
+const THRESHOLD_LOOKBACK_CHARS = 240;
+
+/** 取首个非空捕获组 */
+function firstInt(m: RegExpExecArray | null): number | undefined {
+  if (!m) return undefined;
+  for (let i = 1; i < m.length; i++) {
+    if (m[i] != null && m[i] !== "") {
+      const n = Number(m[i]);
+      if (Number.isFinite(n) && n > 0) return n;
+    }
+  }
+  return undefined;
+}
+
+interface TokenOccurrence {
+  raw: string;
+  /** token 在全文中的起始下标 */
+  index: number;
+  /** token 在全文中的结束下标（不含） */
+  end: number;
+  /** 解析后的绝对路径（保留原始大小写，用于落盘/读盘） */
+  path: string;
+  /** 小写聚合键（用于按文件归并阈值与去重） */
+  key: string;
+}
+
+/**
+ * 阈值归属：找**同一句内、最近的前置**文件 token。
+ *
+ * 不用「固定窗口」——真实任务文本里阈值出现在文件被再次提及之后
+ * （`3）test_x.py：\`python3 test_x.py\` 退出码 0，至少 8 个断言`），
+ * 窗口法会把阈值绑到后一个文件或漏掉。句读边界（。；;!换行）阻断归属，
+ * 保证「另一些断言」不会跨句误绑。
+ *
+ * 无前置 token 时允许向后找 60 字符内的 token（`≥300 字节的 README.md` 形态）。
+ */
+function attributeThresholds(
+  text: string,
+  occurrences: TokenOccurrence[],
+  re: RegExp,
+): Map<string, number> {
+  const byKey = new Map<string, number>();
+  const sorted = [...occurrences].sort((a, b) => a.index - b.index);
+  // 调用方传入的是无 g 的匹配规则（单次 exec 语义）；这里复制成全局版本
+  // 才能遍历所有阈值出现位置——直接在无 g 正则上循环会永久停在首匹配。
+  const scan = new RegExp(re.source, re.flags.includes("g") ? re.flags : re.flags + "g");
+  let m: RegExpExecArray | null;
+  while ((m = scan.exec(text)) !== null) {
+    const at = m.index;
+    let owner: TokenOccurrence | undefined;
+    // 向前找：同句、距离不超过回看上限
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const occ = sorted[i];
+      if (occ.end > at) continue;
+      if (at - occ.end > THRESHOLD_LOOKBACK_CHARS) break;
+      if (hasSentenceBoundary(text, occ.end, at)) break; // 跨句，停止
+      owner = occ;
+      break;
+    }
+    // 向后找：同句、60 字符内（阈值写在文件名之前）
+    if (!owner) {
+      for (const occ of sorted) {
+        if (occ.index < at) continue;
+        if (occ.index - at > 60) break;
+        if (hasSentenceBoundary(text, at, occ.index)) break;
+        owner = occ;
+        break;
+      }
+    }
+    if (!owner) continue;
+    const value = firstInt(m);
+    if (value == null) continue;
+    byKey.set(owner.key, Math.max(byKey.get(owner.key) ?? 0, value));
+  }
+  return byKey;
+}
+
 export interface DeliverableSpec {
   /** 任务文本中的原始 token（用于提示） */
   raw: string;
   /** 解析后的绝对路径 */
   path: string;
+  /** 任务显式要求的最小字节数（如 `README.md（≥300 字节）`） */
+  minBytes?: number;
+  /** 任务显式要求的最小断言数（如测试文件「至少 8 个断言」） */
+  minAssertions?: number;
 }
 
 /**
@@ -148,7 +260,21 @@ export function extractRequiredDeliverables(
 
   // 先收集夹具 basename，供后续排除（如 `fixtures/new.txt` → `new.txt`）
   const fixtureBasenames = new Set<string>();
-  const tokens: string[] = [];
+  // 任务明写「冻结夹具/禁止修改」的输入同样是**输入**：它们常以裸名在
+  // 命令行用法里再次出现（`tomlparse.py run config.toml`），同子句又有
+  // 「写入 report.json」等交付词 → 会被误当必交产物。冻结声明是更强的
+  // 输入信号，优先排除（v28 T1 实证：config.toml 被误登记为交付物）。
+  try {
+    for (const frozen of extractFrozenInputs(text, workspacePath)) {
+      fixtureBasenames.add(path.basename(frozen.path).toLowerCase());
+    }
+  } catch { /* 冻结输入解析失败不影响交付物抽取 */ }
+  /** 通过全部交付物过滤的 token（决定 spec 集合） */
+  const occurrences: TokenOccurrence[] = [];
+  /** 所有合法文件 token（含未通过交付意图过滤的裸名）——阈值归属用。
+   *  真实任务文本的阈值常写在细则行：`3）test_x.py：…至少 8 个断言`，
+   *  该行的裸文件名本身不含交付意图词、不进 spec 集合，但阈值必须归到它。 */
+  const allOccurrences: TokenOccurrence[] = [];
   FILE_TOKEN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = FILE_TOKEN_RE.exec(text)) !== null) {
@@ -172,25 +298,7 @@ export function extractRequiredDeliverables(
       fixtureBasenames.add(path.basename(raw).toLowerCase());
       continue;
     }
-    if (isBare) {
-      if (NON_DELIVERABLE_BARE.has(raw.toLowerCase())) continue;
-      if (!clauseHasDeliveryIntent(text, tokenIndex)) continue;
-    }
-    tokens.push(raw);
-    if (FIXTURE_PATH_RE.test(raw)) fixtureBasenames.add(path.basename(raw).toLowerCase());
-  }
-
-  const seen = new Set<string>();
-  const specs: DeliverableSpec[] = [];
-  for (const raw of tokens) {
-    if (FIXTURE_PATH_RE.test(raw)) continue;
-    const base = path.basename(raw).toLowerCase();
-    // 与夹具同名（任务里以裸名再次出现）也算输入，不是交付物
-    if (fixtureBasenames.has(base)) continue;
-
-    // ★ v26 smoke 实证：任务原文常把仓库根相对写法 `data/workspace/x` 直接
-    //   当交付路径；工具会剥前缀后落到 workspace 根下。契约核验必须同源解析，
-    //   否则拼出 `<ws>/data/workspace/x` 双前缀 → 虚假「契约未满足」续跑。
+    // 解析落点（存在性核验与阈值归属共用同一口径）
     const normalized = stripWorkspaceDirPrefix(raw);
     const resolveBase = normalized.stripped
       ? path.resolve(workspacePath || process.cwd())
@@ -198,10 +306,43 @@ export function extractRequiredDeliverables(
     const abs = path.isAbsolute(raw)
       ? path.normalize(raw)
       : path.resolve(resolveBase, normalized.value);
-    const key = abs.toLowerCase();
+    const occurrence: TokenOccurrence = {
+      raw,
+      index: tokenIndex,
+      end: tokenIndex + raw.length,
+      path: abs,
+      key: abs.toLowerCase(),
+    };
+    allOccurrences.push(occurrence);
+    if (isBare) {
+      if (NON_DELIVERABLE_BARE.has(raw.toLowerCase())) continue;
+      if (!clauseHasDeliveryIntent(text, tokenIndex)) continue;
+    }
+    occurrences.push(occurrence);
+    if (FIXTURE_PATH_RE.test(raw)) fixtureBasenames.add(path.basename(raw).toLowerCase());
+  }
+
+  // 阈值归属：同一句内最近的前置文件 token（见 attributeThresholds 注释）
+  const minBytesByKey = attributeThresholds(text, allOccurrences, MIN_BYTES_RE);
+  const minAssertionsByKey = attributeThresholds(text, allOccurrences, MIN_ASSERTIONS_RE);
+
+  const seen = new Set<string>();
+  const specs: DeliverableSpec[] = [];
+  for (const occ of occurrences) {
+    const raw = occ.raw;
+    if (FIXTURE_PATH_RE.test(raw)) continue;
+    const base = path.basename(raw).toLowerCase();
+    // 与夹具同名（任务里以裸名再次出现）也算输入，不是交付物
+    if (fixtureBasenames.has(base)) continue;
+    const key = occ.key;
     if (seen.has(key)) continue;
     seen.add(key);
-    specs.push({ raw, path: abs });
+    const spec: DeliverableSpec = { raw, path: occ.path };
+    const minBytes = minBytesByKey.get(key);
+    const minAssertions = minAssertionsByKey.get(key);
+    if (minBytes != null) spec.minBytes = minBytes;
+    if (minAssertions != null) spec.minAssertions = minAssertions;
+    specs.push(spec);
   }
 
   return specs;
@@ -228,3 +369,257 @@ export function findMissingDeliverables(
   }
   return missing;
 }
+
+// ═══════════════════════════════════════════════════════════
+// 验收契约：存在性之外的确定性检查
+// ═══════════════════════════════════════════════════════════
+
+/** 验收检查依赖（注入以便单测，不碰真实 fs） */
+export interface AcceptanceDeps {
+  /** 返回文件字节；不可读返回 null */
+  readFile: (p: string) => Buffer | null;
+}
+
+export type AcceptanceIssue =
+  | { kind: "missing"; raw: string; path: string }
+  | { kind: "undersized"; raw: string; path: string; actualBytes: number; minBytes: number }
+  | { kind: "under_asserted"; raw: string; path: string; actualAssertions: number; minAssertions: number };
+
+/**
+ * 断言行计数：与压测 harness 完全同口径。
+ * 只数「断言样式的代码行」，跳过 import/require 行——任务给的「至少 N 个断言」
+ * 是验收硬指标，自写测试里注释掉/挪进辅助函数的断言不算数。
+ */
+const ASSERT_LINE_RE = /\bassert\b|\b(?:expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
+const ASSERT_SKIP_LINE_RE = /^\s*(?:import\b|(?:const|let|var)\b.*\brequire\s*\()/;
+
+export function countAssertionLines(content: string): number {
+  if (!content) return 0;
+  let n = 0;
+  for (const line of content.split(/\r?\n/)) {
+    if (ASSERT_SKIP_LINE_RE.test(line)) continue;
+    if (ASSERT_LINE_RE.test(line)) n++;
+  }
+  return n;
+}
+
+/**
+ * 对交付物契约做确定性验收。
+ *
+ * 存在性由 `findMissingDeliverables` 覆盖；这里补两类压测反复出现的漏验：
+ *   - **大小下限**（README.md（≥300 字节）写成空壳/一句话）；
+ *   - **断言数下限**（任务要求「至少 8 个断言」，自测只写了 2 个）。
+ * 不可读文件按缺失处理（fail-closed）。
+ */
+export function evaluateDeliverables(
+  specs: DeliverableSpec[],
+  deps: AcceptanceDeps,
+): AcceptanceIssue[] {
+  const issues: AcceptanceIssue[] = [];
+  const seen = new Set<string>();
+  for (const spec of specs) {
+    if (!spec?.path || seen.has(spec.path)) continue;
+    seen.add(spec.path);
+    let buf: Buffer | null = null;
+    try {
+      buf = deps.readFile(spec.path);
+    } catch {
+      buf = null;
+    }
+    if (buf == null) {
+      issues.push({ kind: "missing", raw: spec.raw, path: spec.path });
+      continue;
+    }
+    if (spec.minBytes != null && buf.length < spec.minBytes) {
+      issues.push({
+        kind: "undersized",
+        raw: spec.raw,
+        path: spec.path,
+        actualBytes: buf.length,
+        minBytes: spec.minBytes,
+      });
+    }
+    if (spec.minAssertions != null) {
+      const actual = countAssertionLines(buf.toString("utf8"));
+      if (actual < spec.minAssertions) {
+        issues.push({
+          kind: "under_asserted",
+          raw: spec.raw,
+          path: spec.path,
+          actualAssertions: actual,
+          minAssertions: spec.minAssertions,
+        });
+      }
+    }
+  }
+  return issues;
+}
+
+// ── 冻结输入保护 ───────────────────────────────────────────────
+// 压测里反复出现「任务明写『冻结夹具/禁止修改』，模型仍改夹具让测试变绿」。
+// 存在的契约只校验交付物，夹具被改动是完全静默的：测试可能因此假绿。
+// 语义对标 hermes kanban 的 artifact preservation：输入在回合开始快照，
+// 回合结束比对；被改动则先归档改动版本，再还原原始内容（任务本身已明令禁止修改）。
+
+/** 冻结信号：与文件 token 同句出现时，这些 token 是只读输入 */
+const FREEZE_SIGNAL_RE = /冻结夹具|冻结文件|冻结输入|禁止修改|不得修改|不要修改|只读夹具|只读输入|frozen\s+(?:fixture|input|file)|read[- ]only|do\s+not\s+modify/i;
+
+export interface FrozenInputSpec {
+  raw: string;
+  path: string;
+}
+
+/** [parent, child] 包含关系（同一路径或子路径） */
+function isWithin(parent: string, child: string): boolean {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+/**
+ * 抽取任务显式「冻结/禁止修改」的输入文件。
+ * 只在**冻结信号所在句子**内收集文件 token：任务后半段的交付物清单不会被误登记。
+ *
+ * ★ 安全边界：只收集落在「工作区」或「任务目标目录」内的文件。
+ *   还原逻辑会写回快照内容——若任务里出现「禁止修改 /etc/passwd」这类
+ *   系统路径，把它纳入保护会在回合末**写入工作区之外**。单用户本地域
+ *   也不该让任务文本决定写盘目标。
+ */
+export function extractFrozenInputs(
+  userMessage: string,
+  workspacePath: string,
+): FrozenInputSpec[] {
+  const text = userMessage || "";
+  if (!text || !FREEZE_SIGNAL_RE.test(text)) return [];
+
+  const workspaceRoot = path.resolve(workspacePath || process.cwd());
+  let targetDir = workspaceRoot;
+  ABS_DIR_RE.lastIndex = 0;
+  const dirMatch = ABS_DIR_RE.exec(text);
+  if (dirMatch) {
+    const candidate = dirMatch[1];
+    if (candidate.replace(/[\\/]/g, "").length >= 2) targetDir = path.resolve(candidate);
+  }
+  const withinScope = (p: string) => isWithin(workspaceRoot, p) || isWithin(targetDir, p);
+
+  const specs: FrozenInputSpec[] = [];
+  const seen = new Set<string>();
+  // 同上：FREEZE_SIGNAL_RE 无 g 标志，必须克隆成全局版本才能遍历全部信号
+  const scanSignals = new RegExp(
+    FREEZE_SIGNAL_RE.source,
+    FREEZE_SIGNAL_RE.flags.includes("g") ? FREEZE_SIGNAL_RE.flags : FREEZE_SIGNAL_RE.flags + "g",
+  );
+  let sig: RegExpExecArray | null;
+  while ((sig = scanSignals.exec(text)) !== null) {
+    let start = sig.index;
+    while (start > 0 && !isSentenceBoundaryAt(text, start - 1)) start--;
+    let end = sig.index;
+    while (end < text.length && !isSentenceBoundaryAt(text, end)) end++;
+    const sentence = text.slice(start, end);
+
+    const localTokens = new Map<string, FrozenInputSpec>();
+    FILE_TOKEN_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = FILE_TOKEN_RE.exec(sentence)) !== null) {
+      const raw = m[1];
+      if (!raw || raw.includes("://") || /^\/\//.test(raw)) continue;
+      if (/^v?\d+(?:\.\d+)+$/.test(raw)) continue;
+      if (hasPlaceholderDir(raw)) continue;
+      if (NON_DELIVERABLE_BARE.has(raw.toLowerCase())) continue;
+      const normalized = stripWorkspaceDirPrefix(raw);
+      const resolveBase = normalized.stripped
+        ? path.resolve(workspacePath || process.cwd())
+        : targetDir;
+      const abs = path.isAbsolute(raw)
+        ? path.normalize(raw)
+        : path.resolve(resolveBase, normalized.value);
+      // 工作区/任务目录之外的文件不纳入保护（回合末会写回，越界即危险）
+      if (!withinScope(abs)) continue;
+      const key = abs.toLowerCase();
+      if (!localTokens.has(key)) localTokens.set(key, { raw, path: abs });
+    }
+    for (const [key, spec] of localTokens) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      specs.push(spec);
+    }
+  }
+  return specs;
+}
+
+/** 回合开始时的冻结输入快照 */
+export interface FrozenSnapshot {
+  raw: string;
+  path: string;
+  bytes: number;
+  hash: string;
+  /** 原始内容（仅小文件保留，供被改动后还原） */
+  content?: Buffer;
+}
+
+/** 可还原上限：超过此大小的冻结文件只做哈希比对，不保留内容 */
+const MAX_FROZEN_RESTORE_BYTES = 1_000_000;
+
+function sha256(buf: Buffer): string {
+  return createHash("sha256").update(buf).digest("hex");
+}
+
+/**
+ * 回合开始时快照冻结输入。此刻还不存在的文件不纳入快照（无法保护）；
+ * 快照后新增的同名文件也不会被误判为「改动」。
+ */
+export function snapshotFrozenInputs(
+  specs: FrozenInputSpec[],
+  readFile: (p: string) => Buffer | null,
+): FrozenSnapshot[] {
+  const snapshots: FrozenSnapshot[] = [];
+  for (const spec of specs) {
+    let buf: Buffer | null = null;
+    try {
+      buf = readFile(spec.path);
+    } catch {
+      buf = null;
+    }
+    if (buf == null) continue;
+    const snap: FrozenSnapshot = {
+      raw: spec.raw,
+      path: spec.path,
+      bytes: buf.length,
+      hash: sha256(buf),
+    };
+    if (buf.length <= MAX_FROZEN_RESTORE_BYTES) snap.content = buf;
+    snapshots.push(snap);
+  }
+  return snapshots;
+}
+
+export interface FrozenMutation {
+  raw: string;
+  path: string;
+  kind: "modified" | "missing";
+  snapshot: FrozenSnapshot;
+}
+
+/** 回合结束时比对快照：被改动或删除都算违规 */
+export function findFrozenMutations(
+  snapshots: FrozenSnapshot[],
+  readFile: (p: string) => Buffer | null,
+): FrozenMutation[] {
+  const mutations: FrozenMutation[] = [];
+  for (const snap of snapshots) {
+    let buf: Buffer | null = null;
+    try {
+      buf = readFile(snap.path);
+    } catch {
+      buf = null;
+    }
+    if (buf == null) {
+      mutations.push({ raw: snap.raw, path: snap.path, kind: "missing", snapshot: snap });
+      continue;
+    }
+    if (sha256(buf) !== snap.hash) {
+      mutations.push({ raw: snap.raw, path: snap.path, kind: "modified", snapshot: snap });
+    }
+  }
+  return mutations;
+}
+

@@ -318,6 +318,16 @@ export function buildAgentSystemPrompt(params: SystemPromptParams): string {
     "</literal_preservation>"
   );
   sections.push(
+    "<spec_fidelity>\n" +
+    "**任务规格优先于你的直觉，你的自写测试只是假设。**\n" +
+    "- 任务里给出的示例输入/输出、期望值、编号、字节/位口径，是**权威验收标准**。逐字复算它们，不要用自己推导的口径替换。\n" +
+    "- 自写测试与任务示例冲突时，**以任务示例为准**：先怀疑自己的测试期望值，独立手工复算后再改断言；不得为了让测试变绿而修改任务规格。\n" +
+    "- 任务写明的硬指标（如「README ≥300 字节」「至少 8 个断言」「退出码 0」「键按字节序升序」）是逐项验收的，不是建议。收尾前逐条核对，任何一条不满足就继续做。\n" +
+    "- 任务声明「冻结夹具 / 禁止修改 / 只读输入」的文件是**输入**：绝不修改它们来迁就实现。测试对原始输入不通过时，改实现或改断言，而不是改夹具。\n" +
+    "- 任务点名要求交付的文件（「必须交付（缺一不可）：a、b、c」）必须逐个真实落盘；在回复里描述内容不算交付。\n" +
+    "</spec_fidelity>"
+  );
+  sections.push(
     "<missing_context>\n" +
     "- If required context is missing, do NOT guess or hallucinate an answer.\n" +
     "- Use the appropriate permitted lookup tool when missing information is retrievable (file_read, file_list, " +

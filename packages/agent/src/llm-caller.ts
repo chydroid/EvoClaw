@@ -7,7 +7,7 @@
  */
 
 import type { ServiceRegistry, PersonaConfig } from "@evoclaw/core";
-import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl, resolveRegisteredToolName, applyImpliedToolAction } from "@evoclaw/core";
+import { Semaphore, buildChatCompletionsUrl, buildAnthropicMessagesUrl, resolveRegisteredToolName, applyImpliedToolAction, atomicWriteFileSync } from "@evoclaw/core";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
@@ -170,7 +170,8 @@ import {
   resolveStatusSentinelExitCode,
   pipelineLeadsLastPipe,
 } from "./verification-evidence";
-import { extractRequiredDeliverables, findMissingDeliverables } from "./deliverable-contract";
+import { extractRequiredDeliverables, evaluateDeliverables, extractFrozenInputs, snapshotFrozenInputs, findFrozenMutations, type FrozenSnapshot, type FrozenMutation } from "./deliverable-contract";
+import { summarizeAcceptance, buildAcceptanceCorrection, buildAcceptanceFooter, buildWrapUpNotice, type AcceptanceSummary } from "./acceptance-notice";
 import { stripWorkspaceDirPrefix } from "./workspace-path";
 import { withDeadline, getToolSuspectTracker, type SuspectableBackend } from "./deadline";
 import { isOverloadLadderEligible, computeOverloadWait, OVERLOAD_RECOVERY_MAX } from "./overload-recovery";
@@ -4708,6 +4709,35 @@ export async function tryCallLLM(
     deps.workspacePath || process.cwd(),
   );
 
+  // ── 冻结输入快照（任务明写「冻结夹具/禁止修改」时）──
+  // 压测反复出现「夹具被模型改动后测试假绿」：交付物存在、测试也绿，但任务
+  // 明确禁止修改的输入已变。回合开始时快照内容哈希，回合结束比对；
+  // 被改动先归档改动版本再还原原始内容（任务本身已明令禁止修改）。
+  // 只在任务文本出现冻结信号时才建快照，无信号零成本。
+  const readFileForContract = (p: string): Buffer | null => {
+    try {
+      return fs.readFileSync(p);
+    } catch {
+      return null;
+    }
+  };
+  const frozenSnapshots: FrozenSnapshot[] = (() => {
+    try {
+      return snapshotFrozenInputs(
+        extractFrozenInputs(rawMessage, deps.workspacePath || process.cwd()),
+        readFileForContract,
+      );
+    } catch {
+      return [];
+    }
+  })();
+  if (frozenSnapshots.length > 0) {
+    asyncLog(
+      `[AgentModelExecutor] Frozen input snapshot for session "${sessionId}": ` +
+      `${frozenSnapshots.map((s) => `${s.path}(${s.bytes}B)`).join("、")}\n`,
+    );
+  }
+
   // ── 过载自动恢复阶梯（借鉴 hermes-agent turn_recovery.py auto-recovery）──
   // provider 出现瞬时过载类错误（429/5xx/超时/网络）时，不立即 failover，
   // 而是原地 jittered backoff 等待后重试（15s→60s，最多 5 个周期，
@@ -5849,15 +5879,29 @@ if (deps.contextPruningManager && !prunerNoop) {
         //   任务实证漏交）。Hermes 的语义是「停止新的探索/验证，但完成必交写入」——
         //   这里照此改写，并显式列出交付物契约中的必交路径。
         if (roundLimit > 0 && round >= Math.floor(roundLimit * 0.8) && round < roundLimit - 1) {
-          const requiredList = deliverableContract.length > 0
-            ? `任务要求的必交产物：${deliverableContract.map((d) => `\`${d.path}\``).join("、")}。`
-            : "";
-          const wrapUpNotice = `[系统提示] 工具轮次已使用 ${round + 1}/${roundLimit}（${Math.round((round + 1) / roundLimit * 100)}%），接近上限。**立即停止新的探索/调查/验证工作**，基于已有结果直接产出最终交付物（答案/文件/汇总），**只执行完成必交产物所必需的写入操作**，不要再做可选的额外工具调用。${requiredList}完成后输出完成状态汇报。`;
-          // 只在当前轮次第一次达到 80% 时注入一次
+          // ★ 2026-11-23（v28 T4 实证：3 次跑全在 50 轮耗尽、必交 report.json
+          //   从未生成）：80% 提醒必须给出**优先级清单**，否则模型按自己的
+          //   顺序继续调查，先耗光轮次。这里确定性算出当前缺失项，明确
+          //   「先写缺失的必交文件 → 再跑验收命令 → 最后收尾」。
+          //   同时修正与测试红门的冲突：旧文案「停止验证」会让红测试带着
+          //   未验证状态收尾；红门会拦，但先提醒模型别走到那一步。
+          //   只在首次注入时算一次（注入后不再重复读盘）。
           if (!wrapUpNoticeInjected) {
+            let missingNow: string[] = [];
+            try {
+              missingNow = evaluateDeliverables(deliverableContract, { readFile: readFileForContract })
+                .filter((i) => i.kind === "missing")
+                .map((i) => i.path);
+            } catch { /* 计算失败时退回通用文案 */ }
+            const wrapUpNotice = buildWrapUpNotice(
+              round + 1,
+              roundLimit,
+              deliverableContract.map((d) => d.path),
+              missingNow,
+            );
             pendingTransient.push({ role: "user", content: wrapUpNotice });
             wrapUpNoticeInjected = true;
-            asyncLog(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / roundLimit * 100)}% for session "${sessionId}"\n`);
+            asyncLog(`[AgentModelExecutor] Run-budget wrap-up notice injected at ${Math.round((round + 1) / roundLimit * 100)}% for session "${sessionId}" (missing=${missingNow.length})\n`);
           }
         }
 
@@ -6875,11 +6919,20 @@ if (deps.contextPruningManager && !prunerNoop) {
             let diskMissingPaths: string[] = [];
             // 任务要求但盘上不存在的交付物（与「声称但缺失」分开，提示措辞不同）
             let contractMissingPaths: string[] = [];
+            // ★ 2026-11-23（v23-v28 系统性缺陷）：存在性之外的两类确定性验收：
+            //   任务写明「README.md（≥300 字节）」「至少 8 个断言」，模型交了
+            //   空壳/只写 2 个断言也算「完成」——压测反复因此判负。这里同口径核验。
+            let undersizedDeliverables: Array<{ path: string; actualBytes: number; minBytes: number }> = [];
+            let underAssertedDeliverables: Array<{ path: string; actualAssertions: number; minAssertions: number }> = [];
+            // 冻结输入被改动（任务明写「冻结夹具/禁止修改」）
+            let frozenMutations: FrozenMutation[] = [];
             let landingMismatch: Array<{ claimed: string; actual: string }> = [];
             // ★ 2026-11-09 方案 B：可执行产物语法探针（node --check / bash -n）。
             // 回执/声称的脚本类交付物若语法不通 → 记 syntaxBroken，续跑让模型
             // 修完再收尾（治 r1 场景：sed 修一半撞预算线，磁盘留下跑不起来的脚本）。
             let syntaxBroken: Array<{ path: string; error: string }> = [];
+            // 验收汇总（供续跑指令与 footer 共用；try 失败时为空）
+            let acceptanceSummary: AcceptanceSummary = summarizeAcceptance([]);
             try {
               const claimedPaths = extractClaimedFilePaths(finalReply, deps.workspacePath);
               const receiptPaths = createdFiles
@@ -6893,15 +6946,46 @@ if (deps.contextPruningManager && !prunerNoop) {
               landingMismatch = rec.landingMismatch;
               // ★ 2026-11-16 交付物契约：任务显式要求的文件可能模型只字未提
               //   （既没声称也没创建），回执对账捕获不到。这里直接从用户原始
-              //   任务文本抽取必交产物做存在性核验——漏交同样触发续跑。
-              contractMissingPaths = findMissingDeliverables(
-                deliverableContract,
-                (p) => { try { return fs.existsSync(p); } catch { return false; } },
-              );
+              //   任务文本抽取必交产物做存在性 + 阈值核验——漏交/空壳同样触发续跑。
+              const acceptanceIssues = evaluateDeliverables(deliverableContract, {
+                readFile: readFileForContract,
+              });
               diskMissingPaths = [...new Set([
                 ...rec.trulyMissing,
-                ...contractMissingPaths,
+                ...acceptanceIssues.filter((i) => i.kind === "missing").map((i) => i.path),
               ])];
+              // ── 冻结输入：比对快照；被改动先归档再还原 ──
+              // 任务已明令「禁止修改」，把夹具改绿属于作弊且让验收失真。
+              // 归档改动版本（不删除用户/模型的痕迹）后还原原文，再由续跑
+              // 指令要求模型改实现而不是改夹具。
+              if (frozenSnapshots.length > 0) {
+                const mutations = findFrozenMutations(frozenSnapshots, readFileForContract);
+                for (const mut of mutations) {
+                  if (mut.kind === "modified" && mut.snapshot.content) {
+                    try {
+                      const archiveDir = path.join(
+                        deps.workspacePath || process.cwd(),
+                        "frozen-archive",
+                      );
+                      fs.mkdirSync(archiveDir, { recursive: true });
+                      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+                      fs.copyFileSync(
+                        mut.path,
+                        path.join(archiveDir, `${path.basename(mut.path)}.${stamp}.modified`),
+                      );
+                    } catch { /* 归档失败不阻断还原 */ }
+                    try {
+                      atomicWriteFileSync(mut.path, mut.snapshot.content);
+                    } catch { /* 还原失败仍按违规处理 */ }
+                  }
+                  frozenMutations.push(mut);
+                }
+              }
+              const acceptanceSummaryLocal = summarizeAcceptance(acceptanceIssues, frozenMutations);
+              acceptanceSummary = acceptanceSummaryLocal;
+              contractMissingPaths = acceptanceSummaryLocal.missing;
+              undersizedDeliverables = acceptanceSummaryLocal.undersized;
+              underAssertedDeliverables = acceptanceSummaryLocal.underAsserted;
               const probeTargets = [...new Set([
                 ...receiptPaths.filter((p) => needsSyntaxProbe(p)),
                 ...claimedPaths.filter((p) => needsSyntaxProbe(p)),
@@ -6922,6 +7006,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               failedTools.length > 0 ||
               emptyResultTools.length > 0 ||
               diskMissingPaths.length > 0 ||
+              undersizedDeliverables.length > 0 ||
+              underAssertedDeliverables.length > 0 ||
+              frozenMutations.length > 0 ||
               landingMismatch.length > 0 ||
               syntaxBroken.length > 0 ||
               hasActionIntentFn(rawMessage);
@@ -6939,6 +7026,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               isCreativeTask &&
               finalReply.length > 300 &&
               diskMissingPaths.length === 0 &&
+              undersizedDeliverables.length === 0 &&
+              underAssertedDeliverables.length === 0 &&
+              frozenMutations.length === 0 &&
               landingMismatch.length === 0 &&
               syntaxBroken.length === 0;
             asyncLog(`[AgentModelExecutor] Auto-continue check: isCreativeTask=${isCreativeTask}, replyLen=${finalReply.length}, isCreativeSubstantive=${isCreativeSubstantive}, premature=${premature}, needsCorrection=${preVerdict.needsCorrection}, reason=${preVerdict.reason}\n`);
@@ -6963,6 +7053,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               (premature !== null ||
                 stalledAfterFailure ||
                 diskMissingPaths.length > 0 ||
+                undersizedDeliverables.length > 0 ||
+                underAssertedDeliverables.length > 0 ||
+                frozenMutations.length > 0 ||
                 landingMismatch.length > 0 ||
                 syntaxBroken.length > 0 ||
                 (preVerdict.needsCorrection && preVerdict.reason !== "pending_permissions"));
@@ -7203,9 +7296,12 @@ if (deps.contextPruningManager && !prunerNoop) {
               //   看不到"为什么续跑"。实测日志确为 `trigger=unknown`。
               //   现在归因清楚，并把失败工具名列进 detail。
               const trigger = premature
+                ?? (frozenMutations.length > 0 ? "frozen_input_modified" : null)
                 ?? (landingMismatch.length > 0 ? "file_landed_wrong_path" : null)
                 ?? (syntaxBroken.length > 0 ? "deliverable_syntax_broken" : null)
                 ?? (diskMissingPaths.length > 0 ? "disk_files_missing" : null)
+                ?? (undersizedDeliverables.length > 0 ? "deliverable_undersized" : null)
+                ?? (underAssertedDeliverables.length > 0 ? "deliverable_under_asserted" : null)
                 ?? (stalledAfterFailure ? "tool_failed" : preVerdict.reason)
                 ?? "unknown";
               trace.addSystem(
@@ -7223,6 +7319,15 @@ if (deps.contextPruningManager && !prunerNoop) {
                     : "",
                   contractMissingPaths.length > 0
                     ? `交付物契约：任务要求但尚未生成的产物：${contractMissingPaths.join("、")}`
+                    : "",
+                  undersizedDeliverables.length > 0
+                    ? `交付物阈值：未达到任务要求的大小：${undersizedDeliverables.map((u) => `${u.path}（${u.actualBytes}B < ${u.minBytes}B）`).join("、")}`
+                    : "",
+                  underAssertedDeliverables.length > 0
+                    ? `交付物阈值：断言数不足：${underAssertedDeliverables.map((u) => `${u.path}（${u.actualAssertions} < ${u.minAssertions}）`).join("、")}`
+                    : "",
+                  frozenMutations.length > 0
+                    ? `冻结输入：任务禁止修改的输入被${frozenMutations.some((m) => m.kind === "missing") ? "删除" : "改动"}：${frozenMutations.map((m) => m.path).join("、")}`
                     : "",
                   preVerdict.notice ?? "",
                   failedTools.length > 0
@@ -7248,12 +7353,11 @@ if (deps.contextPruningManager && !prunerNoop) {
               const diskCorrection = claimedMissingOnly.length > 0
                 ? `\n\n**磁盘文件核验失败**：以下声称创建的文件在磁盘上不存在，必须重新创建：\n${claimedMissingOnly.map((p) => `- \`${p}\``).join("\n")}\n\n必须真正调用 file_write 工具创建这些文件，并把上面列出的路径**原样作为 path 参数传入**（例如 file_write action=create、path="/tmp/v4-monitor/monitor.sh"）。**不要用相对路径**——相对路径会解析到工作区 data/workspace/ 下，文件会写到错误位置、磁盘核验仍会失败。**文件名必须与上面完全一致**——不要创建其他文件名替代。**绝对禁止把文件内容（包括完整代码/代码块）贴在回复里**——贴在回复里不算完成，磁盘核验会判定失败；v5 实测模型多次把测试代码贴在聊天里而不调用 file_write，6 次续跑均未纠正。创建后立即用 file_read 或 \`ls -la <目录>\` 验证文件确实存在，再继续。`
                 : undefined;
-              // ★ 2026-11-16 交付物契约：任务文本显式要求、但模型从未声称也从未
-              //   创建的产物。这与「声称了却没落盘」性质不同——模型根本没意识到
-              //   漏交，措辞要直接点名「任务要求」而不是「你声称的文件」。
-              const contractCorrection = contractMissingPaths.length > 0
-                ? `\n\n**交付物契约未满足**：任务明确要求以下产物，但磁盘上不存在（你此前的回复也未提及）：\n${contractMissingPaths.map((p) => `- \`${p}\``).join("\n")}\n\n请核对该产物是否属于必交项：若属于，立即用 file_write（绝对路径原样传入）真正创建，并按任务要求验证；若任务已说明该产物由用户提供或无需生成，则在最终回复中明确说明该文件的来源/不需要生成的理由，不要保持沉默。`
-                : undefined;
+              // ★ 2026-11-16 交付物契约 / 2026-11-23 阈值与冻结输入：
+              //   任务文本显式要求、但模型从未声称也从未创建的产物；以及
+              //   「文件在但未达门槛」「冻结输入被改」两类验收失败。
+              //   文案集中在 acceptance-notice.ts（单测断言关键指令）。
+              const acceptanceCorrection = buildAcceptanceCorrection(acceptanceSummary);
               const landingCorrection = landingMismatch.length > 0
                 ? `\n\n**落点核验**：以下文件声称已写入某路径，但实际落在了另一路径（工具回执记录的真实落点）：\n${landingMismatch.map((m) => `- 声称 \`${m.claimed}\` → 实际 \`${m.actual}\``).join("\n")}\n\n请先把文件从实际路径**移动**到声称路径（例如 shell_exec \`mv <实际> <声称>\`，注意保留目录创建），再用 file_read 按声称路径验证；若任务本就只要求实际路径的内容，则按实际路径如实汇报，不要再声称写入声称路径。**不要按声称路径重新创建同名文件**——会造成两份内容且声称路径仍与回执不一致。`
                 : undefined;
@@ -7270,7 +7374,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                 correction: [
                   preVerdict.needsCorrection ? preVerdict.notice : undefined,
                   diskCorrection,
-                  contractCorrection,
+                  acceptanceCorrection || undefined,
                   landingCorrection,
                   syntaxCorrection,
                 ].filter(Boolean).join("\n") || undefined,
@@ -9011,6 +9115,33 @@ if (deps.contextPruningManager && !prunerNoop) {
         } catch (diskErr) {
           process.stderr.write(
             `[AgentModelExecutor] Disk verification skipped: ${diskErr instanceof Error ? diskErr.message : String(diskErr)}\n`
+          );
+        }
+
+        // ── 交付物验收 footer（★ 2026-11-23，v23-v28 系统性缺陷）──────────
+        // 循环内的续跑门给了修复机会；末轮仍未达标时不再回灌，但必须在
+        // 最终回复里**如实列出**未满足项——否则用户看到的是「全部完成」，
+        // 而任务写明的「README ≥300 字节」「至少 8 个断言」「禁止修改夹具」
+        // 逐条都没过（hermes 语义：验证证据进 footer，正文不撒谎）。
+        try {
+          const acceptanceIssues = evaluateDeliverables(deliverableContract, {
+            readFile: readFileForContract,
+          });
+          const frozenAtEnd = findFrozenMutations(frozenSnapshots, readFileForContract);
+          const footer = buildAcceptanceFooter(summarizeAcceptance(acceptanceIssues, frozenAtEnd));
+          if (footer) {
+            finalReply += footer;
+            process.stderr.write(
+              `[AgentModelExecutor] Acceptance footer appended for session "${sessionId}"\n`,
+            );
+            trace?.addSystem?.(
+              `交付物验收：任务硬指标未全部满足`,
+              acceptanceIssues.map((i) => `${i.kind}:${i.path}`).join("\n"),
+            );
+          }
+        } catch (acceptErr) {
+          process.stderr.write(
+            `[AgentModelExecutor] Acceptance footer skipped: ${acceptErr instanceof Error ? acceptErr.message : String(acceptErr)}\n`,
           );
         }
 
