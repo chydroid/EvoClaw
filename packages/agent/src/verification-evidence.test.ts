@@ -240,6 +240,18 @@ describe("VerificationEvidenceStore > 测试红门（getLastFailedAttributable�
     s.clear();
     expect(s.getLastFailedAttributable()).toBeNull();
   });
+
+  it("since 之前的失败事件不计入（v28 收尾 footer 的 turn 隔离）", async () => {
+    const s = new VerificationEvidenceStore();
+    s.record(["a.py"], "old-failure", 1);
+    const since = Date.now();
+    await new Promise((r) => setTimeout(r, 3));
+    s.record(["a.py"], "new-failure", 2);
+    expect(s.getLastFailedAttributable(since)!.command).toBe("new-failure");
+    expect(s.getLastFailedAttributable(Date.now() + 1)).toBeNull();
+    // 不传 since 时保持旧语义：仍能看到更早的失败（成功覆盖才失效）
+    expect(s.getLastFailedAttributable()!.command).toBe("new-failure");
+  });
 });
 
 // ═══════════════════════════════════════════════════════════

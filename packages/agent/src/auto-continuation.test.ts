@@ -186,3 +186,36 @@ describe("detectPrematureStop — 序数承诺（v4 Task 7 回归）", () => {
     ).toBeNull();
   });
 });
+
+describe("detectPrematureStop — 进度报告式收尾（v28 Task 1/4 回归）", () => {
+  const T1_REPLY =
+    "主人，先汇报当前进度（还在进行中，还没到最后一步）：\n" +
+    "**还没做**\n- README.md、真实运行 CLI 生成 report.json\n" +
+    "我先把剩下的全部跑完再给你最终汇报。";
+
+  const T4_REPLY =
+    "**尚未执行**：\n- CLI 生成 report.json\n- 顶层 part 数量尚未向主人汇报\n" +
+    "**下一步**：修正 test_multipart.py 中 3/4/5 用例的 body 构造。";
+
+  it("★ T1：『还在进行中 / 还没做 / 先把剩下的跑完再汇报』→ 自动续跑", () => {
+    expect(detectPrematureStop(T1_REPLY, { toolCallsThisRound: false }))
+      .toBe("promise_future_action");
+  });
+
+  it("★ T4：『尚未执行 / 尚未向主人汇报 / 下一步：修正』→ 自动续跑", () => {
+    expect(detectPrematureStop(T4_REPLY, { toolCallsThisRound: false }))
+      .toBe("promise_future_action");
+  });
+
+  it("本轮确实执行了工具时视为过程叙述，不续跑", () => {
+    expect(detectPrematureStop(T4_REPLY, { toolCallsThisRound: true })).toBeNull();
+  });
+
+  it("『尚未发现异常 / 下一步建议』这类结论与建议不误判", () => {
+    expect(
+      detectPrematureStop("尚未发现异常，全部 12 项测试通过。下一步建议：拆分部署。", {
+        toolCallsThisRound: false,
+      }),
+    ).toBeNull();
+  });
+});

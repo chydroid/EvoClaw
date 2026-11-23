@@ -30,7 +30,7 @@ import { SubdirectoryHintTracker } from "./subdirectory-hints";
 import { ThinkingTrace, type ThinkingStep } from "./thinking-trace";
 import { shouldReplayPriorThinking } from "./anthropic-thinking-policy";
 import { detectPrematureStop, buildContinuationDirective, isPlaceholderOnlyReply } from "./auto-continuation";
-import { runTurnFinalizer, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
+import { runTurnFinalizer, buildVerificationFailureFooter, type ToolExecutionStats, type ConversationMessageLite } from "./turn-finalizer";
 import { getTurnLivenessWatchdog } from "./turn-liveness";
 import { isCreationTool } from "./tool-capability-catalog";
 import { normalizeToolActionArg, normalizeToolArgumentAliases } from "./tool-arg-normalization";
@@ -5626,6 +5626,9 @@ if (deps.contextPruningManager && !prunerNoop) {
       // 让验证门区分「从未验证」与「验证过但已被改动」，只对失效路径
       // 要求定向复验。
       const evidenceStore = getVerificationEvidenceStore(sessionId);
+      // 本 turn 起点：收尾的验证红灯 footer 只看本 turn 的失败事件，
+      // 避免同一 session 上一轮遗留的失败污染本轮（账本跨 turn 保留）。
+      const turnStartedAt = Date.now();
       let toolLoopWarnedThisTurn = false;
       // 工具循环阻断标志：由 executeSingleToolCall 内部检测设置，外部循环检查并 break
       let toolLoopHaltFlag = false;
@@ -8132,7 +8135,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                   if (timedOut) {
                     evidenceStore.record(
                       createdFiles.map((f) => f.path),
-                      `${toolName}:${verifyKind}:timeout`,
+                      verifyCommand.slice(0, 300),
                       -1,
                     );
                     asyncLog(
@@ -8154,7 +8157,7 @@ if (deps.contextPruningManager && !prunerNoop) {
                   const effectiveCode = headCode !== null ? headCode : exitCode;
                   evidenceStore.record(
                     createdFiles.map((f) => f.path),
-                    `${toolName}:${verifyKind}`,
+                    verifyCommand.slice(0, 300),
                     effectiveCode,
                   );
                 }
@@ -9013,6 +9016,30 @@ if (deps.contextPruningManager && !prunerNoop) {
           finalReply =
             "⚠️ 本次处理没有产出可用的结果：模型只返回了占位符，没有实际执行任务。\n\n" +
             "请重新发送一次任务描述，我会重新执行；如果问题持续出现，请检查当前模型服务是否正常（可能需要切换模型）。";
+        }
+
+        // ── 验证红灯 footer（v28 Task 5 实证）─────────────────────────
+        // 循环内的测试红门只在「还有轮次可续跑」时生效；轮次/预算耗尽后
+        // 模型仍可能以「✅ 已完成」收尾，而账本里留着最后一次可归因验证
+        // 失败（exit≠0）。这里做确定性兜底：宣称完成 + 本 turn 最后一次
+        // 可归因验证失败 → 追加失败命令与退出码，模型自述不能覆盖工具事实。
+        try {
+          const lastFailed = evidenceStore.getLastFailedAttributable(turnStartedAt);
+          const verifyFooter = buildVerificationFailureFooter(finalReply, lastFailed);
+          if (verifyFooter) {
+            finalReply += verifyFooter;
+            asyncLog(
+              `[AgentModelExecutor] Verification-failure footer appended (exit=${lastFailed!.exitCode}) for session "${sessionId}"\n`,
+            );
+            trace?.addSystem?.(
+              `验证红灯 footer：最后一次可归因验证失败（exit=${lastFailed!.exitCode}）`,
+              (lastFailed!.command || "").slice(0, 200),
+            );
+          }
+        } catch (verifyFooterErr) {
+          process.stderr.write(
+            `[AgentModelExecutor] Verification-failure footer skipped: ${verifyFooterErr instanceof Error ? verifyFooterErr.message : String(verifyFooterErr)}\n`,
+          );
         }
 
         // ── Turn Finalizer：终末安全网（对标 hermes-agent turn_finalizer.py）──

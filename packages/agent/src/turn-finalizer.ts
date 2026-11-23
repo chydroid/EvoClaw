@@ -38,6 +38,8 @@
  *   - 失败不阻断：任何异常只记日志，不抛给调用方
  */
 
+import { hasUnfinishedWorkMarker } from "./unfinished-work";
+
 // ── 类型定义 ──────────────────────────────────────────────────────────────────
 
 /** 工具执行统计 */
@@ -368,7 +370,7 @@ const PENDING_INTENT_PATTERNS = [
 
 function replyEndsInPendingIntent(replyText: string): boolean {
   const tail = replyText.slice(-240);
-  return PENDING_INTENT_PATTERNS.some((p) => p.test(tail));
+  return hasUnfinishedWorkMarker(tail) || PENDING_INTENT_PATTERNS.some((p) => p.test(tail));
 }
 
 function buildCompletionStatusBlock(toolStats: ToolExecutionStats, replyText: string): string {
@@ -526,6 +528,52 @@ export function buildFileMutationFooter(
     "\n\n以上文件可能未被成功写入，请以实际执行结果为准。";
 
   return replyText.replace(/\s+$/, "") + footer;
+}
+
+// ── 验证红灯 Footer（v28 Task 5 实证）──────────────────────────────────────────
+
+/** 完成声明模式——回复明确宣称任务/交付物已完成 */
+const COMPLETION_CLAIM_PATTERNS: readonly RegExp[] = [
+  /✅[^\n]{0,24}(?:已完成|完成并验证|全部通过)/,
+  /(?:任务|工作|交付物|全部)[^\n]{0,10}(?:已完成|完成并验证)/,
+  /全部(?:通过|完成|交付)/,
+  /(?:测试|检查|验证)[^\n]{0,8}全(?:绿|部通过)/,
+];
+
+/** 验证红灯 footer 的幂等标记 */
+const VERIFICATION_FAILURE_MARKER = "⚠️ **验证未通过**";
+
+/**
+ * 构建「验证未通过」footer。
+ *
+ * v28 Task 5 事故：模型最后一次可归因的验证运行（`python3 test_der.py`）
+ * 退出码为 1，账本里留着这条失败事实；但收尾回复是「✅ 已完成」，
+ * 且此时轮次已耗尽，循环内的测试红门不再有 nudge 机会。用户在 UI 上看到的
+ * 是一份「已完成 + 测试全绿」的汇报，与工具退出码直接矛盾。
+ *
+ * 这里在 turn 收尾处做确定性追加（不调 LLM）：只要回复**宣称完成**而账本
+ * 最后一次可归因验证是失败，就把失败命令与退出码附在正文末尾，让模型的自述
+ * 无法覆盖工具事实。回复已经如实写明失败时不追加（避免噪音）。
+ *
+ * @param finalReply 最终回复
+ * @param failure 最后一次可归因失败（command + exitCode）
+ * @returns 要追加的 footer；无需追加时返回 null
+ */
+export function buildVerificationFailureFooter(
+  finalReply: string,
+  failure: { command: string; exitCode: number } | null,
+): string | null {
+  const replyText = (finalReply || "").trim();
+  if (!replyText || !failure) return null;
+  if (replyText.includes(VERIFICATION_FAILURE_MARKER)) return null;
+  if (!COMPLETION_CLAIM_PATTERNS.some((re) => re.test(replyText))) return null;
+
+  return (
+    "\n\n---\n\n" +
+    `${VERIFICATION_FAILURE_MARKER}（系统核验）：本轮最后一次可归因的验证命令以退出码 ${failure.exitCode} 结束：\n` +
+    `- \`${failure.command.slice(0, 200)}\`\n\n` +
+    "上述「已完成」与验证结果矛盾——请以该命令的实际输出为准；修复后重新运行验证，退出码为 0 之前不应视为完成。"
+  );
 }
 
 // ── Turn 完成说明器（对标 Hermes _explain_abnormal_exit）───────────────────────

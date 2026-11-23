@@ -21,6 +21,7 @@ import {
   runTurnFinalizer,
   hasCompletionStatusReport,
   buildFileMutationFooter,
+  buildVerificationFailureFooter,
   explainAbnormalExit,
   type ToolExecutionStats,
   type ConversationMessageLite,
@@ -630,5 +631,81 @@ describe("runTurnFinalizer — 扩展机制", () => {
     );
     expect(result.fileMutationFooterAppended).toBe(true);
     expect(result.finalReply).toContain("文件写入验证");
+  });
+});
+
+// ── 5. v28 回归：进度报告式收尾不得被判为「✅ 已完成」 ─────────────────────────
+
+describe("enforceCompletionStatus — 未完成自述（v28 Task 1/4 回归）", () => {
+  const T1_REPLY =
+    "主人，先汇报当前进度（还在进行中，还没到最后一步）：\n" +
+    "**还没做**\n- README.md、真实运行 CLI 生成 report.json\n" +
+    "我先把剩下的全部跑完再给你最终汇报。";
+
+  const T4_REPLY =
+    "**已交付**：multipart.py、test_multipart.py、README.md\n" +
+    "**测试状态**：14/18 通过，剩余 4 个失败\n" +
+    "**尚未执行**：CLI 生成 report.json\n\n" +
+    "**下一步**：修正 test_multipart.py 的 body 构造，跑通 18/18 后执行 CLI。";
+
+  it.each([["T1", T1_REPLY], ["T4", T4_REPLY]])(
+    "%s 进度报告 → 状态块为 🔄 进行中（而非 ✅ 已完成）",
+    (_name, reply) => {
+      const verdict = enforceCompletionStatus(reply, makeToolStats({ successful: 45 }));
+      expect(verdict.appended).toBe(true);
+      expect(verdict.statusBlock).toContain("🔄 进行中");
+      expect(verdict.statusBlock).not.toContain("✅ 已完成");
+    },
+  );
+
+  it("正常完成汇报仍为 ✅ 已完成", () => {
+    const verdict = enforceCompletionStatus(
+      "工作已收尾，测试通过。",
+      makeToolStats({ successful: 12 }),
+    );
+    expect(verdict.appended).toBe(true);
+    expect(verdict.statusBlock).toContain("✅ 已完成");
+  });
+});
+
+describe("buildVerificationFailureFooter — v28 Task 5 回归", () => {
+  const FAILURE = { command: "python3 test_der.py 2>&1 | grep -E \"FAIL\"", exitCode: 1 };
+
+  it("★ 宣称完成 + 本 turn 最后一次验证失败 → 追加失败事实", () => {
+    const reply = "主人，🧬 交付状态汇报：\n**✅ 已完成** - der.py / test_der.py / README.md / report.json";
+    const footer = buildVerificationFailureFooter(reply, FAILURE);
+    expect(footer).toContain("⚠️ **验证未通过**");
+    expect(footer).toContain("退出码 1");
+    expect(footer).toContain("python3 test_der.py");
+  });
+
+  it("未宣称完成（如实报告失败）→ 不追加", () => {
+    expect(buildVerificationFailureFooter("当前 15/59 项失败，仍需修复。", FAILURE)).toBeNull();
+  });
+
+  it("没有失败事件 → 不追加", () => {
+    expect(buildVerificationFailureFooter("✅ 已完成，测试全绿。", null)).toBeNull();
+  });
+
+  it("幂等：已包含 footer 时不重复追加", () => {
+    const reply = "✅ 已完成。";
+    const once = buildVerificationFailureFooter(reply, FAILURE)!;
+    expect(buildVerificationFailureFooter(reply + once, FAILURE)).toBeNull();
+  });
+});
+
+describe("runTurnFinalizer — 集成：进度报告 + 完成状态块", () => {
+  it("进度报告式回复最终带 🔄 进行中 状态块", () => {
+    const messages = makeMessages([
+      { role: "user", content: "实现 TOML 解析器" },
+      { role: "assistant", content: "还没做 README 和 CLI。" },
+    ]);
+    const result = runTurnFinalizer(
+      "还没做 README 和 CLI。我先把剩下的跑完再汇报。",
+      messages,
+      makeToolStats({ successful: 20 }),
+    );
+    expect(result.completionStatusAppended).toBe(true);
+    expect(result.finalReply).toContain("🔄 进行中");
   });
 });

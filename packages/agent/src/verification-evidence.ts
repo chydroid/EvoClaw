@@ -172,10 +172,14 @@ export class VerificationEvidenceStore {
    * - null   → 从无可归因验证事件（或从未验证）
    * - 对象   → 最后一次可归因验证是失败，且其后没有成功的可归因验证覆盖
    *            （成功即清空，与 record() 清空 editedPaths 同语义）
+   *
+   * @param since 只考虑时间戳 ≥ since 的事件（turn 收尾核验用，避免
+   *              上一轮遗留的失败事件污染本轮 footer）
    */
-  getLastFailedAttributable(): { command: string; exitCode: number } | null {
+  getLastFailedAttributable(since = 0): { command: string; exitCode: number } | null {
     for (let i = this.events.length - 1; i >= 0; i--) {
       const ev = this.events[i];
+      if (ev.timestamp < since) return null;
       if (ev.exitCode === 0) return null; // 最近的成功验证已覆盖一切更早的失败
       return { command: ev.command, exitCode: ev.exitCode };
     }

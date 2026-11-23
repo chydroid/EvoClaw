@@ -22,6 +22,8 @@
  * 两者在 llm-caller 里配合使用：先尝试自动续跑，续跑次数用尽才落回对账更正。
  */
 
+import { hasUnfinishedWorkMarker } from "./unfinished-work";
+
 /** 停顿原因，便于日志与测试定位 */
 export type PrematureStopKind =
   /** 明确要求用户回复「继续」之类的确认词 */
@@ -227,8 +229,13 @@ export function detectPrematureStop(
     return "blame_environment";
   }
 
-  // 2) 承诺后续动作——只有本轮没执行工具时才算
-  if (!opts.toolCallsThisRound && PROMISE_FUTURE_PATTERNS.some((re) => re.test(text))) {
+  // 2) 承诺后续动作 / 自述工作尚未完成——只有本轮没执行工具时才算
+  //    ★ v28 压测：模型常以「进度报告」形式收尾（还没做 / 尚未执行 /
+  //    下一步：修正…），旧 PROMISE 列表只认未来时承诺，漏掉这类自述。
+  if (
+    !opts.toolCallsThisRound &&
+    (PROMISE_FUTURE_PATTERNS.some((re) => re.test(text)) || hasUnfinishedWorkMarker(text))
+  ) {
     return "promise_future_action";
   }
 
