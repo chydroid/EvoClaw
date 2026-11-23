@@ -78,12 +78,13 @@ pnpm start
 ## 验证安装
 
 ```bash
-# 检查服务健康
+# 检查服务健康（公开端点，无需鉴权）
 curl http://localhost:27788/health
 
-# 检查 MCP 连通性
+# 检查 MCP 连通性（/api/mcp 需要鉴权：WEB_UI_TOKEN cookie 或 Bearer JWT）
 curl -X POST http://localhost:27788/api/mcp \
   -H "Content-Type: application/json" \
+  -H "Cookie: web_ui_token=$WEB_UI_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 ```
 

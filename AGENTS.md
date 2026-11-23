@@ -32,7 +32,7 @@ pnpm build            # tsc for every package (build before typecheck)
 pnpm typecheck        # tsc --noEmit across all packages
 pnpm test             # vitest run (requires build first)
 pnpm test:watch       # vitest in watch mode
-pnpm lint             # pnpm -r lint (only api-gateway has eslint; main packages have none)
+pnpm lint             # eslint flat config at repo root (excludes api-gateway, data/, dist/)
 ```
 
 **Required order for verification: `pnpm build -> pnpm typecheck -> pnpm test`**
@@ -75,9 +75,9 @@ Tool registration lives in `apps/server/src/tools/` (file-tools, browser-tools, 
 - **TypeScript**: strict mode, ES2022 target, NodeNext module resolution. See `tsconfig.base.json`.
 - **Package manager**: pnpm 10.33.2 (enforced via `packageManager` field). Only `better-sqlite3` and `esbuild` are allowed to run build scripts.
 - **Workspace protocol**: Internal deps use `"workspace:*"`.
-- **Test framework**: Vitest. Tests at `packages/*/src/**/*.test.ts`, `packages/*/tests/**/*.test.ts`, `apps/*/tests/**/*.test.ts`. 30s test timeout, 10s hook timeout.
-- **No ESLint in main packages**. `api-gateway/` is a separate sub-project with its own eslint and jest — don't mix it with the main workspace.
-- **`.env` loading**: Server reads `dotenv` from root `.env` at runtime. Start uses `chcp 65001` on Windows for UTF-8.
+- **Test framework**: Vitest. Tests at `packages/*/src/**/*.test.ts`, `packages/*/tests/**/*.test.ts`, `apps/*/tests/**/*.test.ts`, `scripts/**/*.test.ts`. 30s test timeout, 10s hook timeout.
+- **ESLint** lives at the repo root (`eslint.config.mjs`, flat config, typescript-eslint recommended). The repo currently carries pre-existing warnings; new code should add none. `api-gateway/` is a separate sub-project with its own eslint and jest — don't mix it with the main workspace.
+- **`.env` loading**: Server reads root `.env` via Node's `--env-file` (falling back to `dotenv`). `pnpm start` / `pnpm cli` go through `scripts/launch.mjs`, which adds `chcp 65001` on Windows only — never hardcode a platform-specific node path in scripts.
 - **Language**: Code comments and docs are in Chinese (zh-CN).
 - **Docker**: `docker build -t evoclaw . && docker run -p 27788:27788 --env-file .env evoclaw`. Health check on `/health`.
 - **Git hooks**: Run `setup-hooks.bat` (Windows) or `bash setup-hooks.sh` (Linux/Mac) after cloning.
@@ -152,8 +152,10 @@ Agent 在以下场景应主动更新 `project_memory.md`：
 
 - `pnpm build` must complete before `pnpm typecheck` or `pnpm test` — packages reference each other's built output.
 - CI runs on Node 22 and 24. `engines` field requires Node >= 20.
-- `pnpm -r lint` only succeeds if api-gateway is excluded or has no lint errors. Main packages have no lint scripts.
+- `pnpm lint` runs the root flat config over `packages/`, `apps/` and `scripts/` (api-gateway, data/, dist/ excluded). It currently reports pre-existing warnings/errors in files this work did not touch — check `git stash`-free by linting only changed files: `npx eslint <paths>`.
 - Vitest config maps `@evoclaw/*` aliases to `packages/*/src` — tests run against source, not dist.
 - The `go-bookstore/` directory is a standalone Go microservices demo, not part of the pnpm workspace.
 - `coding-tasks/` directory (if present) also has tests picked up by vitest config.
-- Port is 27788 across README / .env.example / Dockerfile / docker-compose.yml / code defaults. Env var name is `EvoClaw_PORT` (mixed case) — README's `EVOCLAW_PORT` (all-caps) is a docs-only mismatch that breaks on case-sensitive OSes.
+- Port is 27788 across README / .env.example / Dockerfile / docker-compose.yml / code defaults. Env var name is `EvoClaw_PORT` (mixed case); all-caps `EVOCLAW_PORT` is never read.
+- `pnpm start` / `pnpm cli` → `scripts/launch.mjs` (cross-platform; Windows-only `chcp 65001` inside). Don't reintroduce hardcoded `C:/PROGRA~1/nodejs/node.exe` paths.
+- Web UI dev proxy target is `EvoClaw_PORT` from env or root `.env` (was hardcoded `localhost:3000`, which the server never listens on).

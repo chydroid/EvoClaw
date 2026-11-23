@@ -10,221 +10,291 @@
 
 <p align="center">
   <strong>A self-evolving AI assistant platform</strong><br>
-  <sub>Personalized intelligent experiences through skill learning, task orchestration, and multi-channel integration</sub>
+  <sub>Skill learning, task orchestration and multi-channel access — with a deterministic delivery gate that checks what the task actually asked for</sub>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square" alt="Node.js" />
   <img src="https://img.shields.io/badge/pnpm-10.33.2-blue?style=flat-square" alt="pnpm" />
   <img src="https://img.shields.io/badge/typescript-5.x-3178c6?style=flat-square" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/version-0.93.2-orange?style=flat-square" alt="Version" />
-  <img src="https://img.shields.io/badge/tests-6501-brightgreen?style=flat-square" alt="Tests" />
+  <img src="https://img.shields.io/badge/version-0.93.1-orange?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/tests-8036-brightgreen?style=flat-square" alt="Tests" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License" />
 </p>
 
 ---
 
+## What it is
+
+EvoClaw runs an agent loop against any OpenAI-compatible LLM, gives it a toolbelt
+(file, shell, browser, web, documents, media, memory, scheduler), and connects it to
+chat channels, a REST/WebSocket gateway, an MCP bridge and a React Web UI.
+
+Two design decisions shape the rest of the codebase:
+
+- **Prompt cache is sacred.** Conversation history is append-only. Nudges, warnings
+  and reminders are injected as *transient* messages that never enter history, so the
+  cached prefix survives turn boundaries.
+- **Completion is verified, not asserted.** Required artifacts named in the task text
+  (including `≥300 bytes`, `at least 8 assertions`, `frozen fixture — do not modify`)
+  are checked deterministically at the end of the turn. A model saying "done" is not
+  evidence.
+
 ## Quick Start
 
 ### Prerequisites
 
-- **Node.js** >= 20 (Node 24 recommended for better compatibility with pnpm 10)
-- **pnpm** >= 9
+- **Node.js** >= 20 — CI runs Node 22 and 24; Node 24 is recommended
+- **pnpm** 10.33.2 (pinned via `packageManager`; pnpm >= 9 also works)
 
-> **pnpm Version Compatibility Note**: pnpm 10+ requires Node >= 22.13. If you have Node 20, use `npm install -g pnpm@9` instead of `npm install -g pnpm`.
-
-### Installation
+### Install and run
 
 ```bash
-# 1. Clone
 git clone https://github.com/chydroid/EvoClaw.git
 cd EvoClaw
 
-# 2. Install dependencies
-pnpm install
-# OR use npm if pnpm is not available:
-# npm install
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env to add your API keys and configuration
-
-# 4. Build
-pnpm build
-# OR use npm:
-# npm run build
-
-# 5. Start
-pnpm start
-# OR use npm:
-# npm start
+pnpm install                 # install workspace dependencies
+cp .env.example .env         # then edit .env: JWT_SECRET, WEB_UI_TOKEN, provider keys
+pnpm build                   # tsc for every package + vite build for the Web UI
+pnpm start                   # cross-platform launcher (Windows gets chcp 65001 automatically)
 ```
 
-Open **http://localhost:27788** in your browser.
+Open **http://localhost:27788** (or `EvoClaw_PORT` from your `.env`).
 
-### Configure Your First LLM
+> `pnpm start` and `pnpm cli` go through `scripts/launch.mjs`, so the same command works
+> on Windows, Linux and macOS. `start:unix` / `start:win` are kept as aliases.
 
-1. Open Web UI → **LLM** tab
-2. Select a provider (e.g. OpenAI)
-3. Toggle **Enable Provider**
-4. Enter your **API Key**
-5. Select a **Model** (e.g. gpt-4o)
-6. Click **Save All**
-
-> **Local models?** Install [Ollama](https://ollama.com), run `ollama pull llama3`, then set Base URL to `http://localhost:11434/v1`.
-
-### Verify
+### Verify the install
 
 ```bash
-pnpm typecheck    # Type checking
-pnpm test         # Run tests
+pnpm build       # must run first — packages reference each other's built output
+pnpm typecheck   # tsc --noEmit across all packages
+pnpm test        # vitest via scripts/vitest-runner.mjs
 ```
 
-## Core Capabilities
+### Configure your first LLM
 
-| Category | Capabilities |
-|----------|-------------|
-| Conversation | Multi-model, multi-provider, streaming, context compression, MoA (Mixture of Agents) |
-| Skills | Local + remote registry, auto-install, security scanning, Skill Curator lifecycle, optional-skills separation, 37 built-in + optional skills (dev tools, productivity, writing, analysis, design, generation), TF-IDF semantic matching with Chinese-English bilingual keywords |
-| Tools | File ops, browser automation, web search, Office docs, Computer Use desktop control, Tool Search |
-| Channels | WeChat, Feishu, DingTalk, Telegram, WhatsApp, Discord, Slack, Matrix, QQ, REST API, WebSocket, A2A, ACP IDE |
-| Memory | Short/long-term, RAG retrieval, semantic search, L0-L3 layered memory, Memory Provider plugins |
-| Evolution | Experience learning, reinforcement feedback, auto-optimization, genetic algorithm, A/B testing |
-| Security | Command approval, path protection, SSRF guard, secrets, audit, startup security audit, OSV supply-chain, advisory catalog |
-| Plugins | Plugin SDK, MCP protocol support, Profile multi-instance |
-| Collaboration | Kanban multi-agent work queue, Actor model, Swarm orchestrator, DAG task orchestration |
-| Reliability | Process supervisor, shutdown forensics, drain control, log rotation, credential pool persistence |
+1. Open the Web UI → **LLM** tab
+2. Enable a provider, paste the **API key**, pick a **model**
+3. Click **Save All**
+
+Any OpenAI-compatible endpoint works: set the provider's **Base URL** and model name.
+For a local model, run [Ollama](https://ollama.com) and use `http://localhost:11434/v1`.
+
+### Authentication
+
+The gateway requires authentication for everything except `/health`, `/api/health`,
+the public skill catalog and static UI assets. Two options:
+
+| Mode | How |
+|---|---|
+| Web UI token | Set `WEB_UI_TOKEN` in `.env`. The SPA receives it as an httpOnly cookie on first page load; API clients send `Authorization: Bearer <token>` or the `web_ui_token` cookie. |
+| Admin login | `POST /api/auth/login {username,password}` returns a JWT. Credentials come from `EVOCLAW_ADMIN_USER` / `EVOCLAW_ADMIN_PASSWORD`; outside `NODE_ENV=production` they default to `admin` / `admin`. |
+
+## Core capabilities
+
+| Area | What you get |
+|---|---|
+| Conversation | Multi-provider, streaming, context compaction, MoA (mixture-of-agents) committee, model failover with credential-pool rotation |
+| Task execution | Durable background tasks that survive restarts, checkpoints, budget-aware wrap-up, loop/duplicate-call detection, delegation to sub-agents |
+| Delivery verification | Required-artifact contract from the task text, byte-size and assertion-count thresholds, frozen-input snapshot → archive → restore, honest end-of-turn footer |
+| Skills | 11 bundled + 26 optional skills, marketplace install/search, security scanning, SkillCurator lifecycle with content-addressed ledger and rollback |
+| Tools | 60 core tools, most action-multiplexed; optional Playwright/browser, Office docs, media (TTS/STT/image/video), computer use, tool search |
+| Channels | WeChat, Weibo, Feishu, DingTalk, QQ, Telegram, WhatsApp, Discord, Slack, Matrix, plus REST, WebSocket, MCP, A2A and ACP/IDE |
+| Memory | L0–L3 layered memory, short/long-term stores, FTS5 full-text (CJK-aware), vector/semantic retrieval, RAG pipeline, user modeling |
+| Evolution | Experience distillation, reinforcement feedback, genetic search, A/B testing, skill auto-generation with sandboxed evaluation |
+| Security | Command approval and allowlists, path/SSRF protection, secret redaction, audit trail, startup security audit, MCP tool-poisoning scanner, OSV supply-chain check |
+| Operations | Process supervisor, shutdown forensics, queue drain control, rotating log appender, Prometheus `/metrics`, OTLP tracing export |
 
 ## Architecture
 
-EvoClaw is built on a modular, event-driven architecture:
+```
+Browser / CLI / Channels / IDE (MCP) / A2A
+                 │
+        Gateway layer  (Express + WS + MCP + channel adapters)
+                 │
+             EventBus  (decoupled pub/sub)
+                 │
+   ┌─────────────┼──────────────┬─────────────┐
+ Agent          Memory        Evolution     Security
+ (orchestrator, (L0–L3, RAG,  (distill,      (governor,
+  executor,      FTS5, vector)  genetic,      audit, RBAC,
+  DAG, MoA)                     A/B)          policy)
+   └─────────────┴──────────────┴─────────────┘
+                 │
+        Infrastructure (queue, process mgr, FS, logger, browser)
+```
 
-- **Gateway Layer** — REST/WS/MCP gateways, Web UI (React 19), CLI — all external interfaces
-- **EventBus** — Centralized pub-sub event bus decoupling all internal services
-- **Core Services** — Agent (Actor model + DAG orchestration), Evolution (self-evolution engine), Memory (multi-layer: short/long/vector/FTS5)
-- **Supporting** — Skills (registry, sandbox, security scanning), Security (RBAC, audit, tenant isolation), Infrastructure (logging, message queue, filesystem)
-- **Cross-cutting** — Copilot Router (intelligent model routing), Credential Pool (API key rotation), Prompt Cache
+Key patterns: `ServiceRegistry` for IoC/DI, an actor system for concurrency,
+DAG-based task decomposition, and a deterministic verification layer that sits
+between the model's last message and the user.
 
-Key design patterns: IoC/DI via ServiceRegistry, Actor model concurrency, DAG-based task decomposition, Observer pattern for evolution.
+### Packages
 
-## CLI Reference
+| Package | Responsibility |
+|---|---|
+| `packages/core` | Types, `ServiceRegistry`, `EventBus`, `ConfigManager`, plugin manager, feature flags |
+| `packages/agent` | Task orchestration, agent/model executor, sessions, context engine, compaction, delegate engine, DAG/MoA |
+| `packages/gateway` | Gateway server, channel manager and adapters, protocol handling, MCP, auth, streaming |
+| `packages/skills` | Skill manager, marketplace registry, curator, dispatcher, index |
+| `packages/memory` | Memory hub, semantic/vector store, FTS5, RAG, memory providers |
+| `packages/security` | Security governor, audit center, RBAC, tenant isolation, tool policy, scanners |
+| `packages/evolution` | Evolution engine, experience distillation, genetic engine, A/B tests |
+| `packages/infrastructure` | Message queue, process manager, filesystem, logger, browser controller, observability |
+| `packages/scheduler` | Cron scheduler and schedule manager |
+| `packages/reporting` | Report generation |
+| `packages/intelligence` | Task classification and skill orchestration |
+| `packages/plugin-sdk` | Plugin/tool development SDK |
+| `packages/email` | Email client |
+| `packages/web-ui` | React 19 + Vite frontend (59 pages) |
+| `packages/claude-code-tools` | Claude Code tool integration |
 
-30+ subcommands available:
+Apps: `apps/server` (entrypoint, port 27788), `apps/cli` (the `evoclaw`/`openclaw` CLI),
+`apps/mcp-server` (stdio MCP bridge so IDEs can use EvoClaw's tools).
+
+## Tools
+
+60 tools are registered at startup (the live MCP `tools/list` returns the same count).
+Most are **action-multiplexed** — one tool, several behaviours — which keeps the tool
+payload small enough to stay cache-friendly:
+
+```text
+file_write(action=create|modify|edit)   shell_exec      execute_code
+browser_*(navigate|act|screenshot|…)    web_search(action=search|research|browser)
+web_fetch   document(action=docx|xlsx|pptx)   memory   todo_list   scheduler
+skill_manage|skill_list|skill_view      delegate_task  kanban   verify_project
+text_to_speech  audio_to_text  image_generate  video  vision_analyze
+```
+
+`computer_use` only appears when a desktop backend (native / nut.js / robotjs) is
+available — it is gated by `checkFn`, so a headless server never advertises it.
+Over the MCP bridge, `shell_exec`, `execute_code`, `file_write`, `file_delete` and
+`video` are additionally blocked; use the Web UI or CLI agent path for those.
+
+Optional capabilities are gated by their dependency: browser tools need Playwright,
+local embeddings need `@huggingface/transformers`, FTS5 needs `better-sqlite3`.
+Missing dependencies disable the tool instead of failing the request.
+
+## CLI
+
+53 commands. The examples below are the verified surface (`pnpm cli <command>`):
 
 ```bash
-# Setup & onboarding
-evoclaw setup                    # Create base config and workspace
-evoclaw onboard                  # Interactive onboarding
+# Setup & diagnostics
+pnpm cli setup                       # create base config and workspace dirs
+pnpm cli onboard                     # guided onboarding
+pnpm cli health [--json]             # gateway health
+pnpm cli status [--all]              # service and system status
+pnpm cli doctor [--fix] [--deep]     # diagnostics and auto-repair
 
-# Health & status
-evoclaw health [--json]          # Health check
-evoclaw status [--all]           # Runtime status
-evoclaw doctor [--fix]           # System diagnostics
+# Agent
+pnpm cli agent -m "summarize ./README.md"
+pnpm cli chat                        # interactive REPL
+pnpm cli sessions                    # list chat sessions
 
-# Agent & messaging
-evoclaw agent -m <msg>           # Run agent with message
-evoclaw message send             # Send message to agent
+# Models & config
+pnpm cli models list [provider]
+pnpm cli models set openai/gpt-4o
+pnpm cli config list
+pnpm cli config get llm
+pnpm cli config set llm.defaultProvider openai
 
 # Skills
-evoclaw skills search <q>        # Search skills
-evoclaw skills install <s>       # Install a skill
-evoclaw skills list              # List installed skills
+pnpm cli skills search <query>
+pnpm cli skills install <slug>
+pnpm cli skills list
+pnpm cli skills list-optional        # 26 optional skills
+pnpm cli skills install-optional <name>
 
-# Models
-evoclaw models list              # List available models
-evoclaw models set <id>          # Switch default model
-evoclaw models scan              # Scan available models
+# MCP (as a client and as a server)
+pnpm cli mcp list
+pnpm cli mcp external list           # external MCP servers EvoClaw consumes
+pnpm cli mcp external add firecrawl '{"type":"stdio","command":"npx","args":["-y","firecrawl-mcp"]}'
+pnpm cli mcp oauth login <server>    # OAuth (PKCE / device code)
+pnpm cli mcp serve                   # expose EvoClaw tools over stdio to an IDE
 
-# Configuration
-evoclaw config get <key>         # Get config value
-evoclaw config set <key> <val>   # Set config value
-
-# Security
-evoclaw security audit           # Run security audit
-evoclaw secrets list             # List secrets
-
-# Integration
-evoclaw mcp list                 # List MCP servers
-evoclaw plugins list             # List plugins
-evoclaw channels list            # Channel management
+# Channels & security
+pnpm cli channels list
+pnpm cli channels capabilities
+pnpm cli security audit
+pnpm cli secrets list                # values are always masked
 ```
+
+Run `pnpm cli --help` for the full list. `--json`, `--profile <name>`, `--dev` and
+`--log-level` are global flags.
 
 ## REST API
 
-Key endpoints (50+ total):
+~360 `/api/*` routes. A representative slice:
 
-| Endpoint | Method | Description |
+| Endpoint | Method | Purpose |
 |---|---|---|
-| `/api/health` | GET | Health check |
-| `/api/chat` | POST | Send chat message |
-| `/api/skills` | GET | List installed skills |
-| `/api/system/services` | GET | Service runtime status |
-| `/api/config/llm` | GET/PUT | LLM configuration |
-| `/api/config/channels` | GET/PUT | Channel configuration |
-| `/api/feature-flags` | GET | List feature flags |
-| `/api/evolution/dashboard` | GET | Evolution engine dashboard |
+| `/health`, `/api/health` | GET | Liveness/readiness with per-subsystem detail |
+| `/api/auth/login` | POST | Exchange admin credentials for a JWT |
+| `/api/chat` | POST | Send a message (soft timeout hands long work to a durable task) |
+| `/api/chat/resume` | POST | Resume a session |
+| `/api/durable-tasks`, `/api/durable-tasks/:id` | GET | Background task status |
+| `/api/workspace` | GET/POST | Read or switch the runtime workspace |
+| `/api/system/services` | GET | Service registry status |
+| `/api/config/llm`, `/api/config/channels` | GET/PUT | Provider and channel config |
+| `/api/skills` | GET | Installed skills (public) |
+| `/api/marketplace/search` | GET | Skill marketplace (public, read-only) |
 | `/api/memory/search?q=` | GET | Semantic memory search |
-| `/metrics` | GET | Prometheus metrics |
+| `/api/evolution/dashboard` | GET | Evolution metrics |
+| `/api/feature-flags` | GET | Feature flag state |
+| `/api/kanban/*` | GET/POST | Multi-agent work queue |
+| `/metrics` | GET | Prometheus metrics (auth required) |
 
 ## Configuration
 
-Key environment variables in `.env`:
+Key variables in `.env` (full list with comments in `.env.example`):
 
-| Variable | Default | Description |
+| Variable | Default | Purpose |
 |---|---|---|
-| `EvoClaw_PORT` | `27788` | Server port |
-| `EvoClaw_HOST` | `0.0.0.0` | Bind address |
-| `JWT_SECRET` | — | JWT signing key (**must change in production**) |
-| `EvoClaw_EVOLUTION_ENABLED` | `true` | Enable evolution engine |
-| `EvoClaw_MCP_ENABLED` | `true` | Enable MCP protocol |
-| `CORS_ORIGINS` | — | Allowed CORS origins |
-| `RATE_LIMIT_MAX` | — | Max rate limit requests |
+| `EvoClaw_PORT` | `27788` | HTTP port (note the mixed case — all-caps `EVOCLAW_PORT` is **not** read) |
+| `EvoClaw_HOST` | `0.0.0.0` | Bind address; use `127.0.0.1` for loopback-only |
+| `JWT_SECRET` | — | JWT signing key, **change it**; ≥16 chars or a warning is printed |
+| `WEB_UI_TOKEN` | — | Web UI/API token; empty disables token auth (admin login still applies) |
+| `EVOCLAW_ADMIN_USER` / `EVOCLAW_ADMIN_PASSWORD` | `admin`/`admin` outside production | `/api/auth/login` credentials |
+| `CHAT_TIMEOUT_MS` | `360000` | Soft timeout: checkpoint + continue in background, return a `⏳` reply; `0` disables |
+| `EvoClaw_EVOLUTION_ENABLED` | `true` | Evolution engine |
+| `EvoClaw_MCP_ENABLED` | `true` | MCP protocol |
+| `EvoClaw_REST_ENABLED` | `true` | REST API |
+| `CORS_ORIGINS` | — | Allowed origins |
+| `RATE_LIMIT_MAX` | `100` | Requests per window |
+| `EVOCLAW_OTLP_ENDPOINT` | — | OTLP/HTTP trace export |
+| `EVOCLAW_MARKETPLACE_REGISTRY_URL` | mirror | Skill marketplace registry |
 
-## Project Structure
+## Project structure
 
 ```
 EvoClaw/
 ├── apps/
-│   ├── server/              # Main server entry
-│   └── cli/                 # CLI tool
-├── packages/
-│   ├── core/                # Types, event bus, config management
-│   ├── agent/               # Task orchestration, model execution, agent pool
-│   ├── gateway/             # Channel management, protocol handling, webhooks
-│   ├── skills/              # Skill registry, installation, validation, security
-│   ├── memory/              # Memory storage, RAG pipeline, semantic search
-│   ├── security/            # Security governance, permissions, audit
-│   ├── evolution/           # Self-evolution engine
-│   ├── infrastructure/      # Message queue, filesystem, logging
-│   ├── scheduler/           # Cron job scheduling
-│   ├── reporting/           # Report generation
-│   ├── intelligence/        # Task classification & skill orchestration
-│   ├── plugin-sdk/          # Plugin development SDK
-│   ├── email/               # Email client
-│   ├── web-ui/              # React 19 frontend
-│   └── claude-code-tools/   # Claude Code integration
-└── docs/                    # Documentation
+│   ├── server/          # main entrypoint (EvoClawServer, port 27788)
+│   ├── cli/             # evoclaw / openclaw CLI (53 commands)
+│   └── mcp-server/      # stdio MCP bridge for IDEs
+├── packages/            # 15 workspace packages (see table above)
+├── scripts/             # launch.mjs, vitest runner, release/osv tooling
+├── docs/                # plugin guide + Hermes/OpenSpace alignment notes
+└── data/                # runtime state: workspace, skills, sessions, checkpoints
 ```
-
-## Tech Stack
-
-- **Runtime**: Node.js 20+
-- **Language**: TypeScript (strict)
-- **Package Manager**: pnpm monorepo
-- **Testing**: Vitest
-- **Frontend**: React 19 + Vite
-- **Database**: SQLite (better-sqlite3)
-- **Browser Automation**: Playwright
 
 ## Development
 
 ```bash
-pnpm dev          # Dev mode
-pnpm build        # Build
-pnpm typecheck    # Type check
-pnpm test         # Run tests
-pnpm test:watch   # Watch mode
+pnpm build        # required before typecheck/test
+pnpm typecheck
+pnpm test         # 396 files / 8036 tests
+pnpm test:watch
+pnpm lint         # eslint flat config (repo has pre-existing warnings)
 ```
+
+`pnpm dev` runs `tsc --watch` in every package and Vite for the Web UI. The Vite dev
+server proxies `/api` to `EvoClaw_PORT` (read from the environment or root `.env`).
+
+Conventions: TypeScript strict ESM (NodeNext), Vitest, no `any`, atomic writes for
+persistent state (`atomicWriteFileSync`), cross-process locks for cron/session state,
+Chinese comments and docs, and append-only prompt history.
 
 ## Docker
 
@@ -233,46 +303,35 @@ docker build -t evoclaw .
 docker run -p 27788:27788 --env-file .env evoclaw
 ```
 
+Or with Compose (pulls `ghcr.io/chydroid/evoclaw:latest` by default):
+
+```bash
+docker compose up -d
+```
+
+The image is `node:24-alpine`, exposes `27788`, and health-checks `/health`.
+
 ## Troubleshooting
 
-| Problem | Solution |
+| Symptom | Fix |
 |---|---|
-| `pnpm: command not found` | Install pnpm: `npm install -g pnpm@10` |
-| `port 27788 already in use` | Change `EvoClaw_PORT` in `.env` or kill the process |
-| Build fails | Clean and retry: `pnpm clean && pnpm install && pnpm build` |
-| Web UI blank page | Ensure `pnpm build` completed, check browser console |
-| LLM connection fails | Verify API key and Base URL, check network connectivity |
-| Channel connection fails | Ensure callback URL is publicly accessible, verify token |
-
-### Port conflict
-
-```bash
-# Linux/macOS
-lsof -i :27788
-kill -9 <PID>
-
-# Windows
-netstat -ano | findstr :27788
-taskkill /PID <PID> /F
-```
-
-### Full reset
-
-```bash
-pnpm clean
-rm -rf node_modules pnpm-lock.yaml
-pnpm install
-pnpm build
-pnpm test
-```
+| `pnpm: command not found` | `npm install -g pnpm@10` (or `corepack enable`) |
+| `pnpm start` fails with `chcp: not found` | You are on an old checkout — `scripts/launch.mjs` is the cross-platform launcher |
+| Port already in use | Change `EvoClaw_PORT`, or `lsof -i :27788` / `netstat -ano \| findstr :27788` then kill |
+| Web UI shows 401 / blank | Set `WEB_UI_TOKEN` (or log in via `/api/auth/login`); check the browser console |
+| `pnpm dev` UI calls fail | Ensure the backend is running on `EvoClaw_PORT`; the proxy target comes from env/`.env` |
+| Build fails after pulling | `pnpm clean && pnpm install && pnpm build` |
+| Browser tools unavailable | `pnpm add playwright -F @evoclaw/infrastructure && pnpm exec playwright install chromium` |
+| Tests fail with ENOENT storms | Do not delete temp dirs recursively in test cleanup; see `docs/` notes |
 
 ## Contributing
 
-Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Run `pnpm build && pnpm typecheck && pnpm test` before opening a PR.
 
 ## Security
 
-To report a vulnerability, see [SECURITY.md](SECURITY.md).
+Report vulnerabilities per [SECURITY.md](SECURITY.md). Never commit `.env`.
 
 ## License
 
@@ -280,4 +339,4 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ---
 
-For detailed version history, see [CHANGELOG.md](CHANGELOG.md).
+Detailed history lives in [CHANGELOG.md](CHANGELOG.md).

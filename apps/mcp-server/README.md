@@ -1,6 +1,7 @@
 # EvoClaw MCP Server
 
-桥接 IDE 与 EvoClaw Gateway，让任何 MCP 兼容 IDE 使用 EvoClaw 的 100+ 工具。
+桥接 IDE 与 EvoClaw Gateway，让任何 MCP 兼容 IDE 使用 EvoClaw 的工具
+（实测 `tools/list` 返回 60 个工具，其中 5 个高危工具在 MCP 通道上被屏蔽）。
 
 ## 前置条件
 
@@ -99,19 +100,26 @@ export EVOCLAW_GATEWAY_URL=http://localhost:27788
 
 ## 可用工具
 
-连接后，你的 IDE 将获得 EvoClaw 的全部工具，包括：
+连接后，IDE 会拿到 EvoClaw 的工具清单（约 60 个）。常见的有：
 
-- **run_tests** — 运行测试（vitest/jest/pytest）
-- **lint** — 代码检查（eslint/prettier）
-- **codebase_search** — 语义代码搜索
-- **shell_exec** — 安全 shell 命令执行
-- **file_read / file_write / file_delete** — 文件操作（file_write 复合工具：action=create/modify）
-- **git** — Git 操作（action=status/diff/log/blame/commit/push/...）
+- **dev_check** — 开发自检（lint / 类型 / 测试）
+- **code_search** — 代码检索（类/方法/符号）
+- **file_read / file_list** — 读取与列目录
 - **apply_patch** — SEARCH/REPLACE 补丁应用
+- **git** — Git 操作（action=status/diff/log/blame/commit/push/...）
 - **web_search / web_fetch** — 网络搜索与抓取
-- **browser_navigate / browser_screenshot** — 浏览器自动化
+- **browser_\*** — 浏览器自动化（navigate / act / screenshot / ...）
 - **vision_analyze** — VLM 视觉分析
-- ... 更多
+- **memory / scheduler / todo_list / kanban / delegate_task** — 记忆、定时、待办、多 Agent 队列、子 Agent 委派
+
+### 安全：MCP 通道屏蔽的工具
+
+`MCPProtocolHandler.MCP_BLOCKED_TOOLS` 在 MCP 通道上屏蔽以下工具
+（`tools/list` 不返回，`tools/call` 直接拒绝），因为它们能在宿主机上执行任意代码或删除文件：
+
+`shell_exec`、`execute_code`、`file_delete`、`file_write`、`video`
+
+需要这些能力时请通过 Web UI / CLI 的 Agent 通道使用，那里有审批与策略闸门。
 
 ## 流式响应（SSE）
 
@@ -132,7 +140,7 @@ export EVOCLAW_GATEWAY_URL=http://localhost:27788
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `EVOCLAW_GATEWAY_URL` | `http://localhost:27788` | EvoClaw Gateway 地址 |
-| `EVOCLAW_API_KEY` | (无) | API Key（如果 Gateway 启用了 JWT） |
+| `EVOCLAW_API_KEY` | (无) | 以 `Authorization: Bearer <key>` 发送。需 Gateway 启用 JWT（`/api/auth/login` 拿到的 token 或 `WEB_UI_TOKEN` 对应的 Bearer 值） |
 | `EVOCLAW_MCP_DEBUG` | `false` | 设为 `true` 输出调试日志到 stderr |
 | `EVOCLAW_MCP_DISABLE_STREAM` | `false` | 设为 `true` 禁用流式路径，纯同步调用（兼容旧版 Gateway 或调试场景） |
 
@@ -142,9 +150,10 @@ export EVOCLAW_GATEWAY_URL=http://localhost:27788
 # 启用调试日志
 EVOCLAW_MCP_DEBUG=true node apps/mcp-server/dist/index.js
 
-# 测试 Gateway 连通性
+# 测试 Gateway 连通性（/api/mcp 需鉴权：cookie 或 Bearer JWT）
 curl -X POST http://localhost:27788/api/mcp \
   -H "Content-Type: application/json" \
+  -b "web_ui_token=$WEB_UI_TOKEN" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
 
 # 测试流式端点（SSE，需要认证 cookie）
