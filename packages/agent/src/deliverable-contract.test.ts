@@ -125,6 +125,65 @@ describe("extractRequiredDeliverables", () => {
     const specs = extractRequiredDeliverables(msg, "/tmp/ws");
     expect(specs.map((s) => s.path)).toEqual(["/tmp/task/report.json"]);
   });
+
+  // ★ 2026-11-23 v29 T3 实证：任务写「在 data/workspace/v29-t3/ 实现…」——
+  //   仓库相对任务目录须先于绝对目录回显识别为权威目标。
+  it("data/workspace/<任务目录> 相对写法识别为目标目录，后段绝对回显不覆盖", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const msg = [
+      "在 data/workspace/v29-t3/ 创建零依赖密钥泄漏扫描器（Node.js ESM，文件 scanner.js）。",
+      "创建 scanner.test.js：断言 leak.txt 检出 >=2、clean.txt 检出 =0。",
+    ].join("");
+    const specs = extractRequiredDeliverables(msg, ws);
+    // 关键断言：所有登记 spec 都落在权威任务目录 v29-t3/（不再落工作区根）。
+    // （「文件 scanner.js」子句无交付动词，按裸名意图过滤不登记——正常。）
+    expect(specs.length).toBeGreaterThan(0);
+    for (const s of specs) {
+      expect(s.path.startsWith(`${ws}/v29-t3/`)).toBe(true);
+    }
+    expect(specs.map((s) => s.path)).toContain(`${ws}/v29-t3/scanner.test.js`);
+  });
+
+  it("相对任务目录优先于任务后段的绝对目录回显（工具日志/自述路径不再劫持 targetDir）", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const msg = [
+      "在 data/workspace/v29-t1/ 创建 LRU 缓存 lru.js。",
+      "（运行时回显）日志目录 /home/chy/EvoClaw/data/workspace/。",
+    ].join("");
+    const specs = extractRequiredDeliverables(msg, ws);
+    // 裸名 lru.js 按权威任务目录 v29-t1 解析，不被后段绝对回显改道
+    expect(specs.map((s) => s.path)).toEqual([`${ws}/v29-t1/lru.js`]);
+  });
+
+  // ★ 2026-11-23 v29 T3 实证：`fixtures/ 下生成 3 个样例文件：leak.txt…`——
+  //   夹具目录此时是**交付目标**。C 句点边界「。fixtures/」须登记提及；
+  //   同句交付意图 + 裸名 → 重定向到 fixtures/ 下（而非任务根）。
+  it("fixtures/ 下生成（交付意图）：同句裸名重定向到夹具目录", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const msg = [
+      "在 data/workspace/v29-t3/ 创建零依赖扫描器 scanner.js（base64 编码的 AKIA 密钥解码后再匹配）。",
+      "fixtures/ 下生成 3 个样例文件：leak.txt、clean.txt、encoded.txt。",
+    ].join("");
+    const specs = extractRequiredDeliverables(msg, ws);
+    expect(specs.map((s) => s.path)).toEqual([
+      `${ws}/v29-t3/scanner.js`,
+      `${ws}/v29-t3/fixtures/leak.txt`,
+      `${ws}/v29-t3/fixtures/clean.txt`,
+      `${ws}/v29-t3/fixtures/encoded.txt`,
+    ]);
+  });
+
+  it("fixtures/ 提及后无交付意图（任务输入）：裸名仍排除", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const msg = [
+      "在 data/workspace/v29-t3/ 实现扫描器 scanner.js。",
+      "读取 fixtures/ 目录下的样例：leak.txt、clean.txt（任务提供，禁止修改）。",
+      "交付 scanner.js 与 report.json。",
+    ].join("");
+    const specs = extractRequiredDeliverables(msg, ws);
+    const bases = specs.map((s) => s.path.split("/").pop()!).sort();
+    expect(bases).toEqual(["report.json", "scanner.js"]);
+  });
 });
 
 describe("findMissingDeliverables", () => {

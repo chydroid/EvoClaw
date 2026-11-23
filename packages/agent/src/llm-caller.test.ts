@@ -2542,6 +2542,33 @@ describe("extractClaimedFilePaths — 裸文件名 + 目录拼接（v4 Task 7/8 
     expect(paths).not.toContain(`${ws}/data/workspace/v26-smoke2/a.txt`);
   });
 
+  // ★ 2026-11-23 v29 T4 实证：模型自述「在 data/workspace 下创建 ratelimit.js」
+  //   （无尾斜杠、无子段，工具默认 cwd 写法）——裸名须拼到 baseDir 本身，
+  //   而非不存在的 `<root>/data/workspace/` 段。
+  it("★ v29 T4：`data/workspace` 别名（无子段）登记为 baseDir 提及，裸名拼到工作区根", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    // 根级裸名与显式相对路径不同名（同名会被 v22 守卫视为引用跳过，属既有保守行为）
+    const reply =
+      "已完成。所有文件都在 `data/workspace` 目录下：\n" +
+      "- 已创建 `v29-t4/ratelimit.js`：滑动窗口限流器\n" +
+      "- 已创建 `cleanup.sh`：根级清理脚本。";
+    const paths = extractClaimedFilePaths(reply, ws);
+    // 子段写法走 explicitRelativePaths；根级裸名拼 baseDir（而非 <root>/data/workspace/…）
+    expect(paths).toContain(`${ws}/v29-t4/ratelimit.js`);
+    expect(paths).toContain(`${ws}/cleanup.sh`);
+    expect(paths).not.toContain(`${ws}/data/workspace/cleanup.sh`);
+  });
+
+  // ★ 2026-11-23 v29 T4 实证（D2）：模型按容器/约定路径写 `/workspace/…`——
+  //   盘上不存在 `/workspace` 根，工具契约里它即 workspace 根别名。
+  it("★ v29 T4：`/workspace/…` 提及归一化到 baseDir（幻觉根不再产生缺失误报）", () => {
+    const ws = "/home/chy/EvoClaw/data/workspace";
+    const reply = "已创建 `/workspace/v29-t4/ratelimit.js`。";
+    const paths = extractClaimedFilePaths(reply, ws);
+    expect(paths).toContain(`${ws}/v29-t4/ratelimit.js`);
+    expect(paths).not.toContain("/workspace/v29-t4/ratelimit.js");
+  });
+
   it("★ 运行时写目标（记录到/输出到）不视为声称创建的文件", () => {
     // 复测 Task 7 误报：monitor.sh 脚本运行期把告警写入 alert.log，
     // 回复「超阈值时记录到 `/tmp/v4-monitor/alert.log`」是脚本行为描述，

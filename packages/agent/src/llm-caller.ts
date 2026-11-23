@@ -1959,6 +1959,17 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   const hasBase = typeof baseDir === "string" && baseDir.length > 0;
   const basenameOf = (p: string): string => path.basename(p.replace(/\\/g, "/"));
 
+  // ★ 2026-11-23 v29 T4 实证（D2）：模型常按容器/约定路径写 `/workspace/…`——
+  //   盘上不存在 `/workspace` 根，但工具契约里它即 baseDir（workspace 根）的
+  //   别名。绝对路径策略 1/2 与目录拼接策略 2.5 都会把 `/workspace/…` 原样登记
+  //   → 声称路径误报缺失。有 baseDir 时统一归一化过去，其余提及保持原样。
+  const normalizeWsAlias = (p: string): string => {
+    if (!hasBase) return p;
+    if (p === "/workspace") return baseDir as string;
+    if (p.startsWith("/workspace/")) return path.posix.join(baseDir as string, p.slice("/workspace".length));
+    return p;
+  };
+
   // 1. 反引号中的绝对路径
   // ★ 2026-10-28 修复（v4 复测 Task 7 误报）：排除「记录到 / 写入到 / 输出到」
   //   等运行时写目标——这类路径描述脚本运行期写日志/输出的位置，并非模型
@@ -2022,7 +2033,7 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
     if (/(?:不存在|已删除|已移除|已清理|未创建|未生成|未找到|没有创建|没有生成)/.test(before + after)) continue;
     // 命令调用语境（`bash /path/script.sh`）是历史执行记录，不是当前交付声明。
     if (/(?:^|[\s`])(?:bash|sh|zsh|node|npx|python3?|npm|pnpm|yarn|git|cat|head|tail|wc|chmod|rm|mv|cp|ls|test|source)\s+$/.test(before)) continue;
-    paths.add(p);
+    paths.add(normalizeWsAlias(p));
   }
 
   // 2. 完成声明关键词附近的路径
@@ -2067,7 +2078,7 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
               .slice(Math.max(0, idx - 30), idx)
               .replace(/[\s`]+$/, "");
             if (runtimeWriteTargetRe.test(before)) continue;
-            paths.add(p);
+            paths.add(normalizeWsAlias(p));
           }
         }
       }
@@ -2110,10 +2121,35 @@ export function extractClaimedFilePaths(reply: string, baseDir?: string): string
   for (const m of reply.matchAll(dirMentionRe)) {
     if (inFence(m.index ?? 0)) continue;
     const raw = m[0];
-    const dir = raw.replace(/\/+$/, "");
+    let dir = raw.replace(/\/+$/, "");
+    // ★ 2026-11-23 v29 T4 实证（D2）：`dirMentionRe` 把 `/workspace` 当作一个
+    //   顶层目录段登记，但盘上不存在 `/workspace` 根——模型按「容器/约定路径」
+    //   写 `/workspace/v29-t4/...` 时拼出幻觉根 → 声称路径误报缺失。工具契约里
+    //   `/workspace` 即 workspace 根的别名（与 data/workspace 同义），有 baseDir
+    //   时归一化过去，其余提及保持原样。
+    if (hasBase && (dir === "/workspace" || dir.startsWith("/workspace/"))) {
+      const rest = dir === "/workspace" ? "" : dir.slice("/workspace".length);
+      dir = rest ? path.posix.join(baseDir, rest) : baseDir;
+    }
     // 末段带扩展名 → 更像完整文件路径（策略 1/2 已处理），不作为目录
     if ((dir.split("/").pop() || "").includes(".")) continue;
     if (dir) mentionedDirs.push({ dir, end: (m.index ?? 0) + raw.length });
+  }
+  // ★ 2026-11-23 v29 T4 实证：模型自述工作目录时写 `data/workspace`（工具默认
+  //   cwd，无尾斜杠）。工具契约（stripWorkspacePrefix / shell_exec 默认 cwd）
+  //   里 `data/workspace` 恒为 workspace 根的**别名**——把它登记为 dir=baseDir
+  //   的目录提及（而非拼出根下不存在的 `data/workspace` 段），否则同行裸文件名
+  //   （ratelimit.js）拼到 `<root>/data/workspace/ratelimit.js` → 虚假声称 →
+  //   误报「任务未完成」+ 无谓续跑。`data/workspace/v29-t4/...` 这类带子段的
+  //   写法由 explicitRelativePaths（策略 0）先行登记，裸名拼接对其跳过，互不冲突。
+  if (hasBase) {
+    const wsAliasRe = /(?<![\w.-])data\/workspace(?![\w.-])/g;
+    for (const m of reply.matchAll(wsAliasRe)) {
+      if (inFence(m.index ?? 0)) continue;
+      mentionedDirs.push({ dir: baseDir, end: (m.index ?? 0) + m[0].length });
+    }
+    // 裸名拼接查找按 end 升序取「最近提及」，插入后须重排
+    mentionedDirs.sort((a, b) => a.end - b.end);
   }
   // 行级完成声明上下文；否定词（不存在/未创建…）说明模型并未声称创建，跳过
   const bareClaimContextRe = /(?:已创建|已写入|已保存|已生成|已部署|已安装|文件清单|文件结构|目录结构|完成|创建|初始化|已存在|就绪|就位)/;
@@ -8177,6 +8213,28 @@ if (deps.contextPruningManager && !prunerNoop) {
                       existing.downloadUrl = entry.downloadUrl || existing.downloadUrl;
                     } else {
                       createdFiles.push(entry);
+                    }
+                  }
+                }
+                // ★ 2026-11-23 v29 T4 实证（D3）：file_delete 成功后必须从回执
+                //   里摘除对应条目。旧行为「永不 prune」：模型先写根级转发
+                //   shim（ratelimit.js）再删除它，回执残留 → 回合末磁盘核验把
+                //   已删文件当「声称但缺失」→ 误报任务未完成 + 无谓续跑。
+                //   口径：入参 path（工具原始落点，与 push 时 entry.path 同源）
+                //   与回执 path 各做一次归一化匹配（同 workspace 根下 resolve）。
+                if (toolName === "file_delete") {
+                  const deletedRaw = (typeof args.path === "string" && args.path) || "";
+                  if (deletedRaw) {
+                    const deletedNorm = path.resolve(
+                      deps.workspacePath || process.cwd(),
+                      deletedRaw,
+                    );
+                    for (let i = createdFiles.length - 1; i >= 0; i--) {
+                      const f = createdFiles[i];
+                      const hit =
+                        f.path === deletedRaw ||
+                        path.resolve(deps.workspacePath || process.cwd(), f.path) === deletedNorm;
+                      if (hit) createdFiles.splice(i, 1);
                     }
                   }
                 }

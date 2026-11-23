@@ -49,6 +49,20 @@ const DELIVERY_SIGNAL_RE =
 /** 第一个绝对目录（POSIX 或 Windows 盘符） */
 const ABS_DIR_RE = /(?:^|[\s`"'（(])((?:\/|[A-Za-z]:[\\/])[\w.\\/-]*[\\/])/g;
 
+/**
+ * 相对任务目录（`data/workspace/<段>/`）。压测任务原文常写「在 data/workspace/v29-t3/ 实现……」——
+ * 与工具侧 stripWorkspacePrefix 同源的契约是：`data/workspace/` 前缀会被剥掉、按
+ * 工作区根解析（v26 smoke 已修过 token 级双前缀，但**目录级识别**一直没跟上）。
+ * ABS_DIR_RE 只认绝对目录，相对任务目录漏识别 → targetDir 回退工作区根 →
+ * 后续所有相对交付 token 解析到工作区根（v29 T3 实证：fixtures/leak.txt 被
+ * 误当任务提供的输入、scanner.js 解析到根 → 验收误报「任务未完成」+
+ * 3 次无谓续跑，产物实际全落在 v29-t3/ 且盘上核验全通过）。
+ * 负向后顾排除词中误匹配（mydata/workspace/）与**绝对路径中段**
+ * （/home/…/data/workspace/… ——那是绝对目录，走 ABS_DIR_RE 兜底，
+ * 不得误当「仓库相对任务目录」劫持 targetDir）。取首个命中即停。
+ */
+const DATA_WORKSPACE_TASK_DIR_RE = /(?<![\w./-])(?:data\/workspace\/)([\w.-]+)\/?/;
+
 /** 夹具目录标记：这些路径由任务提供、通常禁止修改，不计入交付物 */
 const FIXTURE_PATH_RE = /(^|[\\/])fixtures?[\\/]|^fixtures?[\\/]/i;
 
@@ -69,8 +83,12 @@ function hasPlaceholderDir(raw: string): boolean {
   return segments.slice(0, -1).some((s) => PLACEHOLDER_DIR_SEGMENT_RE.test(s));
 }
 
-/** 夹具目录提及（fixtures/ 或 fixture/） */
-const FIXTURE_MENTION_RE = /(?:^|[\\/\s])fixtures?[\\/]/gi;
+/**
+ * 夹具目录提及（fixtures/ 或 fixture/）。
+ * 边界集含 CJK `。`——v29 T3 实证：「…（解码后再匹配）。fixtures/ 下生成 3 个
+ * 样例文件」的 fixtures/ 前驱是 `。`，旧边界 [\\/\\s] 不认 → 提及漏登记。
+ */
+const FIXTURE_MENTION_RE = /(?:^|[\\/\s。])fixtures?[\\/]/gi;
 
 /**
  * token 是否出现在同一子句内、某个 `fixtures/...` 提及之后。
@@ -133,6 +151,43 @@ function clauseHasDeliveryIntent(text: string, index: number): boolean {
   while (start > 0 && !CLAUSE_BOUNDARY_RE.test(text[start - 1])) start--;
   let end = index;
   while (end < text.length && !CLAUSE_BOUNDARY_RE.test(text[end])) end++;
+  return DELIVERY_TOKEN_RE.test(text.slice(start, end));
+}
+
+/**
+ * 裸文件名 token 落在哪个夹具目录提及之内：取 token 前最近一次夹具目录
+ * 提及，若其间**没有句子边界**且 token 所在句含交付意图（「生成/创建/写入…」），
+ * 说明这是「任务要求我产出的夹具文件」（v29 T3 实证：`fixtures/ 下生成 3 个样例
+ * 文件：leak.txt、clean.txt、encoded.txt`——夹具目录是**交付目标**而非任务输入，
+ * 误当输入会漏登记 + 误报缺失）。返回夹具目录名（`fixtures`/`fixture`，归一为
+ * 复数 `fixtures`）；否则 undefined。
+ */
+function fixtureDirNameBefore(text: string, index: number): string | undefined {
+  FIXTURE_MENTION_RE.lastIndex = 0;
+  let lastEnd = -1;
+  let lastMention = "";
+  let m: RegExpExecArray | null;
+  while ((m = FIXTURE_MENTION_RE.exec(text)) !== null) {
+    const end = m.index + m[0].length;
+    if (end > index) break;
+    lastEnd = end;
+    lastMention = m[0];
+  }
+  if (lastEnd < 0) return undefined;
+  if (hasSentenceBoundary(text, lastEnd, index)) return undefined;
+  if (!sentenceHasDeliveryIntent(text, index)) return undefined;
+  // 沿用提及里的实际目录名（fixture/ 或 fixtures/）——提及含边界前驱字符
+  // （如「。fixtures/」），须用正则取目录段本身，不能整段剥分隔符。
+  const dirSeg = (lastMention.match(/(fixture|fixtures)\//i) ?? [])[1];
+  return (dirSeg ?? "fixtures").toLowerCase();
+}
+
+/** token 所在句（句子边界 `。；;!\n`/英文句点+空白切分）是否含交付意图词 */
+function sentenceHasDeliveryIntent(text: string, index: number): boolean {
+  let start = index;
+  while (start > 0 && !isSentenceBoundaryAt(text, start - 1)) start--;
+  let end = index;
+  while (end < text.length && !isSentenceBoundaryAt(text, end)) end++;
   return DELIVERY_TOKEN_RE.test(text.slice(start, end));
 }
 
@@ -246,15 +301,35 @@ export function extractRequiredDeliverables(
   const text = userMessage || "";
   if (!text || !DELIVERY_SIGNAL_RE.test(text)) return [];
 
-  // 目标目录：任务文本里第一个绝对目录；否则工作区根
+  // 目标目录：任务文本里第一个绝对目录；否则工作区根。
+  // ★ 2026-11-23 v29 实证（T3）：任务写「在 data/workspace/v29-t3/ 实现…」——
+  //   仓库相对写法与工具侧 stripWorkspacePrefix 同源的契约是「剥前缀、按工作区根
+  //   解析」，但目录级识别一直没跟上：ABS_DIR_RE 只认绝对目录，相对任务目录漏
+  //   识别 → targetDir 回退工作区根 → 任务后段出现的绝对目录回显（工具日志里的
+  //   /home/.../data/workspace/fixtures/、模型自述路径等）被误当「任务目标目录」，
+  //   scanner.js、leak.txt 等必交产物解析到工作区根 → 验收误报「任务未完成」+
+  //   3 次无谓续跑（产物实际全落在 v29-t3/，盘上核验全通过）。治本：相对任务
+  //   目录先于绝对目录回显识别（它是任务原文里的**权威**目标，位于任务开头；
+  //   后段的路径回显是运行时产物，优先级更低）。与 extractFrozenInputs 同口径：
+  //   命中相对任务目录时，绝对目录回显不再兜底覆盖。
   let targetDir = path.resolve(workspacePath || process.cwd());
-  ABS_DIR_RE.lastIndex = 0;
-  const dirMatch = ABS_DIR_RE.exec(text);
-  if (dirMatch) {
-    const candidate = dirMatch[1];
-    // 避免把 "/" 或过短根路径当成任务目录
-    if (candidate.replace(/[\\/]/g, "").length >= 2) {
-      targetDir = path.resolve(candidate);
+  let hasRelTaskDir = false;
+  {
+    const m = DATA_WORKSPACE_TASK_DIR_RE.exec(text);
+    if (m) {
+      targetDir = path.resolve(targetDir, m[1]);
+      hasRelTaskDir = true;
+    }
+  }
+  if (!hasRelTaskDir) {
+    ABS_DIR_RE.lastIndex = 0;
+    const dirMatch = ABS_DIR_RE.exec(text);
+    if (dirMatch) {
+      const candidate = dirMatch[1];
+      // 避免把 "/" 或过短根路径当成任务目录
+      if (candidate.replace(/[\\/]/g, "").length >= 2) {
+        targetDir = path.resolve(candidate);
+      }
     }
   }
 
@@ -286,25 +361,29 @@ export function extractRequiredDeliverables(
     if (/^\/\//.test(raw)) continue; // `//host/path` → 落在 URL 主机名之后
     // 版本号形态（v1.2.3 / 3.1.4）不当作文件
     if (/^v?\d+(?:\.\d+)+$/.test(raw)) continue;
-    // 裸文件名（无路径分隔符）的两道防线：技术名黑名单 + 交付意图子句邻近。
-    // 带路径的 token 直接信任（`fixtures/x.json` 另由夹具规则排除）。
-    const isBare = !/[\\/]/.test(raw);
     // token 在原文中的起始位置：m[0] = 前置分隔符 + token（尾部是 lookahead）
     const tokenIndex = m.index + (m[0].length - raw.length);
     // 命令行占位目录（OUTDIR/backup.tar.gz）不是交付物。
     if (hasPlaceholderDir(raw)) continue;
+    // ★ 2026-11-23 v29 T3 实证：裸名 + 同句「夹具目录提及 + 交付意图」
+    //   （`fixtures/ 下生成 3 个样例文件：leak.txt、clean.txt、encoded.txt`）
+    //   ——夹具目录此时是**交付目标**而非任务输入。旧逻辑 afterFixtureMention
+    //   一律排除 → 误报缺失 + 无谓续跑。治本：按最近提及重定向到该夹具目录。
+    const isBare = !/[\\/]/.test(raw);
+    const fixtureRedirectDir = isBare ? fixtureDirNameBefore(text, tokenIndex) : undefined;
     // 夹具目录提及之后的同子句 token 是输入（含子路径 sub/c.txt）。
-    if (afterFixtureMention(text, tokenIndex)) {
+    if (!fixtureRedirectDir && afterFixtureMention(text, tokenIndex)) {
       fixtureBasenames.add(path.basename(raw).toLowerCase());
       continue;
     }
     // 解析落点（存在性核验与阈值归属共用同一口径）
-    const normalized = stripWorkspaceDirPrefix(raw);
+    const effRaw = fixtureRedirectDir && isBare ? `${fixtureRedirectDir}/${raw}` : raw;
+    const normalized = stripWorkspaceDirPrefix(effRaw);
     const resolveBase = normalized.stripped
       ? path.resolve(workspacePath || process.cwd())
       : targetDir;
-    const abs = path.isAbsolute(raw)
-      ? path.normalize(raw)
+    const abs = path.isAbsolute(effRaw)
+      ? path.normalize(effRaw)
       : path.resolve(resolveBase, normalized.value);
     const occurrence: TokenOccurrence = {
       raw,
@@ -493,11 +572,20 @@ export function extractFrozenInputs(
 
   const workspaceRoot = path.resolve(workspacePath || process.cwd());
   let targetDir = workspaceRoot;
-  ABS_DIR_RE.lastIndex = 0;
-  const dirMatch = ABS_DIR_RE.exec(text);
-  if (dirMatch) {
-    const candidate = dirMatch[1];
-    if (candidate.replace(/[\\/]/g, "").length >= 2) targetDir = path.resolve(candidate);
+  // ★ 2026-11-23 v29 同源修复：与 extractRequiredDeliverables 一致——
+  //   仓库相对任务目录 `data/workspace/<段>/` 先识别（权威目标），
+  //   绝对目录回显只在无相对任务目录时兜底。
+  {
+    const relTaskDir = DATA_WORKSPACE_TASK_DIR_RE.exec(text);
+    if (relTaskDir) targetDir = path.resolve(workspaceRoot, relTaskDir[1]);
+  }
+  if (!DATA_WORKSPACE_TASK_DIR_RE.test(text)) {
+    ABS_DIR_RE.lastIndex = 0;
+    const dirMatch = ABS_DIR_RE.exec(text);
+    if (dirMatch) {
+      const candidate = dirMatch[1];
+      if (candidate.replace(/[\\/]/g, "").length >= 2) targetDir = path.resolve(candidate);
+    }
   }
   const withinScope = (p: string) => isWithin(workspaceRoot, p) || isWithin(targetDir, p);
 
