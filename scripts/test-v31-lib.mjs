@@ -480,11 +480,14 @@ export const T8_FIXTURE = {
   stream: ['cat', 'dog', 'cat', 'bird', 'cat', 'fish', 'dog', 'bird', 'ant', 'ant', 'ant', 'ant', 'ant', 'ant', 'ant'],
 };
 
+// 注意：h≈2^31 时 h*16777619≈3.6e16 > 2^53，JS 浮点乘法会舍入丢精度（产生 3538609408，
+// 而非真 FNV-1a 的 3146166556）。须用有符号 32 位乘法：
+// Math.imul(h, 16777619) 精确完成模 2^32，再 >>>0 取无符号 32 位结果。
 function fnv1a(str) {
-  let h = 2166136261 >>> 0;
+  let h = 2166136261;
   for (let i = 0; i < str.length; i++) {
     h ^= str.charCodeAt(i);
-    h = (h * 16777619) >>> 0;
+    h = Math.imul(h, 16777619) >>> 0;
   }
   return h;
 }
@@ -673,8 +676,10 @@ export function selfCheck() {
   // T8（Count-min 有冲突上偏：ant est=7 > 实际 6 是正常碰撞上偏，不判死）
   const r8 = t8Ref();
   if (r8.distinct !== 5) bad.push('T8 distinct 漂移 ' + r8.distinct);
+  // Count-min 有冲突上偏：ant est=9 > 实际 6、bird est=9 > 实际 2 是正常碰撞上偏，不判死
+  // （top 排序 est 相同时按 key 字母序：ant < bird < cat）
   if (JSON.stringify(r8.top) !== JSON.stringify([
-    { key: 'ant', est: 7 }, { key: 'cat', est: 3 }, { key: 'bird', est: 2 },
+    { key: 'ant', est: 9 }, { key: 'bird', est: 9 }, { key: 'cat', est: 3 },
   ])) bad.push('T8 top 漂移: ' + JSON.stringify(r8.top));
   // T9
   const r9 = t9Ref();
