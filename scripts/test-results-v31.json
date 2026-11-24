@@ -1,0 +1,373 @@
+{
+  "results": [
+    {
+      "id": 1,
+      "name": "YAML 子集解析器（Python，块映射/块列表/标量类型）",
+      "type": "配置解析",
+      "expect": "yamlite.py + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓yamlite.py ✓test_yamlite.py ✓README.md ✓report.json] exec=✓嵌套映射/列表/标量类型/引号/注释/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 2,
+      "name": "复式记账账本 + 对账（Python，借贷平衡判定/账户余额）",
+      "type": "财务账本",
+      "expect": "books.py + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓books.py ✓test_books.py ✓README.md ✓report.json] exec=✓平衡判定/整笔隔离/余额累加/totalDebit/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 3,
+      "name": "优先级任务队列 + 老化防饥饿（Python，确定性事件轨迹）",
+      "type": "调度算法",
+      "expect": "sched.py + test + README + report.json",
+      "status": "regression",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓sched.py ✓test_sched.py ✓README.md ✓report.json] exec=report 与参考不符: {\"order\":[\"B\",\"C\",\"A\",\"D\",\"E\"],\"finish\":{\"B\":1,\"C\":2,\"A\":3,\"D\":4,\"E\":5},\"wait\":{\"B\":1,\"C\":1,\"A\":3,\"D\":2,\"E\":5}}; 模块 simulate 与参考不符",
+      "replyPreview": ""
+    },
+    {
+      "id": 4,
+      "name": "正则子集引擎（Node，NFA 模拟：* + ? . | [] () 转义）",
+      "type": "模式匹配",
+      "expect": "regexn.js + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓regexn.js ✓regexn.test.js ✓README.md ✓report.json] exec=✓量词/分组/字符类/转义/整串语义/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 5,
+      "name": "分层配置继承覆盖 + ${ref} 插值（Node，深合并规则）",
+      "type": "配置系统",
+      "expect": "confmerge.js + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓confmerge.js ✓confmerge.test.js ✓README.md ✓report.json] exec=✓深合并/数组替换/null置空/引用解析/不可变/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 6,
+      "name": "日志轮转与保留策略模拟器（Python，大小/保留版本/年龄淘汰）",
+      "type": "运维模拟",
+      "expect": "rotator.py + test + README + report.json",
+      "status": "regression",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓rotator.py ✓test_rotator.py ✓README.md ✓report.json] exec=report 与参考不符: {\"logs\":{\"app.log\":{\"activeMB\":6,\"retained\":[],\"dropped\":1},\"access.log\":{\"activeMB\":0,\"retained\":[{\"suffix\":1,\"mb\":7,\"day\":5}],\"dropped\":1}},\"totalActiveMB\":6}; 模块 simulate 与参考不符",
+      "replyPreview": ""
+    },
+    {
+      "id": 7,
+      "name": "Gossip 反熵收敛 + 法定数判定（Python，LCG 确定性）",
+      "type": "分布式系统",
+      "expect": "gossip.py + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓gossip.py ✓test_gossip.py ✓README.md ✓report.json] exec=✓LCG抽样/ver消解/收敛判定/法定数/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 8,
+      "name": "Count-min 重击者 top-k（Node，fnv1a 钉死哈希）",
+      "type": "流式统计",
+      "expect": "sketch.js + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓sketch.js ✓sketch.test.js ✓README.md ✓report.json] exec=✓fnv向量/计数/最小估计/top排序/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 9,
+      "name": "EDF 实时调度模拟器（Python，抢占/截止期/周期实例）",
+      "type": "实时调度",
+      "expect": "edf.py + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓edf.py ✓test_edf.py ✓README.md ✓report.json] exec=✓实例生成/抢占/截止期排序/missed/CLI/单测全一致",
+      "replyPreview": ""
+    },
+    {
+      "id": 10,
+      "name": "图形原语：Bresenham 线/矩形描边/泛洪填充 + 像素统计（Node）",
+      "type": "图形渲染",
+      "expect": "canvas2d.js + test + README + report.json",
+      "status": "success",
+      "duration": 0,
+      "tokens": 0,
+      "detail": "inv=[✓canvas2d.js ✓canvas2d.test.js ✓README.md ✓report.json] exec=✓Bresenham/描边/泛洪/不重复计数/CLI/单测全一致",
+      "replyPreview": ""
+    }
+  ],
+  "ts": "2026-11-24T11:16:24.158Z",
+  "before": {
+    "concurrent": {
+      "value": 11,
+      "raw": {
+        "available": true,
+        "serviceName": "ConcurrentToolExecutor",
+        "version": "v0.56",
+        "registered": true,
+        "wired": true,
+        "note": "wired into llm-caller parallel-safe tool batch",
+        "stats": {
+          "batches": 3,
+          "executed": 8,
+          "parallelized": 8,
+          "sequential": 0,
+          "timeouts": 0,
+          "failures": 0,
+          "maxObservedActive": 4,
+          "activeCount": 0,
+          "maxConcurrency": 8
+        }
+      }
+    },
+    "persistence": {
+      "value": 156,
+      "raw": {
+        "available": true,
+        "serviceName": "ToolResultPersistenceManager",
+        "version": "v0.57",
+        "registered": true,
+        "wired": true,
+        "note": "wired into llm-caller after tool result transforms, before truncation",
+        "stats": {
+          "turns": 5,
+          "maybePersistCalls": 156,
+          "persisted": 0,
+          "spilled": 0,
+          "totalChars": 125763,
+          "turnResults": 1,
+          "turnBudgetChars": 200000,
+          "storageDir": "/tmp/evoclaw-results"
+        }
+      }
+    },
+    "middleware": {
+      "value": 156,
+      "raw": {
+        "available": true,
+        "serviceName": "ToolResultMiddleware",
+        "version": "v0.75",
+        "registered": true,
+        "wired": true,
+        "note": "transformResult() applied to every non-error tool result in llm-caller before persistence and truncation",
+        "stats": {
+          "requestMiddlewares": 0,
+          "executionMiddlewares": 0,
+          "resultTransforms": 1,
+          "terminalOutputTransforms": 0,
+          "executions": 0,
+          "resultTransformApplications": 156,
+          "transformedResults": 0
+        },
+        "config": {
+          "enableRequestMiddleware": true,
+          "enableExecutionMiddleware": true,
+          "enableResultTransform": true,
+          "enableTerminalOutputTransform": true
+        }
+      }
+    },
+    "recording": {
+      "value": 639,
+      "raw": {
+        "enabled": true,
+        "registered": true,
+        "wired": true,
+        "note": "recording started/ended in AgentModelExecutor.tryCallLLM around every chat run",
+        "stats": {
+          "activeRecordings": 0,
+          "totalRecordings": 639,
+          "baseDir": "/home/chy/EvoClaw/data/recordings",
+          "active": [],
+          "recent": [
+            {
+              "taskId": "task_1795518720831_c71a3538",
+              "finalStatus": "completed",
+              "startedAt": 1795518720832,
+              "endedAt": 1795518915200,
+              "totalIterations": 13,
+              "totalToolCalls": 12
+            },
+            {
+              "taskId": "task_1795518369672_caa0dcfd",
+              "finalStatus": "completed",
+              "startedAt": 1795518369673,
+              "endedAt": 1795518717718,
+              "totalIterations": 7,
+              "totalToolCalls": 2
+            },
+            {
+              "taskId": "task_1795518219252_f3cd1f0b",
+              "finalStatus": "completed",
+              "startedAt": 1795518219253,
+              "endedAt": 1795518357294,
+              "totalIterations": 19,
+              "totalToolCalls": 16
+            },
+            {
+              "taskId": "task_1795517006022_ca17c6f1",
+              "finalStatus": "completed",
+              "startedAt": 1795517006023,
+              "endedAt": 1795517170155,
+              "totalIterations": 16,
+              "totalToolCalls": 17
+            },
+            {
+              "taskId": "task_1795516637675_277773fb",
+              "finalStatus": "completed",
+              "startedAt": 1795516637675,
+              "endedAt": 1795517002040,
+              "totalIterations": 15,
+              "totalToolCalls": 10
+            },
+            {
+              "taskId": "task_1795516461439_f245bb9f",
+              "finalStatus": "completed",
+              "startedAt": 1795516461439,
+              "endedAt": 1795516626506,
+              "totalIterations": 12,
+              "totalToolCalls": 12
+            },
+            {
+              "taskId": "task_1795516280425_bfed9e9f",
+              "finalStatus": "completed",
+              "startedAt": 1795516280427,
+              "endedAt": 1795516445920,
+              "totalIterations": 12,
+              "totalToolCalls": 9
+            },
+            {
+              "taskId": "task_1795516043768_47008c02",
+              "finalStatus": "completed",
+              "startedAt": 1795516043769,
+              "endedAt": 1795516220238,
+              "totalIterations": 17,
+              "totalToolCalls": 14
+            },
+            {
+              "taskId": "task_1795515869874_e55a7612",
+              "finalStatus": "completed",
+              "startedAt": 1795515869879,
+              "endedAt": 1795516032037,
+              "totalIterations": 11,
+              "totalToolCalls": 9
+            },
+            {
+              "taskId": "task_1795515511706_2d199eac",
+              "finalStatus": "completed",
+              "startedAt": 1795515511707,
+              "endedAt": 1795515804938,
+              "totalIterations": 6,
+              "totalToolCalls": 2
+            }
+          ]
+        }
+      }
+    },
+    "schema": {
+      "value": 15,
+      "raw": {
+        "available": true,
+        "serviceName": "SchemaSanitizer",
+        "version": "v0.57",
+        "registered": true,
+        "wired": true,
+        "note": "wired after buildOpenAITools; reactive sanitize on grammar/combinator errors",
+        "stats": {
+          "calls": 15,
+          "toolsSanitized": 389,
+          "byBackend": {
+            "openai": 15
+          },
+          "reactiveCalls": 0
+        }
+      }
+    },
+    "coercer": {
+      "value": 168,
+      "raw": {
+        "available": true,
+        "serviceName": "ToolArgumentCoercer",
+        "version": "v0.57",
+        "registered": false,
+        "wired": true,
+        "note": "wired into llm-caller tool execution path",
+        "stats": {
+          "calls": 168,
+          "coerced": 0,
+          "byType": {
+            "stringToInt": 0,
+            "stringToNumber": 0,
+            "stringToBool": 0,
+            "jsonToObject": 0,
+            "bareToArray": 0
+          },
+          "failed": 0
+        }
+      }
+    },
+    "iterationPolicy": {
+      "value": 211,
+      "raw": {
+        "available": true,
+        "serviceName": "IterationContextPolicy",
+        "version": "v0.75",
+        "registered": true,
+        "wired": true,
+        "note": "wired before each LLM call on a request-local message copy; system messages preserved; tool pairing repaired after truncation",
+        "stats": {
+          "applications": 211,
+          "cappedRuns": 0,
+          "truncatedRuns": 0,
+          "skillsStrippedRuns": 196,
+          "messagesCapped": 0,
+          "messagesTruncated": 0,
+          "estTokensSaved": 0,
+          "config": {
+            "capStartIteration": 2,
+            "capMaxMessageLength": 10000,
+            "truncateStartIteration": 5,
+            "truncateKeepRecent": 8,
+            "truncateTargetTokenBudget": 120000,
+            "stripSkillsStartIteration": 2,
+            "preserveSystemMessages": true
+          }
+        }
+      }
+    },
+    "rateGuard": {
+      "value": 211,
+      "raw": {
+        "available": true,
+        "serviceName": "CrossSessionRateGuard",
+        "version": "v0.57",
+        "registered": true,
+        "wired": true,
+        "note": "wired before provider call (skip genuine cooldown) and on RATE_LIMIT classification",
+        "stats": {
+          "checks": 211,
+          "skippedRequests": 0,
+          "genuineRateLimits": 0,
+          "transientLimits": 0,
+          "activeProviders": 0,
+          "activeCooldowns": []
+        }
+      }
+    }
+  }
+}
