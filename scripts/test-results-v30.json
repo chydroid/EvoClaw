@@ -32,9 +32,20 @@
       "tokens": 0,
       "detail": "inv=[✓align.py ✓test_align.py ✓README.md ✓report.json] exec=test_align.py 断言数 2<8 [延迟核验 1215s]",
       "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwugpurv-8a716f` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
+    },
+    {
+      "id": 4,
+      "name": "JSON 操作重放：merge-patch + JSON Patch（Node）",
+      "type": "序列化/补丁",
+      "expect": "jsonops.js + test + README + report.json",
+      "status": "success",
+      "duration": 117214,
+      "tokens": 298473,
+      "detail": "inv=[✓jsonops.js ✓jsonops.test.js ✓README.md ✓report.json] exec=✓递归合并/null删键/数组追加/下标偏移/深拷贝隔离/CLI/单测全一致",
+      "replyPreview": "📅 2026/11/24 17:20  全部交付完成 ✅  ## 交付清单  | 文件 | 大小 | 状态 | |------|------|------| | `jsonops.js` | 7,032 B | ✅ | | `jsonops.test.js` | 5,311 B | ✅ | | `README.md` | 2,405 B | ✅ | | `report.json` | 689 B | ✅ |  ## 验证结果  - **测试**：`node --test jsonops.test.js` → **10 passed, 0 failed**（覆盖递归合并、null 删键、数组 `-` 追加、remove 下标偏移、r"
     }
   ],
-  "ts": "2026-11-24T09:18:48.882Z",
+  "ts": "2026-11-24T09:20:46.267Z",
   "before": {
     "concurrent": {
       "value": 0,
