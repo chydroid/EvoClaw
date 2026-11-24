@@ -339,7 +339,7 @@ rotator.py 导出 \`{ simulate }\`：simulate(spec) -> 模拟结果，语义（�
 - 轮转后按 keep 淘汰：归档数 > keep 时，从**最旧**开始逐条删除，直到恰剩 keep 条；
 - 淘汰后（含未轮转的日）再按年龄淘汰：**当天 day** 满足 day − 归档.day >= maxAgeDays 的归档删除；
   删除按从旧到新逐条处理；上述两类删除都计入该日志 dropped（删除次数）；
-- 结束后：归档条目重新编号 \`suffix = .N\`（最旧=.1）；日志最终态 = {activeMB（剩余活动文件）,
+- 结束后：归档条目重新编号 \`suffix = .N\`（最旧=.1，**suffix 是带前导点的字符串，如 ".1"，不是整数 1**）；日志最终态 = {activeMB（剩余活动文件）,
   retained: [{suffix, mb, day}]（最旧→最新）, dropped}。
 输出 \`{"logs": {name: 上述}, "totalActiveMB": 各日志 activeMB 之和}\`。
 CLI：\`python3 rotator.py run rotation.json\` 写当前目录 \`report.json\` = simulate 结果，退出码 0，打印摘要。
