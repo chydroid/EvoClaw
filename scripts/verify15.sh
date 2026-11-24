@@ -101,6 +101,16 @@ fi
 # chk "t03" "cd data/workspace/t15-03 && python3 aggregate_log.py" "任务3：聚合脚本可独立复跑"
 # ...
 
+# ── v30 轮（2026-11-24，6 任务）：独立复核 = 交付 CLI 复跑 + 产物 JSON 可解析 ──
+# 深度口径（参考实现逐字段复算）由 scripts/test-sim-tasks-v30.mjs 承担；
+# 此处只做轻量独立验证，避免 verify15.sh 与 harness 双份维护参考实现。
+chk "v30-t1" "cd /home/chy/EvoClaw/data/workspace/v30-t1 && python3 sqleng.py run cases.json && python3 -c 'import json;json.load(open(\"report.json\"))'" "T1 SQL引擎 CLI 复跑 + report 可解析"
+chk "v30-t2" "cd /home/chy/EvoClaw/data/workspace/v30-t2 && python3 walstore.py run wal.json && python3 -c 'import json;json.load(open(\"report.json\"))'" "T2 WAL CLI 复跑 + report 可解析"
+chk "v30-t3" "cd /home/chy/EvoClaw/data/workspace/v30-t3 && python3 align.py run cases.json && python3 -c 'import json;json.load(open(\"report.json\"))'" "T3 对齐 CLI 复跑 + report 可解析"
+chk "v30-t4" "cd /home/chy/EvoClaw/data/workspace/v30-t4 && node jsonops.js run ops.json && node -e 'JSON.parse(require(\"fs\").readFileSync(\"report.json\"))'" "T4 JSON重放 CLI 复跑 + report 可解析"
+chk "v30-t5" "cd /home/chy/EvoClaw/data/workspace/v30-t5 && node fsm.js run machines.json && node -e 'JSON.parse(require(\"fs\").readFileSync(\"report.json\"))'" "T5 状态机 CLI 复跑 + report 可解析"
+chk "v30-t6" "cd /home/chy/EvoClaw/data/workspace/v30-t6 && node frames.js run frames.json && node -e 'JSON.parse(require(\"fs\").readFileSync(\"report.json\"))'" "T6 帧协议 CLI 复跑 + report 可解析"
+
 # ═══════ 汇总（退出码：有 FAIL → 1；全 PASS 或模板模式 → 0）═══════
 echo
 if [ "$CHECK_COUNT" -eq 0 ]; then

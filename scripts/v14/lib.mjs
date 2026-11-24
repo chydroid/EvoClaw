@@ -192,9 +192,20 @@ export const pyReadTextLiteral = (pathExpr) =>
 export function writeFixture(relDir, rel, content) {
   const p = path.join(relDir, rel);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, content, 'utf8');
+  fs.writeFileSync(p, content, 'utf-8');
   FIXTURE_HASHES.set(p, hashFile(p));
   return p;
+}
+
+/** 递归归一化（对象键按字典序），用于 JSON 结构等价比较。 */
+export function canon(v) {
+  if (Array.isArray(v)) return v.map(canon);
+  if (v && typeof v === 'object') {
+    const o = {};
+    for (const k of Object.keys(v).sort()) o[k] = canon(v[k]);
+    return o;
+  }
+  return v;
 }
 
 /** 冻结夹具哈希校验：任何修改/删除都判失败。 */
