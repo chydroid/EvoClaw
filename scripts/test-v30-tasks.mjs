@@ -13,9 +13,10 @@ import {
 } from './test-v30-lib.mjs';
 
 // 断言行判定：Python `assert` 关键字、assert*/check*/expect* 等断言助手调用（如
-// assert_eq/assertEqual/assertTrue），check(ok) 风格。不要求统一写法——模型自选
-// 断言助手只要每行一次断言即计数（v30-run2 T3 误判 2<8 后放宽：assert 族曾漏计）。
-const ASSERT_LINE_RE = /\bassert\b|\b(?:assert|expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
+// assert_eq/assertEqual/assertTrue），check(ok) 风格，以及中文助手（断言( / 校验( /
+// 检查( 等——prompt 是中文，模型可能写 Unicode 标识符助手，v30-run2 加宽防同类漏计）。
+// 不要求统一写法——模型自选断言助手只要每行一次断言即计数。
+const ASSERT_LINE_RE = /\bassert\b|\b(?:assert|expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(|(?:断言|校验|检查|验证|确认)\s*[（(]/;
 const ASSERT_SKIP_LINE_RE = /^\s*(?:import\b|(?:const|let|var)\b.*\brequire\s*\()/;
 function assertCount(dir, file, min) {
   const t = readFileSafe(path.join(dir, file));
