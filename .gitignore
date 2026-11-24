@@ -60,6 +60,10 @@ test-*.mjs
 # （运行产物 test-results-sim9/sim10.json 由下方 test-*.json 继续忽略。）
 !scripts/test-sim-tasks-v9.mjs
 !scripts/test-sim-tasks-v10.mjs
+!scripts/test-sim-tasks-v30.mjs
+# v30 参考实现（随 runner 一并入库，2026-11-24）
+!scripts/test-v30-lib.mjs
+!scripts/test-v30-tasks.mjs
 test-*.json
 *-report.json
 *-report.html
