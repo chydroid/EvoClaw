@@ -21,9 +21,20 @@
       "tokens": 344445,
       "detail": "inv=[✓walstore.py ✓test_walstore.py ✓README.md ✓report.json] exec=✓ckpt基底/重放窗口/from_lsn边界/del幂等/CLI/单测全一致",
       "replyPreview": "📅 2026/11/24 16:52  全部交付完成，无需继续调查。  ## ✅ 交付清单  | 文件 | 状态 | |------|------| | `walstore.py` | ✅ 零依赖，导出 `recover` + CLI | | `test_walstore.py` | ✅ 9 个断言，全部通过 | | `README.md` | ✅ 2412 字节（≥300），含恢复语义与边界 | | `report.json` | ✅ CLI 真实运行生成，退出码 0 |  ## sc1 结果  ``` state: {'b': 22, 'c': 3, 'd': 4} ckpt_lsn: 6 replayed: 2 total:"
+    },
+    {
+      "id": 3,
+      "name": "CJK 混排文本两端对齐（Python，EAW 宽度+空格分配）",
+      "type": "排版算法",
+      "expect": "align.py + test + README + report.json",
+      "status": "regression",
+      "duration": 1575152,
+      "tokens": 0,
+      "detail": "inv=[✓align.py ✓test_align.py ✓README.md ✓report.json] exec=test_align.py 断言数 2<8 [延迟核验 1215s]",
+      "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwugpurv-8a716f` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
     }
   ],
-  "ts": "2026-11-24T08:52:30.238Z",
+  "ts": "2026-11-24T09:18:48.882Z",
   "before": {
     "concurrent": {
       "value": 0,

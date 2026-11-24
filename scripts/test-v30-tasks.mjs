@@ -12,7 +12,10 @@ import {
   T4_SEEDS, T4_OPS, t4Replay, T5_MACHINE, T5_EVENTS, t5Ref, t6Ref, t6Encode,
 } from './test-v30-lib.mjs';
 
-const ASSERT_LINE_RE = /\bassert\b|\b(?:expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
+// 断言行判定：Python `assert` 关键字、assert*/check*/expect* 等断言助手调用（如
+// assert_eq/assertEqual/assertTrue），check(ok) 风格。不要求统一写法——模型自选
+// 断言助手只要每行一次断言即计数（v30-run2 T3 误判 2<8 后放宽：assert 族曾漏计）。
+const ASSERT_LINE_RE = /\bassert\b|\b(?:assert|expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
 const ASSERT_SKIP_LINE_RE = /^\s*(?:import\b|(?:const|let|var)\b.*\brequire\s*\()/;
 function assertCount(dir, file, min) {
   const t = readFileSafe(path.join(dir, file));
