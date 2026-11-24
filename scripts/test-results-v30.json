@@ -10,9 +10,20 @@
       "tokens": 0,
       "detail": "inv=[✓sqleng.py ✓test_sqleng.py ✓README.md ✓report.json] exec=✓内连接/左连接/WHERE+LIKE/聚合/多列ORDER/LIMIT-OFFSET/CLI/单测全一致 [延迟核验 450s]",
       "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwug50ts-4e72ef` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
+    },
+    {
+      "id": 2,
+      "name": "WAL 键值存储与 checkpoint 恢复（Python）",
+      "type": "存储引擎",
+      "expect": "walstore.py + test + README + report.json",
+      "status": "success",
+      "duration": 159415,
+      "tokens": 344445,
+      "detail": "inv=[✓walstore.py ✓test_walstore.py ✓README.md ✓report.json] exec=✓ckpt基底/重放窗口/from_lsn边界/del幂等/CLI/单测全一致",
+      "replyPreview": "📅 2026/11/24 16:52  全部交付完成，无需继续调查。  ## ✅ 交付清单  | 文件 | 状态 | |------|------| | `walstore.py` | ✅ 零依赖，导出 `recover` + CLI | | `test_walstore.py` | ✅ 9 个断言，全部通过 | | `README.md` | ✅ 2412 字节（≥300），含恢复语义与边界 | | `report.json` | ✅ CLI 真实运行生成，退出码 0 |  ## sc1 结果  ``` state: {'b': 22, 'c': 3, 'd': 4} ckpt_lsn: 6 replayed: 2 total:"
     }
   ],
-  "ts": "2026-11-24T08:49:50.694Z",
+  "ts": "2026-11-24T08:52:30.238Z",
   "before": {
     "concurrent": {
       "value": 0,
