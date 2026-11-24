@@ -93,7 +93,7 @@ README.md（≥300 字节）：支持范围与标量类型判定顺序。
     expect: 'yamlite.py + test + README + report.json', dir: D(1), frozen: ['cases.json'],
     deliverables: [
       { file: 'yamlite.py', minBytes: 1500 }, { file: 'test_yamlite.py', minBytes: 700 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 250 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -142,7 +142,7 @@ README.md（≥300 字节）：借贷平衡语义与不平衡日记账的隔离�
     expect: 'books.py + test + README + report.json', dir: D(2), frozen: ['books.json'],
     deliverables: [
       { file: 'books.py', minBytes: 1000 }, { file: 'test_books.py', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 150 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -182,7 +182,8 @@ sched.py 导出 \`{ simulate }\`：simulate(cfg) -> 调度轨迹，语义（必�
   再同则 id 字典序；
 - **老化**：每次出队前，把每个等待中任务的当前等待时长（c − since）每满 threshold 个时间步，
   其优先级**减 1**（since 同步推进已消化的时长）；优先级减后可能与其他任务并列，按上述全序重排；
-- 输出 \`{"order": [执行的 job id 序列], "finish": {id: 完成时刻c+1}, "wait": {id: 完成时刻 − arrive}}\`。
+- 输出 \`{"order": [执行的 job id 序列], "finish": {id: 完成时刻c+1}, "wait": {id: 被选中执行的时刻c − arrive}}\`。
+  **wait 是排队等待时长（不含自身执行那一步）**：任务在第 c 步被选中执行、于 c+1 完成，则 wait = c − arrive（**不是** finish − arrive）。
 CLI：\`python3 sched.py run jobs.json\` 写当前目录 \`report.json\` = simulate 结果，退出码 0，打印摘要。
 test_sched.py：\`python3 test_sched.py\` 退出码 0，至少 8 个断言（**断言助手用英文函数名**，如 \`assert_eq\`/\`check\`，中文注释可以；裸 \`assert\` 语句亦可），覆盖：同优先级先到先走、老化降权后翻转顺序、等待时长统计、单任务。
 README.md（≥300 字节）：全序规则与老化口径（为何每 threshold 减 1）。
@@ -190,7 +191,7 @@ README.md（≥300 字节）：全序规则与老化口径（为何每 threshold
     expect: 'sched.py + test + README + report.json', dir: D(3), frozen: ['jobs.json'],
     deliverables: [
       { file: 'sched.py', minBytes: 1000 }, { file: 'test_sched.py', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 100 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -238,7 +239,7 @@ README.md（≥300 字节）：NFA 构建与模拟方式、整串锚定说明。
     expect: 'regexn.js + test + README + report.json', dir: D(4), frozen: ['cases.json'],
     deliverables: [
       { file: 'regexn.js', minBytes: 1500 }, { file: 'regexn.test.js', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 400 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 800 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -294,7 +295,7 @@ README.md（≥300 字节）：合并规则与插值口径（为什么数组不�
     expect: 'confmerge.js + test + README + report.json', dir: D(5), frozen: ['layers.json'],
     deliverables: [
       { file: 'confmerge.js', minBytes: 1200 }, { file: 'confmerge.test.js', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 140 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -349,7 +350,7 @@ README.md（≥300 字节）：轮转判定（> 还是 >=）与两类淘汰顺�
     expect: 'rotator.py + test + README + report.json', dir: D(6), frozen: ['rotation.json'],
     deliverables: [
       { file: 'rotator.py', minBytes: 1200 }, { file: 'test_rotator.py', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 400 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 160 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -397,7 +398,7 @@ README.md（≥300 字节）：LCG 步进顺序（每轮 2k 次）与冲突消�
     expect: 'gossip.py + test + README + report.json', dir: D(7), frozen: ['gossip.json'],
     deliverables: [
       { file: 'gossip.py', minBytes: 1200 }, { file: 'test_gossip.py', minBytes: 600 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 400 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 180 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -431,7 +432,8 @@ print(json.dumps(m.run_gossip(spec), sort_keys=True))
 **必须交付（缺一不可）：sketch.js、sketch.test.js、README.md、report.json。**
 sketch.js 用 \`module.exports = { fnv1a, countMin, heavyHitters }\` 导出，口径（必须逐条对上）：
 1）\`fnv1a(s) -> number\`：32 位 FNV-1a——初值 2166136261，逐字节 \`(h ^ byte) * 16777619\`，结果取无符号 32 位
-  （已知向量：fnv1a("123456789") === 3524133760，fnv1a("") === 2166136261；**不得**用任何第三方/内置哈希）；
+  （已知向量：fnv1a("123456789") === 3146166556，fnv1a("") === 2166136261；**不得**用任何第三方/内置哈希；
+  注意 32 位回绕须在每字节步内完成（如 0xffffffff 掩码），浮点乘法精度不足会产生错误值）；
 2）\`countMin(width, depth)\` 返回 sketch：\`update(key)\`（第 r 层槽 = fnv1a(key + "|" + r) % width 各 +1）
   与 \`estimate(key)\` = 各层对应槽计数取**最小值**；
 3）\`heavyHitters(cfg, stream)\` -> \`{top, distinct}\`：对 cfg.stream 逐元素 update；distinct = 流中不同键数；
@@ -446,7 +448,7 @@ README.md（≥300 字节）：Count-min 上偏性质（为何 est >= 真实值�
     expect: 'sketch.js + test + README + report.json', dir: D(8), frozen: ['counts.json'],
     deliverables: [
       { file: 'sketch.js', minBytes: 1200 }, { file: 'sketch.test.js', minBytes: 700 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 80 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -508,7 +510,7 @@ README.md（≥300 字节）：实例生成公式与 missed 判定口径。
     expect: 'edf.py + test + README + report.json', dir: D(9), frozen: ['edf.json'],
     deliverables: [
       { file: 'edf.py', minBytes: 1200 }, { file: 'test_edf.py', minBytes: 700 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 150 },
     ],
     exec: (dir) => {
       const bad = [];
@@ -556,7 +558,7 @@ README.md（≥300 字节）：Bresenham 误差更新与 4 连通泛洪口径。
     expect: 'canvas2d.js + test + README + report.json', dir: D(10), frozen: ['ops.json'],
     deliverables: [
       { file: 'canvas2d.js', minBytes: 1400 }, { file: 'canvas2d.test.js', minBytes: 700 },
-      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 300 },
+      { file: 'README.md', minBytes: 300 }, { file: 'report.json', minBytes: 340 },
     ],
     exec: (dir) => {
       const bad = [];
