@@ -100,7 +100,7 @@ sqleng.py 导出 \`{ exec_sql }\`：exec_sql(db, sql) -> list[dict]，支持子�
 - 裸列引用（无表前缀）按 FROM 顺序在**首个**含该列的表行中解析，找不到为 null。
 LEFT JOIN 未匹配时右表各列输出 null（不影响其他列与聚合）。
 CLI：\`python3 sqleng.py run cases.json\` 写当前目录 \`report.json\` = \`{"results": {name: [行...]}}\`（键序与夹具 cases 一致），退出码 0，打印摘要。
-test_sqleng.py：\`python3 test_sqleng.py\` 退出码 0，至少 8 个断言，覆盖内连接、左连接 null、WHERE+LIKE、聚合+组内 AVG、多列 ORDER 含 DESC、LIMIT/OFFSET。
+test_sqleng.py：\`python3 test_sqleng.py\` 退出码 0，至少 8 个断言（**断言助手用英文函数名**，如 \`assert_eq\`/\`check\`，中文注释可以；裸 \`assert\` 语句亦可），覆盖内连接、左连接 null、WHERE+LIKE、聚合+组内 AVG、多列 ORDER 含 DESC、LIMIT/OFFSET。
 README.md（≥300 字节）：支持范围与语义口径（NULL 排序/AVG 空组/输出键规则）。
 必须真实运行 CLI，并在回复中写明 g1 用例的 total 与 avg 值。`,
     expect: 'sqleng.py + test + README + report.json', dir: D(1), frozen: ['cases.json'],
@@ -147,7 +147,7 @@ walstore.py 导出 \`{ recover }\`：recover(wal, from_lsn) -> dict，语义（�
   重放其后（lsn 严格大于该 ckpt.lsn）的 put/del，按 lsn 升序。
 返回恰好：\`{"state": 状态dict, "ckpt_lsn": 最后采用的 ckpt 的 lsn（无则 None）, "replayed": 参与重放的 put/del 条目数, "total": lsn>=from_lsn 的条目总数}\`。
 CLI：\`python3 walstore.py run wal.json\` 写当前目录 \`report.json\` = \`{"results": [{name, state, ckpt_lsn, replayed, total}]}\`（顺序与夹具一致，state 键按字典序），退出码 0，打印摘要。
-test_walstore.py：\`python3 test_walstore.py\` 退出码 0，至少 8 个断言，覆盖多 ckpt 取最后、from_lsn 跳过早期 ckpt（ckpt_lsn 为 None）、del 幂等、空 WAL。
+test_walstore.py：\`python3 test_walstore.py\` 退出码 0，至少 8 个断言（**断言助手用英文函数名**，如 \`assert_eq\`/\`check\`，中文注释可以；裸 \`assert\` 语句亦可），覆盖多 ckpt 取最后、from_lsn 跳过早期 ckpt（ckpt_lsn 为 None）、del 幂等、空 WAL。
 README.md（≥300 字节）：恢复语义（ckpt 基底 + 重放窗口）与边界。
 必须真实运行 CLI，并在回复中写明 sc1 的 state 与 ckpt_lsn。`,
     expect: 'walstore.py + test + README + report.json', dir: D(2), frozen: ['wal.json'],
