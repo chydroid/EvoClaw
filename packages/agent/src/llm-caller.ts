@@ -315,12 +315,24 @@ export async function nativeFetch(
       req.destroy();
     };
 
+    // ★ v30 T1 压测缺陷修复（与下方注册块共用）：Node 的 abort 监听器回调参数
+    //   是 Event 对象（reason 在 `signal.reason` 上，不随事件传递）。
+    //   旧代码直接检查监听器参数（typeof reason === "string" / instanceof
+    //   Error）——参数恒为 Event，永远落入 externallyAborted 分支 → provider
+    //   自身 60s 超时也被 reject 成 "Request aborted" → error-classifier 按
+    //   ABORT（deliberate cancellation）快速返回「⏹️ 操作已取消。」，
+    //   failover/退避重试永不发生。修复：监听器按各自所属 signal 挂载并读
+    //   signal.reason（内联定时器 → "Request timeout after Nms" 可重试；
+    //   外部会话 → 取消 reason 走 deliberate-cancel 快速通道）。
+    const onInternalAbort = () => onAbort(internalController?.signal.reason);
+    const onExternalAbort = () => onAbort(externalSignal?.reason);
+
     const cleanupAbortListeners = () => {
       if (internalController) {
-        internalController.signal.removeEventListener("abort", onAbort);
+        internalController.signal.removeEventListener("abort", onInternalAbort);
       }
       if (externalSignal) {
-        externalSignal.removeEventListener("abort", onAbort);
+        externalSignal.removeEventListener("abort", onExternalAbort);
       }
     };
 
@@ -495,8 +507,18 @@ export async function nativeFetch(
       req.write(options.body);
     }
 
+    // ★ v30 T1 压测缺陷修复：Node 的 abort 监听器回调参数是 Event 对象（reason 在
+    //   `signal.reason` 上，不随事件传递）。旧代码直接把监听器本身当作回调、并检查
+    //   其运行时参数（typeof reason === "string" / instanceof Error）——该参数恒为
+    //   Event，永远落入 externallyAborted 分支 → provider 自身 60s 超时也被 reject 成
+    //   "Request aborted" → error-classifier 按 ABORT（deliberate cancellation）
+    //   快速返回「⏹️ 操作已取消。」，failover/退避重试永不发生。
+    //   修复：监听器按「各自所属的 signal」挂载并读其 reason（handler 引用见上方
+    //   共享的 onInternalAbort / onExternalAbort，供 cleanupAbortListeners 对称移除）：
+    //   内联定时器 signal → "Request timeout after Nms"（可重试）；
+    //   外部会话 signal → 会话取消 reason（deliberate cancel 快速通道）。
     if (internalController) {
-      internalController.signal.addEventListener("abort", onAbort, { once: true });
+      internalController.signal.addEventListener("abort", onInternalAbort, { once: true });
     }
     if (externalSignal) {
       if (externalSignal.aborted) {
@@ -505,7 +527,7 @@ export async function nativeFetch(
         reject(new Error("Request aborted"));
         return;
       }
-      externalSignal.addEventListener("abort", onAbort, { once: true });
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
     }
 
     req.on("error", (err) => {
@@ -4332,7 +4354,12 @@ export async function callLLMOnce(
   // 使用 ?? 保留 timeout=0（表示"无超时"）的显式配置；仅当 undefined/null 时回退默认值
   const timeout = provider.timeout ?? 60000;
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  // ★ v30 T1 压测缺陷修复：超时必须携带 "Request timeout" reason 再 abort。
+  // 裸 abort()（reason 为空）会让 nativeFetch 的 onAbort 落入「外部主动取消」分支
+  // → reject("Request aborted") → error-classifier 按 ABORT（deliberate
+  // cancellation）分类 → tryCallLLM 快速返回「⏹️ 操作已取消。」——provider 超时
+  // 被当成用户取消，failover/退避重试永不发生（v30 T1：第 2 轮 60s 超时零交付）。
+  const timeoutId = setTimeout(() => controller.abort(new Error(`Request timeout after ${timeout}ms`)), timeout);
   if (timeoutId.unref) timeoutId.unref();
 
   // ── End-to-end cancellation: merge external abort signal with timeout ──

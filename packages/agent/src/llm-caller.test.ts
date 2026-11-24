@@ -101,6 +101,68 @@ describe("llm-caller > nativeFetch", () => {
     }
   });
 
+  it("v30-T1：provider 自身超时必须 reject 'Request timeout...'（而非被误判为外部取消）", async () => {
+    // 回归根因：Node 的 abort 监听器回调参数是 Event 对象（reason 在
+    // signal.reason 上）。旧实现把监听器参数当 reason 检查
+    // （typeof reason === "string" / instanceof Error）→ 恒落入
+    // externallyAborted 分支 → provider 自身超时被 reject 成 "Request aborted"
+    // → error-classifier 按 ABORT（deliberate cancellation）快速返回「⏹️ 操作已取消。」，
+    // failover/退避永不发生。修复后：内联定时器 signal.reason 携带
+    // "Request timeout after Nms"，必须走 timeout 分支。
+    const server = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end("late");
+      }, 400);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    try {
+      let errMsg = "";
+      try {
+        await nativeFetch(`http://127.0.0.1:${port}/slow`, { timeout: 100 });
+      } catch (err) {
+        errMsg = err instanceof Error ? err.message : String(err);
+      }
+      // 必须是 timeout 类文案，绝不能是外部取消文案
+      expect(errMsg).toMatch(/^Request timeout after \d+ms$/);
+      expect(errMsg).not.toMatch(/aborted/i);
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+
+  it("v30-T1：外部 AbortSignal 取消仍 reject 'Request aborted'（deliberate-cancel 语义不变）", async () => {
+    const server = http.createServer((_req, res) => {
+      setTimeout(() => {
+        res.writeHead(200);
+        res.end("late");
+      }, 400);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    try {
+      const ac = new AbortController();
+      setTimeout(() => ac.abort(new Error("Session s aborted by user")), 20);
+      let errMsg = "";
+      try {
+        // 不设 timeout：只由外部 signal 驱动，证明取消路径仍报 Request aborted
+        await nativeFetch(`http://127.0.0.1:${port}/slow`, { signal: ac.signal });
+      } catch (err) {
+        errMsg = err instanceof Error ? err.message : String(err);
+      }
+      expect(errMsg).toBe("Request aborted");
+    } finally {
+      server.close();
+    }
+  }, 10_000);
+
   it("正常响应不应被短超时误杀", async () => {
     const server = http.createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/plain" });
