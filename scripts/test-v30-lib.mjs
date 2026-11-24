@@ -688,7 +688,8 @@ export function t6DecodeStream(buf) {
   let off = 0;
   while (off < buf.length) {
     // ★ v30 口径钉死（与任务书一致，magic 优先）：
-    //   剩余 < 4（读不出 4 字节 magic）→ INCOMPLETE 停流；
+    //   剩余 < 4（读不出 4 字节 magic）→ INCOMPLETE 停流（含重同步中途：如 11 零字节
+    //   夹具 → BAD_MAGIC@0..7 后剩 3 字节，记 INCOMPLETE@8 收尾）；
     //   能读出 4 字节且 ≠ magic → 逐字节重同步 BAD_MAGIC（即使定长部分没收全）；
     //   magic 命中后，表头（前 11 字节 = magic+version+seq+len）未收全 → INCOMPLETE 停流
     //   （否则 readUInt32LE(off+7) 越界抛 RangeError）。

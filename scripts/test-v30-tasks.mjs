@@ -356,11 +356,11 @@ frames.js 用 \`module.exports = { encode, decodeStream, crc16 }\` 导出：
    帧内 crc 覆盖 version+seq+len+payload 全部字节（不含 magic），小端写入帧尾。
 2）\`encode(seq, payloadText, version=1) -> Buffer\`：payload 按 UTF-8 编码。
 3）\`decodeStream(buf) -> 结果数组\`（从左到右扫描，可粘连多帧）：
-   - 当前 4 字节 ≠ magic → 记 {ok:false, error:"BAD_MAGIC", at: 偏移}，偏移 +1 逐字节重同步找下一个 magic（重同步过程中即使尾部不足 13 字节也继续记 BAD_MAGIC，直到剩余 < 4 字节读不出 magic）；
-   - 剩余不足 4 字节，或 magic 命中后帧头（前 11 字节 = magic+version+seq+len）未收全，或 payload 不足（剩余 < 11+len）→ {ok:false, error:"INCOMPLETE", at: 偏移}，停止扫描；
+   - 当前 4 字节 ≠ magic → 记 {ok:false, error:"BAD_MAGIC", at: 偏移}，偏移 +1 逐字节重同步找下一个 magic（重同步过程中即使尾部不足 13 字节也继续记 BAD_MAGIC，直到剩余 < 4 字节）；
+   - 剩余不足 4 字节（无论处于重同步还是帧中），或 magic 命中后帧头（前 11 字节 = magic+version+seq+len）未收全，或 payload 不足（剩余 < 11+len）→ {ok:false, error:"INCOMPLETE", at: 偏移}，停止扫描；
    - crc 校验失败 → {ok:false, error:"BAD_CRC", seq, at: 偏移}，跳过该帧继续；
    - version ≠ 1 → {ok:false, error:"BAD_VERSION", seq, at: 偏移}，跳过该帧继续（判定顺序：先 CRC 后 version）；
-   - 正常 → {ok:true, seq, version, payload}（payload 为 UTF-8 文本），跳帧继续。
+   - 正常 → {ok:true, seq, version, payload}（payload 为 UTF-8 文本；条目字段仅限此处所列，不要附加其他字段），跳帧继续。
 CLI：\`node frames.js run frames.json\` 写当前目录 \`report.json\` =
 \`{"encoded": pairs 逐项 {seq, hex}（version=1）, "stream": 对 stream_hex 的解码结果, "truncated": 对 truncated_hex 的解码结果, "zeros": 对 zeros11_hex 的解码结果}\`，
 退出码 0，打印摘要。
