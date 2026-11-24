@@ -5,72 +5,17 @@
       "name": "mini SQL 查询引擎（Python，连接/聚合/排序）",
       "type": "查询引擎",
       "expect": "sqleng.py + test + README + report.json",
-      "status": "regression",
-      "duration": 1575067,
+      "status": "success",
+      "duration": 810175,
       "tokens": 0,
-      "detail": "inv=[✓sqleng.py ✓test_sqleng.py ✓README.md ✓report.json] exec=report 结果与参考不符: {\"results\":{\"j1\":[{\"o.id\":1,\"c.name\":\"Ann\",\"o.amount\":100},{\"o.id\":2,\"c.name\":\"Bob\",\"o.amount\":20},{\"o.id\":3,\"c.name\":\"Ann\",\"o.amount\":50},{\"o.id\":4,\"c.name\":\"Ann\",\"o.amount\":100},{\"o.id\":5,\"c.name\":\"; 模块探测失败:  File \"/home/chy/EvoClaw/data/workspace/v30-t1/sqleng.py\", line 108, in consume     raise ValueError(         f\"Expected {expected_type}, got {t[0]} at pos {self.pos}\"     ) ValueError: Expected [延迟核验 1215s]",
-      "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwu78xsw-1600ca` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
-    },
-    {
-      "id": 2,
-      "name": "WAL 键值存储与 checkpoint 恢复（Python）",
-      "type": "存储引擎",
-      "expect": "walstore.py + test + README + report.json",
-      "status": "success",
-      "duration": 241137,
-      "tokens": 556072,
-      "detail": "inv=[✓walstore.py ✓test_walstore.py ✓README.md ✓report.json] exec=✓ckpt基底/重放窗口/from_lsn边界/del幂等/CLI/单测全一致",
-      "replyPreview": "📅 2026/11/24 12:57  全部核验通过。  ## 最终核验  | 检查项 | 结果 | |--------|------| | AST `assert` 语句数 | **25**（8 个测试函数） | | `python3 test_walstore.py` | 8/8 PASS，退出码 0 | | `python3 walstore.py run wal.json` | 退出码 0，`report.json` 已写入 | | `README.md` | 2158 字节 ≥ 300 | | `wal.json` | 🔒 未修改 |  ## sc1 结果  ``` state:    {'b': 22, 'c': 3"
-    },
-    {
-      "id": 3,
-      "name": "CJK 混排文本两端对齐（Python，EAW 宽度+空格分配）",
-      "type": "排版算法",
-      "expect": "align.py + test + README + report.json",
-      "status": "success",
-      "duration": 1125151,
-      "tokens": 0,
-      "detail": "inv=[✓align.py ✓test_align.py ✓README.md ✓report.json] exec=✓宽度/行切/CJK间隙/非CJK间隙/行尾补白/末行原样/CLI/单测全一致 [延迟核验 765s]",
-      "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwu8c04z-ab4b11` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
-    },
-    {
-      "id": 4,
-      "name": "JSON 操作重放：merge-patch + JSON Patch（Node）",
-      "type": "序列化/补丁",
-      "expect": "jsonops.js + test + README + report.json",
-      "status": "success",
-      "duration": 105834,
-      "tokens": 330017,
-      "detail": "inv=[✓jsonops.js ✓jsonops.test.js ✓README.md ✓report.json] exec=✓递归合并/null删键/数组追加/下标偏移/深拷贝隔离/CLI/单测全一致",
-      "replyPreview": "📅 2026/11/24 13:18  全部交付完成 ✅  **交付清单：**  | 文件 | 状态 | |------|------| | `jsonops.js` | ✅ 5.9KB，`module.exports = { mergePatch, jsonPatch, replay }` | | `jsonops.test.js` | ✅ 14 个断言全部通过 | | `README.md` | ✅ 3.6KB（≥300 字节） | | `report.json` | ✅ CLI 真实运行生成，退出码 0 | | `ops.json` | 🔒 冻结夹具，未修改 |  **测试结果：** `node --test jsonop"
-    },
-    {
-      "id": 5,
-      "name": "确定性事件状态机 + 快照续跑（Node）",
-      "type": "并发模型",
-      "expect": "fsm.js + test + README + report.json",
-      "status": "success",
-      "duration": 321297,
-      "tokens": 394343,
-      "detail": "inv=[✓fsm.js ✓fsm.test.js ✓README.md ✓report.json] exec=✓出边顺序/忽略规则/accepting记录/快照续跑等价/CLI/单测全一致",
-      "replyPreview": "📅 2026/11/24 13:23  ✅ 全部交付完成。  **文件清单**（`/home/chy/EvoClaw/data/workspace/v30-t5/`）： - `fsm.js` — 核心库 + CLI（零依赖 CommonJS） - `fsm.test.js` — 10 个断言，`node --test` 全部通过 - `README.md` — 2456 字节，含确定性口径与续跑等价性证明思路 - `report.json` — CLI 真实运行产物  **CLI 运行结果**（退出码 0）： - `full.accepted` 下标集合：**{2, 6}** - `resumed.finalState`：**ok"
-    },
-    {
-      "id": 6,
-      "name": "二进制协议帧编解码 + CRC16-CCITT（Node）",
-      "type": "二进制协议",
-      "expect": "frames.js + test + README + report.json",
-      "status": "success",
-      "duration": 540140,
-      "tokens": 0,
-      "detail": "inv=[✓frames.js ✓frames.test.js ✓README.md ✓report.json] exec=✓CRC向量/编解码往返/粘连切帧/CRC错/坏版本/INCOMPLETE/重同步/CLI/单测全一致 [延迟核验 180s]",
-      "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwu99bdh-f66b5b` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
+      "detail": "inv=[✓sqleng.py ✓test_sqleng.py ✓README.md ✓report.json] exec=✓内连接/左连接/WHERE+LIKE/聚合/多列ORDER/LIMIT-OFFSET/CLI/单测全一致 [延迟核验 450s]",
+      "replyPreview": "⏳ 该任务工作量较大，我已保存检查点并将在后台继续完成（**不会再因超时失败**）。  - 任务 ID：`dt-mwug50ts-4e72ef` - 输入 `/tasks` 查看进度 - 输入 `/resume` 可立即在后台续跑 - 任务完成后会自动通知你（即使中途重启服务也会自动续跑）  你也可以继续发新消息，我会优先处理新指令；长任务始终保持可恢复状态。"
     }
   ],
-  "ts": "2026-11-24T05:32:42.813Z",
+  "ts": "2026-11-24T08:49:50.694Z",
   "before": {
     "concurrent": {
-      "value": 16,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "ConcurrentToolExecutor",
@@ -79,20 +24,20 @@
         "wired": true,
         "note": "wired into llm-caller parallel-safe tool batch",
         "stats": {
-          "batches": 4,
-          "executed": 12,
-          "parallelized": 12,
+          "batches": 0,
+          "executed": 0,
+          "parallelized": 0,
           "sequential": 0,
           "timeouts": 0,
           "failures": 0,
-          "maxObservedActive": 5,
+          "maxObservedActive": 0,
           "activeCount": 0,
           "maxConcurrency": 8
         }
       }
     },
     "persistence": {
-      "value": 182,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "ToolResultPersistenceManager",
@@ -101,19 +46,19 @@
         "wired": true,
         "note": "wired into llm-caller after tool result transforms, before truncation",
         "stats": {
-          "turns": 10,
-          "maybePersistCalls": 182,
+          "turns": 0,
+          "maybePersistCalls": 0,
           "persisted": 0,
           "spilled": 0,
-          "totalChars": 164580,
-          "turnResults": 1,
+          "totalChars": 0,
+          "turnResults": 0,
           "turnBudgetChars": 200000,
           "storageDir": "/tmp/evoclaw-results"
         }
       }
     },
     "middleware": {
-      "value": 187,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "ToolResultMiddleware",
@@ -124,10 +69,10 @@
         "stats": {
           "requestMiddlewares": 0,
           "executionMiddlewares": 0,
-          "resultTransforms": 1,
+          "resultTransforms": 0,
           "terminalOutputTransforms": 0,
           "executions": 0,
-          "resultTransformApplications": 187,
+          "resultTransformApplications": 0,
           "transformedResults": 0
         },
         "config": {
@@ -139,7 +84,7 @@
       }
     },
     "recording": {
-      "value": 589,
+      "value": 611,
       "raw": {
         "enabled": true,
         "registered": true,
@@ -147,96 +92,96 @@
         "note": "recording started/ended in AgentModelExecutor.tryCallLLM around every chat run",
         "stats": {
           "activeRecordings": 0,
-          "totalRecordings": 589,
+          "totalRecordings": 611,
           "baseDir": "/home/chy/EvoClaw/data/recordings",
           "active": [],
           "recent": [
             {
-              "taskId": "task_1795493494161_6d801cbe",
+              "taskId": "task_1795504500615_4360d17a",
               "finalStatus": "completed",
-              "startedAt": 1795493494162,
-              "endedAt": 1795493581274,
-              "totalIterations": 6,
-              "totalToolCalls": 6
+              "startedAt": 1795504500616,
+              "endedAt": 1795505045878,
+              "totalIterations": 40,
+              "totalToolCalls": 34
             },
             {
-              "taskId": "task_1795493493334_1ec309a5",
+              "taskId": "task_1795504146023_e98d2a29",
               "finalStatus": "completed",
-              "startedAt": 1795493493335,
-              "endedAt": 1795493494022,
-              "totalIterations": 1,
-              "totalToolCalls": 0
+              "startedAt": 1795504146023,
+              "endedAt": 1795504493490,
+              "totalIterations": 7,
+              "totalToolCalls": 2
             },
             {
-              "taskId": "task_1795493382040_aa6bed39",
+              "taskId": "task_1795502879651_3f234cdb",
               "finalStatus": "completed",
-              "startedAt": 1795493382040,
-              "endedAt": 1795493493328,
-              "totalIterations": 13,
-              "totalToolCalls": 10
+              "startedAt": 1795502879652,
+              "endedAt": 1795504108376,
+              "totalIterations": 41,
+              "totalToolCalls": 46
             },
             {
-              "taskId": "task_1795493273987_c4d8603f",
+              "taskId": "task_1795502571872_f1d18158",
               "finalStatus": "completed",
-              "startedAt": 1795493273988,
-              "endedAt": 1795493382030,
-              "totalIterations": 15,
+              "startedAt": 1795502571872,
+              "endedAt": 1795502875419,
+              "totalIterations": 7,
+              "totalToolCalls": 2
+            },
+            {
+              "taskId": "task_1795498653872_b586d996",
+              "finalStatus": "completed",
+              "startedAt": 1795498653873,
+              "endedAt": 1795498711082,
+              "totalIterations": 12,
               "totalToolCalls": 13
             },
             {
-              "taskId": "task_1795493133880_f01c20aa",
+              "taskId": "task_1795498579575_6ec016c3",
               "finalStatus": "completed",
-              "startedAt": 1795493133880,
-              "endedAt": 1795493271980,
+              "startedAt": 1795498579576,
+              "endedAt": 1795498651867,
               "totalIterations": 15,
-              "totalToolCalls": 12
+              "totalToolCalls": 16
             },
             {
-              "taskId": "task_1795491623094_f10a1e5e",
+              "taskId": "task_1795498546321_c6ddde8f",
               "finalStatus": "completed",
-              "startedAt": 1795491623094,
-              "endedAt": 1795491699448,
-              "totalIterations": 6,
-              "totalToolCalls": 7
+              "startedAt": 1795498546322,
+              "endedAt": 1795498579570,
+              "totalIterations": 7,
+              "totalToolCalls": 9
             },
             {
-              "taskId": "task_1795491622361_3fb0e21e",
+              "taskId": "task_1795498519846_10a1c178",
               "finalStatus": "completed",
-              "startedAt": 1795491622362,
-              "endedAt": 1795491730659,
-              "totalIterations": 15,
-              "totalToolCalls": 14
+              "startedAt": 1795498519846,
+              "endedAt": 1795498546316,
+              "totalIterations": 5,
+              "totalToolCalls": 4
             },
             {
-              "taskId": "task_1795491325440_eb6a5e6e",
+              "taskId": "task_1795498476450_fcc3377a",
               "finalStatus": "completed",
-              "startedAt": 1795491325440,
-              "endedAt": 1795491622353,
-              "totalIterations": 9,
-              "totalToolCalls": 7
+              "startedAt": 1795498476450,
+              "endedAt": 1795498519841,
+              "totalIterations": 10,
+              "totalToolCalls": 11
             },
             {
-              "taskId": "task_1795491262251_d6933f2c",
+              "taskId": "task_1795498183755_10c23c4b",
               "finalStatus": "completed",
-              "startedAt": 1795491262252,
-              "endedAt": 1795491325431,
-              "totalIterations": 33,
-              "totalToolCalls": 29
-            },
-            {
-              "taskId": "task_1795491165262_7db0641a",
-              "finalStatus": "completed",
-              "startedAt": 1795491165263,
-              "endedAt": 1795491262037,
-              "totalIterations": 6,
-              "totalToolCalls": 7
+              "startedAt": 1795498183756,
+              "endedAt": 1795499020437,
+              "totalIterations": 25,
+              "totalToolCalls": 19
             }
           ]
         }
       }
     },
     "schema": {
-      "value": 37,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "SchemaSanitizer",
@@ -245,17 +190,15 @@
         "wired": true,
         "note": "wired after buildOpenAITools; reactive sanitize on grammar/combinator errors",
         "stats": {
-          "calls": 37,
-          "toolsSanitized": 961,
-          "byBackend": {
-            "openai": 37
-          },
+          "calls": 0,
+          "toolsSanitized": 0,
+          "byBackend": {},
           "reactiveCalls": 0
         }
       }
     },
     "coercer": {
-      "value": 189,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "ToolArgumentCoercer",
@@ -264,7 +207,7 @@
         "wired": true,
         "note": "wired into llm-caller tool execution path",
         "stats": {
-          "calls": 189,
+          "calls": 0,
           "coerced": 0,
           "byType": {
             "stringToInt": 0,
@@ -278,7 +221,7 @@
       }
     },
     "iterationPolicy": {
-      "value": 307,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "IterationContextPolicy",
@@ -287,11 +230,11 @@
         "wired": true,
         "note": "wired before each LLM call on a request-local message copy; system messages preserved; tool pairing repaired after truncation",
         "stats": {
-          "applications": 307,
-          "cappedRuns": 52,
+          "applications": 0,
+          "cappedRuns": 0,
           "truncatedRuns": 0,
-          "skillsStrippedRuns": 141,
-          "messagesCapped": 52,
+          "skillsStrippedRuns": 0,
+          "messagesCapped": 0,
           "messagesTruncated": 0,
           "estTokensSaved": 0,
           "config": {
@@ -307,7 +250,7 @@
       }
     },
     "rateGuard": {
-      "value": 307,
+      "value": 0,
       "raw": {
         "available": true,
         "serviceName": "CrossSessionRateGuard",
@@ -316,10 +259,10 @@
         "wired": true,
         "note": "wired before provider call (skip genuine cooldown) and on RATE_LIMIT classification",
         "stats": {
-          "checks": 307,
+          "checks": 0,
           "skippedRequests": 0,
           "genuineRateLimits": 0,
-          "transientLimits": 105,
+          "transientLimits": 0,
           "activeProviders": 0,
           "activeCooldowns": []
         }
