@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -3513,5 +3513,25 @@ describe("computeDynamicToolLimitCached", () => {
     ]);
     const task = "实现一个 LSM 树并运行测试";
     expect(computeDynamicToolLimitCached(task, 10, 40, longHistory as never, "dyn-h")).toBe(25);
+  });
+});
+
+describe("llm-caller > resolveLlmRequestTimeoutMs（v32 T1 压测：thinking 模型 60s 默认超时风暴）", () => {
+  // 回归根因：provider.timeout 未配置时 llm-caller 默认 60s；magpie/dots3 等
+  // thinking 模型首响应实测 40~80s → 65s 硬超时反复触发 → 熔断冷却 30s →
+  // 整轮任务分钟级空转（v32 T1 实测 450s，其中大部分是 3 次超时 + 2 次冷却）。
+  const base = { name: "p", provider: "openai", model: "gpt-x", enabled: true, order: 0 };
+  it("未配置 timeout 的非推理模型 → 默认 300s", () => {
+    expect(resolveLlmRequestTimeoutMs({ ...base } as never)).toBe(300_000);
+  });
+  it("显式配置（含 0=无超时）原样尊重", () => {
+    expect(resolveLlmRequestTimeoutMs({ ...base, timeout: 60_000 } as never)).toBe(60_000);
+    expect(resolveLlmRequestTimeoutMs({ ...base, timeout: 0 } as never)).toBe(0);
+  });
+  it("已知推理模型未配置 timeout 时应用 floor（只抬默认、不压显式配置）", () => {
+    // deepseek-r1 floor 600s > 默认 300s
+    expect(resolveLlmRequestTimeoutMs({ ...base, model: "openai/deepseek-r1" } as never)).toBe(600_000);
+    // 显式配置低于 floor 时尊重显式（floor 语义：只抬默认值）
+    expect(resolveLlmRequestTimeoutMs({ ...base, model: "openai/deepseek-r1", timeout: 90_000 } as never)).toBe(90_000);
   });
 });

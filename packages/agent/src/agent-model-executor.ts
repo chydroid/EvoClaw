@@ -4138,7 +4138,7 @@ export class AgentModelExecutor {
         baseURL: runtime.baseUrl ?? undefined,
         maxTokens: main?.maxTokens ?? 8192,
         temperature: 0,
-        timeout: main?.timeout ?? 60_000,
+        timeout: main?.timeout ?? 300_000,
         enabled: true,
         order: 0,
       };

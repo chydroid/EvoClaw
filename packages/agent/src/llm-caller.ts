@@ -159,6 +159,7 @@ import { ReadTracker } from "./read-tracker";
 import { applyAnthropicCacheControl } from "./prompt-cache";
 import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
+import { getReasoningStaleTimeoutFloor } from "./reasoning-timeouts";
 import { retryAsync, jitteredBackoff } from "./retry-utils";
 import { getStreamingRecoveryManager } from "./streaming-recovery";
 import {
@@ -4330,6 +4331,23 @@ export function traceSnapshot(
 
 // ── callLLMOnce ──
 
+/**
+ * LLM 请求超时解析（v32 压测缺陷修复）：
+ * - 显式配置（含 0=无超时）原样尊重；
+ * - 未配置时默认 300s（thinking 模型首响应实测可达 40~80s，旧的 60s 默认
+ *   把 magpie/dots3 等 provider 打成 65s 超时 + 熔断冷却的分钟级空转循环）；
+ * - 已知推理模型（o1/qwen3/deepseek-r1/claude-opus-4 等）再叠加
+ *   reasoning-timeouts 的下限（对标 hermes reasoning_timeouts.py：floor 只抬
+ *   默认值、不覆盖显式配置；非推理模型无影响）。
+ * 提取为导出纯函数便于单测。
+ */
+export function resolveLlmRequestTimeoutMs(provider: ProviderConfig): number {
+  if (provider.timeout != null) return provider.timeout;
+  const floorSec = getReasoningStaleTimeoutFloor(provider.model);
+  const reasoningFloorMs = floorSec !== null ? floorSec * 1000 : 0;
+  return Math.max(300_000, reasoningFloorMs);
+}
+
 export async function callLLMOnce(
   provider: ProviderConfig,
   messages: Array<LLMMessage>,
@@ -4351,11 +4369,7 @@ export async function callLLMOnce(
   const tracing = observability?.getTracingService?.();
 
   const doCall = async (): Promise<CallLLMOnceResult | null> => {
-  // 使用 ?? 保留 timeout=0（表示"无超时"）的显式配置；仅当 undefined/null 时回退默认值。
-  // 默认 300s（v32 T1 压测实证：magpie/dots3 等 thinking 模型首响应实测可达 40~80s，
-  // 60s 默认 + 熔断 + 30s 冷却把整轮任务拖成分钟级空转——T1 实际 450s 才交付，
-  // 其中 3 次 65s 超时 + 2 次熔断冷却全在这条 60s 线上；hermes 同型默认亦为 300s 级）。
-  const timeout = provider.timeout ?? 300000;
+  const timeout = resolveLlmRequestTimeoutMs(provider);
   const controller = new AbortController();
   // ★ v30 T1 压测缺陷修复：超时必须携带 "Request timeout" reason 再 abort。
   // 裸 abort()（reason 为空）会让 nativeFetch 的 onAbort 落入「外部主动取消」分支
@@ -9677,7 +9691,7 @@ if (deps.contextPruningManager && !prunerNoop) {
         checkpointStore.failExecution(sessionId, err instanceof Error ? err.message : String(err));
       }
       if (err instanceof DOMException && err.name === "AbortError") {
-        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) timed out after ${provider.timeout || 60000}ms\n`);
+        process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) timed out after ${provider.timeout || 300000}ms\n`);
       } else if (err instanceof Error) {
         process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) error: ${err.message}\n`);
         process.stderr.write(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}\n`);
