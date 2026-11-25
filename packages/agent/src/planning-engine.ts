@@ -9,7 +9,7 @@
 import type { PersonaConfig } from "@evoclaw/core";
 import { buildChatCompletionsUrl } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
-import { nativeFetch } from "./llm-caller";
+import { nativeFetch, resolveLlmRequestTimeoutMs } from "./llm-caller";
 import * as crypto from "crypto";
 
 // ── Types ──
@@ -202,7 +202,9 @@ async function callLLMForPlan(
     }
 
     const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), 30000);
+    // v32 举一反三：规划 LLM 失败也会喂熔断，必须与主请求同一超时口径（含 reasoning floor）
+    const timeoutMs = resolveLlmRequestTimeoutMs(provider);
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const response = await nativeFetch(apiURL, {
       method: "POST",

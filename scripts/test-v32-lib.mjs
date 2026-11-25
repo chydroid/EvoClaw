@@ -385,6 +385,8 @@ export function t5Breaker(spec) {
     }
     if (ev.ok) {
       successes++;
+      // 「连续失败」语义：closed 态成功清零连续失败计数（prompt 明写「连续 failThreshold 次」）
+      if (state === 'closed') f = 0;
       if (state === 'half-open') { state = 'closed'; f = 0; transitions.push('half-open->closed'); }
     } else {
       failures++;
@@ -486,9 +488,11 @@ export function t7Apply(init, ops) {
       }
       if (!g) { g = { u: [], r: [] }; undoStack.push(g); nGroups++; }
       if (op.op === 'ins') {
-        arr.splice(op.pos, 0, op.val);
-        g.u.push({ op: 'del', pos: op.pos });
-        g.r.push({ op: 'ins', pos: op.pos, val: op.val });
+        // 越界 pos 视为追加（prompt 钉死）：按实际插入位置记录撤销/重做，undo 才能正确回滚
+        const at = Math.min(op.pos, arr.length);
+        arr.splice(at, 0, op.val);
+        g.u.push({ op: 'del', pos: at });
+        g.r.push({ op: 'ins', pos: at, val: op.val });
       } else {
         const v = arr.splice(op.pos, 1)[0];
         g.u.push({ op: 'ins', pos: op.pos, val: v });
@@ -531,7 +535,9 @@ export const T8_FIXTURE = {
 export function t8Closure(spec) {
   const n = spec.n;
   const reach = Array.from({ length: n }, () => new Array(n).fill(false));
-  for (const [u, v] of spec.edges) if (u !== v) reach[u][v] = true;
+  // 自环边保留在 reach 矩阵（prompt 钉死 i==j 查询按直接边判定），
+  // 只在 total/out-degree 处过滤 i!==j（自环不产生 i≠j 的可达对）
+  for (const [u, v] of spec.edges) reach[u][v] = true;
   for (let k = 0; k < n; k++) {
     for (let i = 0; i < n; i++) {
       if (!reach[i][k]) continue;
@@ -601,7 +607,7 @@ export function t9Kth(a, k) {
 }
 
 export function t9Ref() {
-  return T9_CASES.map((c) => ({ answer: t9Kth(c.a, c.k)[0], comps: t9Kth(c.a, c.k)[1] }));
+  return T9_CASES.map((c) => ({ kth: t9Kth(c.a, c.k)[0], comps: t9Kth(c.a, c.k)[1] }));
 }
 
 // ═══════════════════════════ 夹具写入 ═══════════════════════════
@@ -663,16 +669,25 @@ export function selfCheck() {
   if (R5.backoff.waits.length !== T5_FIXTURE.backoff.attempts - 1) bad.push('T5 waits 长度');
   // open 期内（t < openUntil）事件快速失败、不计入 successes/failures → 11 事件中 2 个被丢弃（t=3500、t=9000）
   if (R5.breaker.failures !== 7 || R5.breaker.successes !== 2) bad.push('T5 熔断计数漂移: ' + R5.breaker.failures + '/' + R5.breaker.successes);
-  // T6 已知解数
-  if (t6Solve(4).count !== 2 || t6Solve(5).count !== 10 || t6Solve(6).count !== 4 || t6Solve(8).count !== 92) bad.push('T6 已知解数');
-  // T7 不变量（期望值以参考实现为准，selfCheck 只钉不变量防漂移）
+  // T5 持续：closed 态成功清零连续失败计数（F2 外部手算向量 F,F,S,F 不转 open）
+  const cc = t5Breaker({ failThreshold: 3, openMs: 1000, events: [
+    { t: 1, ok: false }, { t: 2, ok: false }, { t: 3, ok: true }, { t: 4, ok: false },
+  ] });
+  if (cc.finalState !== 'closed' || cc.failures !== 3 || cc.successes !== 1) bad.push('T5 连续失败语义漂移: ' + JSON.stringify(cc));
+  // T6 已知解数（公开已知值，n=9=352 同属外部锚点）
+  if (t6Solve(4).count !== 2 || t6Solve(5).count !== 10 || t6Solve(6).count !== 4 || t6Solve(8).count !== 92 || t6Solve(9).count !== 352) bad.push('T6 已知解数');
+  // T7 外部锚点（手算终局 + 越界 undo 边界 F3）
   const R7 = t7Ref();
   if (JSON.stringify(R7.final) !== '[10,20,70]' || R7.groups !== 4 || R7.undos !== 4 || R7.redos !== 1) bad.push('T7 不变量漂移: ' + JSON.stringify(R7));
-  // T8 不变量
+  const ov = t7Apply([1, 2], [{ op: 'ins', pos: 99, val: 3 }, { op: 'undo' }]);
+  if (JSON.stringify(ov.final) !== '[1,2]') bad.push('T7 越界 undo 语义漂移: ' + JSON.stringify(ov));
+  // T8 外部锚点：自环查询按直接边 true（F1），total/out-degree 仍排除 i===j
+  const sl = t8Closure({ n: 2, edges: [[0, 0]], queries: [[0, 0], [0, 1]] });
+  if (JSON.stringify(sl) !== JSON.stringify({ results: [true, false], total: 0, maxOut: [0, 0] })) bad.push('T8 自环语义漂移: ' + JSON.stringify(sl));
   const R8 = t8Ref();
-  if (R8.results.length !== T8_FIXTURE.queries.length) bad.push('T8 queries 数');
-  if (R8.total < 0 || R8.maxOut.length !== 2) bad.push('T8 total/maxOut');
-  // T9 不变量：answer == 排序后第 k 个
+  if (R8.total !== 35 || JSON.stringify(R8.maxOut) !== '[0,7]') bad.push('T8 全局统计漂移: ' + JSON.stringify(R8));
+  if (R8.results.length !== T8_FIXTURE.queries.length || R8.maxOut.length !== 2) bad.push('T8 结构漂移');
+  // T9 不变量：kth == 排序后第 k 个
   for (const c of T9_CASES) {
     const sorted = c.a.slice().sort((x, y) => x - y);
     const [v] = t9Kth(c.a, c.k);

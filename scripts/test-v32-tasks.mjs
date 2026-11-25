@@ -207,13 +207,12 @@ README.md（≥300 字节）：误判单向性（只可能报"可能存在"）�
       const bad = [];
       const c1 = pyRun(dir, ['bloom.py', 'run', 'bloom.json']);
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
-      // allMembersIn 口径归一化：任务书写「每个 item 查询是否都为 True」，
-      // 模型可能返回 100 个布尔的 list（逐 item）或单个标量 true。两种都是
-      // 任务书未钉死的私有细节，统一折成「是否全部命中」的单布尔再比。
-      const normBloom = (x) => ({ ...x, allMembersIn: Array.isArray(x.allMembersIn) ? x.allMembersIn.every(Boolean) : !!x.allMembersIn, expFpr: null });
+      // prompt 钉死 allMembersIn=单个布尔值、expFpr=数值——不做任何类型/字段归一化，
+      // 否则会放过「逐项数组」「缺字段」等违反任务书的产物（v32 复盘 F5）。
+      const stripFpr = (x) => ({ ...x, expFpr: null });
       const rep = fileExistsJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(normBloom(rep), normBloom(R3))) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
+      else if (!sameJson(stripFpr(rep), stripFpr(R3))) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       else if (Math.abs((rep.expFpr ?? 0) - R3.expFpr) > 1e-12 * Math.max(1, R3.expFpr)) bad.push('expFpr 漂移: ' + rep.expFpr + ' vs ' + R3.expFpr);
       const probe = runPy(dir, `
 import json, sys
@@ -222,7 +221,7 @@ spec = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 print(json.dumps(m.run_report(spec), sort_keys=True))
 `, [dir + '/bloom.json']);
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(normBloom(probe.value), normBloom(R3))) bad.push('模块 run_report 与参考不符');
+      else if (!sameJson(stripFpr(probe.value), stripFpr(R3))) bad.push('模块 run_report 与参考不符');
       const ac = assertCount(dir, 'test_bloom.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_bloom.py']);
@@ -511,7 +510,8 @@ return { out: m.closure(doc), v1: m.closure({ n: 2, edges: [[0, 0]], queries: [[
 select.py 导出 \`{ quickselect }\`：quickselect(arr, k) -> \`[第 k 小的值（0 起）, 元素比较次数]\`，
 口径（必须逐条对上，实现确定性、与调用次数无关）：
 - 在闭区间 [l, r] 反复选择：三数取中——pivot = [arr[l], arr[(l+r)//2], arr[r]] 三者中位数
-  （两两比较取中值，比较次数**不计入**）；把 pivot 换到 r 位置；
+  （两两比较取中值，比较次数**不计入**）；把 pivot 换到 r 位置——
+  当 l/m/r 有多个值等于中位数时，取**从左到右第一个**等于中位数的下标与 r 交换（比较次数口径由此确定）；
 - Lomuto 分区：i = l-1；j 从 l 到 r-1：若 arr[j] ≤ pivot（**计 1 次比较**）则 i++、交换 arr[i] 与 arr[j]；
   最后交换 arr[i+1] 与 arr[r]；p = i+1；
 - p == k → 返回 [arr[k], 总比较次数]；k < p → r = p-1；k > p → l = p+1；
@@ -535,7 +535,7 @@ README.md（≥300 字节）：三数取中 pivot 规则、Lomuto 分区不变�
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileExistsJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson((rep.results || rep).map((r) => ({ answer: r.kth ?? r.answer, comps: r.comps })), R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
+      else if (!sameJson((rep.results || rep), R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       const probe = runPy(dir, `
 import json, sys
 ${pyLoadModule('t9sel', dir + '/select.py')}
@@ -547,7 +547,7 @@ for c in doc['cases']:
 print(json.dumps(out))
 `, [dir + '/cases.json']);
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value.map((r) => ({ answer: r.kth, comps: r.comps })), R9)) bad.push('模块 quickselect 与参考不符');
+      else if (!sameJson(probe.value, R9)) bad.push('模块 quickselect 与参考不符');
       const ac = assertCount(dir, 'test_select.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_select.py']);

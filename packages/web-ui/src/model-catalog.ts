@@ -2,6 +2,14 @@
 // 数据来源：各厂商官方 API 文档 / 定价页（2026-06）
 // 价格单位统一为每 1M tokens；标注 free 表示有免费额度
 
+/**
+ * LLM 请求默认超时（毫秒）。与 core 的 DEFAULT_LLM_REQUEST_TIMEOUT_MS 同值——
+ * web-ui 不依赖 @evoclaw/core（纯前端包），故在此复制常量并用注释锁定同步关系。
+ * 旧值 60000 会以「显式配置」写入后端，绕过 reasoning floor，导致 thinking
+ * 模型超时/熔断风暴（v32 T1 教训）。
+ */
+export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 300_000;
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -530,7 +538,7 @@ export function buildDefaultProviders(): Array<{
     selectedModel: p.defaultModel,
     enabled: p.id === "local",
     order: p.order,
-    config: { temperature: 0.7, maxTokens: 40960, timeout: 60000, topP: 1 },
+    config: { temperature: 0.7, maxTokens: 40960, timeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS, topP: 1 },
     catalog: p,
   }));
 }

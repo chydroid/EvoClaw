@@ -43,7 +43,7 @@ export { PersonaManager } from "./persona-manager";
 export type { Persona, PersonaStore } from "./persona-manager";
 export { EnvManager } from "./env-manager";
 export type { EnvEntry } from "./env-manager";
-export { ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, ValidationError as ConfigValidationError } from "./config-schema";
+export { ConfigValidator, ConfigWatcher, CONFIG_SCHEMA, ValidationError as ConfigValidationError, DEFAULT_LLM_REQUEST_TIMEOUT_MS } from "./config-schema";
 export type { ConfigValidationResult, SchemaConfigChange, SchemaConfigChangeHandler } from "./config-schema";
 // 扩展发现机制（对标 OpenClaw openclaw.extensions 字段扫描）
 export {

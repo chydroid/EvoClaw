@@ -1,5 +1,5 @@
 import { Express, Request, Response } from "express";
-import { ServiceRegistry, EventBus, FeatureFlagStore, atomicWriteFileSync } from "@evoclaw/core";
+import { ServiceRegistry, EventBus, FeatureFlagStore, atomicWriteFileSync, DEFAULT_LLM_REQUEST_TIMEOUT_MS } from "@evoclaw/core";
 import { taskStatusTracker, taskCheckpointManager, ModelFailoverManager, getToolResultMiddleware, resolveContextWindow, getLiveProviderHealthSnapshot, resetLiveProviderCircuit } from "@evoclaw/agent";
 import * as crypto from "crypto";
 import { IncomingWebhookManager } from "./webhook-manager";
@@ -821,10 +821,17 @@ export class ProtocolAdapter {
               p.apiKey = `\${${varName}}`;
               needsRewrite = true;
             }
+            // v32 迁移：旧 UI 默认写入的 60000 是「伪显式值」，会绕过 agent 侧
+            // reasoning floor（thinking 模型 TTFB 40~80s → 超时/熔断风暴）。
+            // 只迁移恰好等于旧默认的签名值；用户显式设的其它值一律保留。
+            if ((p.config as Record<string, unknown> | undefined)?.timeout === 60_000) {
+              (p.config as Record<string, unknown>).timeout = DEFAULT_LLM_REQUEST_TIMEOUT_MS;
+              needsRewrite = true;
+            }
           }
           if (needsRewrite) {
             this.persistLLMProviders(data.providers);
-            process.stdout.write("[ProtocolAdapter] Migrated LLM API keys to .env references\n");
+            process.stdout.write("[ProtocolAdapter] Migrated LLM API keys to .env references / legacy 60s timeouts to 300s\n");
           }
 
           this.savedLLMProviders = data.providers;
@@ -1209,7 +1216,7 @@ export class ProtocolAdapter {
         const temperatureRaw = cfg?.temperature;
         const temperature = typeof temperatureRaw === "number" && Number.isFinite(temperatureRaw) ? temperatureRaw : 0.3;
         const timeoutRaw = cfg?.timeout;
-        const timeout = typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) ? timeoutRaw : 60000;
+        const timeout = typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) ? timeoutRaw : DEFAULT_LLM_REQUEST_TIMEOUT_MS;
         const topPRaw = cfg?.topP;
         const topP = typeof topPRaw === "number" && Number.isFinite(topPRaw) ? topPRaw : 1;
         const orderRaw = p.order;
@@ -4281,6 +4288,12 @@ export class ProtocolAdapter {
           const processedProviders = providers.map((p: Record<string, unknown>) => {
             const existing = existingProviders.find((e: Record<string, unknown>) => e.id === p.id);
             const result = { ...p };
+
+            // v32 根治：UI 旧默认 60000 是「伪显式值」——会绕过 reasoning floor。
+            // 写入时归一：恰好 60000（旧默认签名）→ 300000；用户显式其它值保留。
+            if ((result.config as Record<string, unknown> | undefined)?.timeout === 60_000) {
+              result.config = { ...(result.config as Record<string, unknown>), timeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS };
+            }
 
             if (typeof result.apiKey === "string") {
               const apiKey = result.apiKey;

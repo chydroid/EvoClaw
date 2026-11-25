@@ -140,6 +140,16 @@ function validateField(value: unknown, field: SchemaField, path: string): string
 
 // ─── Config Schemas ───────────────────────────────────────────────────────────
 
+/**
+ * LLM 单次生成请求的默认超时（毫秒）。
+ *
+ * v32 教训：旧默认 60_000 被 Web UI/catalog/protocol-adapter 以「显式配置」写入，
+ * 使 agent 侧 resolveLlmRequestTimeoutMs 的 reasoning floor 被绕过——thinking
+ * 模型 TTFB 40~80s 触发超时→熔断风暴。所有配置生产端统一用该常量，
+ * floor 只抬默认值、不覆盖用户显式配置（reasoning-timeouts.ts 契约）。
+ */
+export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 300_000;
+
 const LLM_PROVIDER_SCHEMA: SchemaDefinition = {
   id: { type: "string", required: true, description: "Provider unique identifier" },
   name: { type: "string", required: true, description: "Display name" },
@@ -151,7 +161,8 @@ const LLM_PROVIDER_SCHEMA: SchemaDefinition = {
   order: { type: "number", default: 0, min: 0 },
   maxTokens: { type: "number", default: 40960, min: 8192, max: 512000 },
   temperature: { type: "number", default: 0.7, min: 0, max: 2 },
-  timeout: { type: "number", default: 60000, min: 1000, max: 300000 },
+  // 上限须容纳 reasoning floor（deepseek-r1 等 600s），否则 UI 无法显式配置推理模型
+  timeout: { type: "number", default: DEFAULT_LLM_REQUEST_TIMEOUT_MS, min: 1000, max: 1_260_000 },
 };
 
 const AGENT_SCHEMA: SchemaDefinition = {

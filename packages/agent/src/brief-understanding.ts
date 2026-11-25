@@ -1,7 +1,7 @@
 import type { PersonaConfig } from "@evoclaw/core";
 import { buildChatCompletionsUrl } from "@evoclaw/core";
 import type { ProviderConfig } from "./types";
-import { nativeFetch } from "./llm-caller";
+import { nativeFetch, resolveLlmRequestTimeoutMs } from "./llm-caller";
 
 export interface BriefUnderstandingDeps {
   providers: ProviderConfig[];
@@ -47,7 +47,10 @@ export async function generateBriefUnderstanding(deps: BriefUnderstandingDeps, u
     }
 
     const controller = new AbortController();
-    timeoutId = setTimeout(() => controller.abort(), 10000);
+    // v32 举一反三：此旁路直连 LLM 且失败会喂熔断，必须和主请求同一超时口径，
+    // 否则 thinking 模型 10s 必然 abort → provider failure → 熔断冷却空转。
+    const timeoutMs = resolveLlmRequestTimeoutMs(provider);
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     timeoutId.unref?.();
 
     const response = await nativeFetch(apiURL, {

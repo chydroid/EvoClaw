@@ -1,6 +1,7 @@
 // Core type definitions for AgentModelExecutor
 
 import type { PersonaConfig } from "@evoclaw/core";
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from "@evoclaw/core";
 
 export interface ModelConfig {
   provider: "openai" | "anthropic" | "deepseek" | "local" | "custom";
@@ -76,7 +77,9 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   model: "evoclaw-default",
   maxTokens: 4096,
   temperature: 0.3,
-  timeout: 60000,
+  // v32：旧默认 60000 虽为死配置（请求链走 provider.timeout），但它作为
+  // ProviderConfig 的继承默认会冒充「显式值」绕过 reasoning floor，统一到 300s。
+  timeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS,
   // hermes 式软超时：预算到后存检查点 + 转后台续跑（enterDurablePause），
   // 不是失败式硬超时。旧默认 0（禁用）导致长任务从不主动早返回——HTTP 客户端
   // 只能干等任务真跑完（v7 压测实测 600~720s），最终被客户端超时误判。

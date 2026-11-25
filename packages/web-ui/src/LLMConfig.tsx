@@ -4,6 +4,7 @@ import {
   CHAT_PROVIDER_CATALOG,
   buildDefaultProviders,
   formatPrice,
+  DEFAULT_LLM_REQUEST_TIMEOUT_MS,
   type ProviderCatalog,
   type ModelInfo,
 } from "./model-catalog";
@@ -54,7 +55,7 @@ function newCustomProvider(index: number): LLMProvider {
     selectedModel: "",
     enabled: false,
     order: 100 + index,
-    config: { temperature: 0.5, maxTokens: 40960, timeout: 60000, topP: 1 },
+    config: { temperature: 0.5, maxTokens: 40960, timeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS, topP: 1 },
   };
 }
 
@@ -1093,10 +1094,10 @@ function LLMConfigPanel() {
                   style={s.input}
                   type="number"
                   min={5000}
-                  max={300000}
+                  max={1260000}
                   step={1000}
                   value={currentProvider.config.timeout}
-                  onChange={(e) => { const n = parseInt(e.target.value, 10); updateConfig(activeProvider, { timeout: Number.isFinite(n) ? n : 60000 }) }}
+                  onChange={(e) => { const n = parseInt(e.target.value, 10); updateConfig(activeProvider, { timeout: Number.isFinite(n) ? n : DEFAULT_LLM_REQUEST_TIMEOUT_MS }) }}
                 />
               </div>
             </div>
