@@ -406,7 +406,8 @@ print(json.dumps(out, sort_keys=True))
 冻结夹具：\`ops.json\`（\`{init: [数], ops: [{op: "ins"|"del"|"undo"|"redo", ...}]}\`；
 ins 为 {pos, val}，del 为 {pos}）。禁止修改夹具。
 **必须交付（缺一不可）：history.js、history.test.js、README.md、report.json。**
-- 返回 `{final, groups, undos, redos}`；**groups = 全程创建的合并组总数（累计计数：
+history.js 用 \`module.exports = { apply }\` 导出：apply(init, ops) -> 口径（必须逐条对上）：
+- 返回 \`{final, groups, undos, redos}\`；**groups = 全程创建的合并组总数（累计计数：
   每次新建一组 +1，undo/redo 都不减少它，也不是结束时的栈占用数）**；
 - 数组下标 0 起；ins 在 pos 处插入 val（pos 可越界到末尾，视为追加）；del 删除 pos 项；
 - **合并组**：连续两次 ins，且前一次的下一个插入位置恰好等于后一次的 pos（即同位连续追加，
@@ -538,20 +539,22 @@ README.md（≥300 字节）：三数取中 pivot 规则、Lomuto 分区不变�
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileExistsJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep.results || rep, R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
+      else if (!sameJson((rep.results || rep).map((r) => ({ answer: r.kth ?? r.answer, comps: r.comps })), R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       const probe = runPy(dir, `
-import sys, json
-sys.path.insert(0, ${pyPath(dir)})
-import select as m
-doc = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
+import importlib.util, json, sys
+# 本地 select.py 无法被常规 import shadowing（select 是 frozen 内置模块）→ 按文件路径装载
+spec = importlib.util.spec_from_file_location('t9sel', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+doc = json.loads(${pyReadTextLiteral(`sys.argv[2]`)})
 out = []
 for c in doc['cases']:
     v, c2 = m.quickselect(c['a'], c['k'])
     out.append({'kth': v, 'comps': c2})
 print(json.dumps(out))
-`, [dir + '/cases.json']);
+`, [dir + '/select.py', dir + '/cases.json']);
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R9)) bad.push('模块 quickselect 与参考不符');
+      else if (!sameJson(probe.value.map((r) => ({ answer: r.kth, comps: r.comps })), R9)) bad.push('模块 quickselect 与参考不符');
       const ac = assertCount(dir, 'test_select.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_select.py']);
