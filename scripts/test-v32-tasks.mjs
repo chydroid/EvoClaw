@@ -7,7 +7,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { runPy, runProbe, readFileSafe } from './v14/lib.mjs';
 import {
-  D, sameJson, pyPath, pyReadTextLiteral,
+  D, sameJson, pyReadTextLiteral, pyLoadModule,
   t1Ref, t2Ref, t3Ref, T3_FIXTURE, t4Ref, T4_FIXTURE, t5Ref, t6Ref, t7Ref, t8Ref, T8_FIXTURE, t9Ref,
 } from './test-v32-lib.mjs';
 
@@ -103,9 +103,8 @@ README.md（≥300 字节）：算法（shunting-yard/RPN）与除法取整口�
       if (!rep) bad.push('report.json 缺失/非 JSON');
       else if (!sameJson(rep.results || rep, R1)) bad.push('report 结果与参考不符: ' + JSON.stringify(rep).slice(0, 200));
       const probe = runPy(dir, `
-import sys, json
-sys.path.insert(0, ${pyPath(dir)})
-import calc as m
+import json, sys
+${pyLoadModule('t1calc', dir + '/calc.py')}
 cases = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 out = {}
 for c in cases:
@@ -217,9 +216,8 @@ README.md（≥300 字节）：误判单向性（只可能报"可能存在"）�
       else if (!sameJson(normBloom(rep), normBloom(R3))) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       else if (Math.abs((rep.expFpr ?? 0) - R3.expFpr) > 1e-12 * Math.max(1, R3.expFpr)) bad.push('expFpr 漂移: ' + rep.expFpr + ' vs ' + R3.expFpr);
       const probe = runPy(dir, `
-import sys, json
-sys.path.insert(0, ${pyPath(dir)})
-import bloom as m
+import json, sys
+${pyLoadModule('t3bloom', dir + '/bloom.py')}
 spec = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 print(json.dumps(m.run_report(spec), sort_keys=True))
 `, [dir + '/bloom.json']);
@@ -269,9 +267,8 @@ README.md（≥300 字节）：三种策略逐出口径与平局规则。
       if (!rep) bad.push('report.json 缺失/非 JSON');
       else if (!sameJson(rep, R4)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
       const probe = runPy(dir, `
-import sys, json
-sys.path.insert(0, ${pyPath(dir)})
-import cachesim as m
+import json, sys
+${pyLoadModule('t4cache', dir + '/cachesim.py')}
 spec = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 print(json.dumps(m.simulate(spec), sort_keys=True))
 `, [dir + '/cache.json']);
@@ -380,9 +377,8 @@ README.md（≥300 字节）：剪枝集构造（行+列/行−列+n−1）与�
       if (!rep) bad.push('report.json 缺失/非 JSON');
       else if (!sameJson(rep, R6)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       const probe = runPy(dir, `
-import sys, json
-sys.path.insert(0, ${pyPath(dir)})
-import queens as m
+import json, sys
+${pyLoadModule('t6queens', dir + '/queens.py')}
 doc = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 out = {}
 for n in doc['ns']:
@@ -541,18 +537,15 @@ README.md（≥300 字节）：三数取中 pivot 规则、Lomuto 分区不变�
       if (!rep) bad.push('report.json 缺失/非 JSON');
       else if (!sameJson((rep.results || rep).map((r) => ({ answer: r.kth ?? r.answer, comps: r.comps })), R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
       const probe = runPy(dir, `
-import importlib.util, json, sys
-# 本地 select.py 无法被常规 import shadowing（select 是 frozen 内置模块）→ 按文件路径装载
-spec = importlib.util.spec_from_file_location('t9sel', sys.argv[1])
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-doc = json.loads(${pyReadTextLiteral(`sys.argv[2]`)})
+import json, sys
+${pyLoadModule('t9sel', dir + '/select.py')}
+doc = json.loads(${pyReadTextLiteral(`sys.argv[1]`)})
 out = []
 for c in doc['cases']:
     v, c2 = m.quickselect(c['a'], c['k'])
     out.append({'kth': v, 'comps': c2})
 print(json.dumps(out))
-`, [dir + '/select.py', dir + '/cases.json']);
+`, [dir + '/cases.json']);
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
       else if (!sameJson(probe.value.map((r) => ({ answer: r.kth, comps: r.comps })), R9)) bad.push('模块 quickselect 与参考不符');
       const ac = assertCount(dir, 'test_select.py', 8);

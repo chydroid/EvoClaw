@@ -23,7 +23,18 @@ export const WS = '/home/chy/EvoClaw/data/workspace';
 export const D = (n) => `${WS}/v32-t${n}`;
 export const canon = canonShared;
 export const sameJson = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
-export const pyPath = (s) => JSON.stringify(s);
+/**
+ * Python 模块装载片段（v32 T9 教训）：`sys.path.insert + import x` 遇到内置/frozen
+ * 模块（如 select）会被无条件遮蔽——sys.path 优先级低于 builtins/frozen。
+ * 所有 Python 探针统一用 importlib 按**文件路径**装载，杜绝同类假回归。
+ * 片段把装载结果绑定为变量 `m`，调用方只需 `import json, sys`。
+ */
+export function pyLoadModule(alias, file) {
+  return `import importlib.util as _ilu\n` +
+    `_spec = _ilu.spec_from_file_location(${JSON.stringify(alias)}, ${JSON.stringify(file)})\n` +
+    `m = _ilu.module_from_spec(_spec)\n` +
+    `_spec.loader.exec_module(m)`;
+}
 
 // ═══════════════════════════ T1: 表达式求值参考实现 ═══════════════════════════
 // 钉死口径：+ - * / % 与括号；一元负号优先级高于 * / %；
