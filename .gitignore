@@ -68,6 +68,10 @@ test-*.mjs
 # v31 参考实现（随 runner 一并入库，2026-11-24）
 !scripts/test-v31-lib.mjs
 !scripts/test-v31-tasks.mjs
+# v32 参考实现（随 runner 一并入库，2026-11-25）
+!scripts/test-sim-tasks-v32.mjs
+!scripts/test-v32-lib.mjs
+!scripts/test-v32-tasks.mjs
 test-*.json
 *-report.json
 *-report.html
