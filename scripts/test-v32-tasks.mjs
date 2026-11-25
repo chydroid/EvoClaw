@@ -406,7 +406,8 @@ print(json.dumps(out, sort_keys=True))
 冻结夹具：\`ops.json\`（\`{init: [数], ops: [{op: "ins"|"del"|"undo"|"redo", ...}]}\`；
 ins 为 {pos, val}，del 为 {pos}）。禁止修改夹具。
 **必须交付（缺一不可）：history.js、history.test.js、README.md、report.json。**
-history.js 用 \`module.exports = { apply }\` 导出：apply(init, ops) -> \`{final, groups, undos, redos}\`，口径（必须逐条对上）：
+- 返回 `{final, groups, undos, redos}`；**groups = 全程创建的合并组总数（累计计数：
+  每次新建一组 +1，undo/redo 都不减少它，也不是结束时的栈占用数）**；
 - 数组下标 0 起；ins 在 pos 处插入 val（pos 可越界到末尾，视为追加）；del 删除 pos 项；
 - **合并组**：连续两次 ins，且前一次的下一个插入位置恰好等于后一次的 pos（即同位连续追加，
   后一次 pos = 前一次 pos+1）→ 并入**同一个组**；del 永远独占一组；
