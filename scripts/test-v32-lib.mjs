@@ -693,5 +693,36 @@ export function selfCheck() {
     const [v] = t9Kth(c.a, c.k);
     if (v !== sorted[c.k]) bad.push(`T9 kth≠sorted[k] (${c.k}): ${v}≠${sorted[c.k]}`);
   }
+  // T9 比较次数外部锚点（手算：中位数三选 + Lomuto，逐比较计数）
+  const comps = t9Ref().map((r) => r.comps);
+  if (JSON.stringify(comps) !== '[2,13,5,15,0,15]') bad.push('T9 comps 漂移: ' + JSON.stringify(comps));
+  return bad;
+}
+
+/**
+ * 交叉校验：核验器（test-v32-tasks.mjs）里的硬编码探针向量必须由参考实现复算得出。
+ * v32 F1 教训：T8 探针期望自环查询 true、参考实现却丢弃自环给 false——两边
+ * 各自 selfCheck 都不报错，只有「探针向量 vs 参考」交叉校验能挡住这类三方撕裂。
+ */
+export const PROBE_VECTORS = {
+  t2Prefix: { input: 'abab', expected: [0, 0, 1, 2] },
+  t2Overlap: { input: ['abcababcab', 'abcab'], expected: [0, 5] },
+  t5Lcg1: { seed: 0, expected: 12345 },
+  t7MergeGroups: { init: [0], ops: [{ op: 'ins', pos: 1, val: 1 }, { op: 'ins', pos: 2, val: 2 }], expected: { final: [0, 1, 2], groups: 1, undos: 0, redos: 0 } },
+  t8SelfLoop: { spec: { n: 2, edges: [[0, 0]], queries: [[0, 0], [0, 1]] }, expected: { results: [true, false], total: 0, maxOut: [0, 0] } },
+};
+
+export function crossCheck() {
+  const bad = [];
+  const p = PROBE_VECTORS;
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  if (!eq(kmpPrefix(p.t2Prefix.input), p.t2Prefix.expected)) bad.push('cross T2 prefix');
+  if (!eq(kmpAll(...p.t2Overlap.input), p.t2Overlap.expected)) bad.push('cross T2 overlap');
+  if (!eq(t5Backoff({ attempts: 2, baseMs: 1, factor: 1, capMs: 1, seed: p.t5Lcg1.seed }).draws[0] % 2147483648, p.t5Lcg1.expected % 2147483648)) {
+    // LCG 首步进 x=(0*1103515245+12345)%2^31=12345，用 backoff draws 复算
+    bad.push('cross T5 lcg1');
+  }
+  if (!eq(t7Apply(p.t7MergeGroups.init, p.t7MergeGroups.ops), p.t7MergeGroups.expected)) bad.push('cross T7 mergeGroups');
+  if (!eq(t8Closure(p.t8SelfLoop.spec), p.t8SelfLoop.expected)) bad.push('cross T8 selfLoop');
   return bad;
 }

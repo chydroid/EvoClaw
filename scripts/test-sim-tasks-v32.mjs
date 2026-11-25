@@ -16,19 +16,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { PORT, apiRequest, snapshotStats, sleep, FIXTURE_HASHES, invariantCheck, defineChecks } from './v14/lib.mjs';
-import { D, WS, seed, saveFixtureHashes, loadFixtureHashes, selfCheck } from './test-v32-lib.mjs';
+import { D, WS, seed, saveFixtureHashes, loadFixtureHashes, selfCheck, crossCheck } from './test-v32-lib.mjs';
 import { tasks as rawTasks } from './test-v32-tasks.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const tasks = defineChecks(rawTasks);
 
 async function main() {
-  const bad = selfCheck();
+  const bad = [...selfCheck(), ...crossCheck()];
   if (bad.length) {
     console.error('FATAL harness 自校准失败: ' + bad.join('; '));
     process.exit(2);
   }
-  console.log('✅ harness 自校准通过（T1-T9 参考实现）\n');
+  console.log('✅ harness 自校准通过（T1-T9 参考实现 + 探针向量交叉校验）\n');
 
   console.log('='.repeat(80));
   console.log('EvoClaw v32 工作任务压测 — 9 任务（表达式/KMP/Bloom/缓存/退避熔断/N皇后/撤销重做/闭包/quickselect）');
