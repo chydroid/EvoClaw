@@ -1,5 +1,5 @@
 /**
- * Browser 补全工具集 — 对标 Hermes 8 个缺失能力（hermes-alignment-next.md Tier 7）：
+ * Browser 补全工具集 — 对标 Hermes 8 个缺失能力（Hermes 对齐 Tier 7）：
  *
  *   browser_back        ← browser_tool.py browser_back（page.goBack + SSRF 复查）
  *   browser_press       ← browser_tool.py browser_press（键盘按键）

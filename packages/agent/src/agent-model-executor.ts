@@ -4233,7 +4233,7 @@ export class AgentModelExecutor {
    *
    * 已知限制（首期接线）：runBackgroundReview 传递 toolWhitelist 但 chatFn 单次调用
    * 不执行工具循环——评审者通过自然语言输出"应保存记忆/更新技能"的文本，不落盘写入。
-   * 后续升级为完整 tool loop 见 docs/hermes-alignment-round2.md。
+   * 后续升级为完整 tool loop（Hermes 对齐第二轮设计稿，本地归档不入库）。
    */
   private async runReviewFork(
     sessionId: string,

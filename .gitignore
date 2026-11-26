@@ -107,6 +107,11 @@ t[0-9]*-[0-9]*-tokens/
 # Archived useless files moved out of the repo but kept locally
 nouse/
 
+# Hermes/OpenSpace 对齐过程稿（逐轮调研 + 路线图 + 计划）：一次性工作记录，
+# 不是对外文档；已移到本地 nouse/docs-archive/，不再入库。
+docs/hermes-alignment-*.md
+docs/openspace-alignment-*.md
+
 # Runtime data maintained by evolution engine (auto-recreated)
 LEARNINGS.md
 

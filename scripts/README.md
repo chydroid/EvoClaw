@@ -6,7 +6,7 @@ EvoClaw 仓库级工具脚本。这些脚本不属于 pnpm workspace 包，独�
 
 ### release-prepare.mjs — 发布准备（P3-6 发布流水线本地阶段）
 
-按 CHANGELOG.md 成文的 patch-only 规则递增根版本号，校验 changelog 条目（`## [X.Y.Z] - 日期` + 根因/改动 + 验证/测试小节）后**原子写入**根 package.json。对标 Hermes stable release pipeline（`docs/hermes-alignment-roadmap.md` §四 P3-6）。
+按 CHANGELOG.md 成文的 patch-only 规则递增根版本号，校验 changelog 条目（`## [X.Y.Z] - 日期` + 根因/改动 + 验证/测试小节）后**原子写入**根 package.json。对标 Hermes stable release pipeline（Hermes 对齐路线图 §四 P3-6）。
 
 ```bash
 pnpm release:prepare              # patch 递增 + 校验 + 写入
