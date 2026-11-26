@@ -234,6 +234,21 @@ describe("WeixinPluginAdapter - 重复回复去重", () => {
 });
 
 describe("matchSimpleGreeting - 简单问候快速匹配", () => {
+  // ── 显式指令不得被闲聊模板劫持（2026-11-26 实证事故） ──
+  // 用户发「请只回复两个字：收到」，旧实现按归一化长度判定后可能误中模板，
+  // 把明确指令吞成自我介绍。闸门统一走 isQuickReplyEligible（按原始长度 + 指令否决）。
+  it.each([
+    "请只回复两个字：收到",
+    "只回复两个字：收到",
+    "只输出 OK",
+    "不要任何解释",
+    "以 JSON 格式返回",
+    // 靠标点凑长（归一化后很短，原始长度超限）
+    "啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊，啊",
+  ])("显式指令/超长消息不得命中快捷回复: %s", (text) => {
+    expect(matchSimpleGreeting(text)).toBeNull();
+  });
+
   // ── 存在性询问 ──
   const presenceReplies = repliesOf("presence");
 

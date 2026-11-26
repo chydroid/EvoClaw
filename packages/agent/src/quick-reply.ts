@@ -639,6 +639,58 @@ function normalize(text: string): string {
   return text.trim().toLowerCase().replace(/[？?。！!，,；;：:、\s]+/g, "");
 }
 
+/**
+ * 用户是否给了**显式输出指令**（"只回复两个字""只输出 JSON""不要解释"…）。
+ *
+ * ★ 2026-11-26 实证：用户发「请只回复两个字：收到」，被 SemanticQuickReply
+ * 余弦相似度判成 capability 闲聊，回了一段自我介绍——**用户的明确指令被
+ * 静默丢弃**。根因是把「用户消息」当成弱信号：模糊相似度一旦过阈值就劫持，
+ * 而指令本身的权重根本没参与判定。
+ *
+ * 设计原则（非对称代价）：拿不准一律交给 LLM。误判成任务只是多花一次模型
+ * 调用；误判成闲聊会吞掉用户的真实意图——后者代价高一个数量级。
+ *
+ * 因此只要出现显式输出指令，quick reply 一律让路（返回 null → 走 LLM）。
+ */
+const EXPLICIT_DIRECTIVE_PATTERNS: RegExp[] = [
+  // 输出长度/形态约束
+  /只(?:需|要|用)?(?:回复|回答|输出|返回|说|给我|告诉我)/,
+  /(?:回复|回答|输出|返回)(?:中)?只/,
+  /[一二两三四五六七八九十\d]+\s*个?\s*字/,
+  /(?:不要|无需|不用|别|勿)(?:做)?(?:任何)?(?:解释|说明|废话|多余|寒暄|客套)/,
+  /(?:原样|一字不差|照抄|逐字)/,
+  /(?:输出|返回|回答|回复)(?:格式|形式|样式)/,
+  /(?:格式|形式|样式)(?:返回|输出|回答|回复)/,
+  /(?:严格|务必|必须)(?:按|按照|依照|遵循|符合)/,
+  /(?:以|用)\s*(?:json|JSON|yaml|YAML|xml|XML|markdown|表格)\s*(?:格式|形式|返回|输出)/i,
+  // 英文
+  /\b(?:only|just)\s+(?:reply|respond|output|return|say|answer|write)\b/i,
+  /\b(?:reply|respond|answer|output)\s+(?:with\s+)?only\b/i,
+  /\bno\s+(?:explanation|explanations|preamble|chatter)\b/i,
+  /\b\d+\s+words?\b/i,
+];
+
+export function hasExplicitDirective(message: string): boolean {
+  return EXPLICIT_DIRECTIVE_PATTERNS.some((p) => p.test(message));
+}
+
+/**
+ * 快捷回复的输入闸门：只有「短、且没有任何指令意味」的消息才允许被模板
+ * 或语义分类器接管。任一不满足 → 交给 LLM。
+ *
+ * 长度按**原始消息**计（不是归一化后的）——否则「啊，啊，啊…」这类靠标点
+ * 凑长的消息会被归一化压短而误匹配（闲聊正则只应对完全匹配的短句生效）。
+ */
+const QUICK_REPLY_MAX_ORIGINAL_LEN = 20;
+
+export function isQuickReplyEligible(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) return false;
+  if (trimmed.length > QUICK_REPLY_MAX_ORIGINAL_LEN) return false;
+  if (hasExplicitDirective(trimmed)) return false;
+  return true;
+}
+
 /** Returns true when the local hour is in the "morning" / "afternoon" / "evening" / "night" window. */
 function currentTimeBucket(): "morning" | "afternoon" | "evening" | "night" {
   const h = new Date().getHours();
@@ -659,8 +711,8 @@ function currentTimeBucket(): "morning" | "afternoon" | "evening" | "night" {
 export function tryQuickReply(deps: QuickReplyDeps, message: string): string | null {
   const normalized = normalize(message);
   if (!normalized) return null;
-  // 限制最大长度：超过 18 字符（不含标点）的肯定不是简单问候
-  if (normalized.length > 18) return null;
+  // 输入闸门：长消息 / 带显式指令 → 不是简单问候，交给 LLM
+  if (!isQuickReplyEligible(message)) return null;
 
   for (const entry of SIMPLE_GREETING_ENTRIES) {
     if (entry.pattern.test(normalized)) {
@@ -675,7 +727,7 @@ export function tryQuickReply(deps: QuickReplyDeps, message: string): string | n
 export function tryQuickReplyExtended(deps: QuickReplyDeps, message: string): string | null {
   const normalized = normalize(message);
   if (!normalized) return null;
-  if (normalized.length > 18) return null;
+  if (!isQuickReplyEligible(message)) return null;
 
   // For hello/identity, append the capability block so the user gets a
   // useful first-time answer instead of just a greeting. For "晚安" at

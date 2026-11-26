@@ -17,7 +17,7 @@
  */
 
 import type { PersonaConfig } from "@evoclaw/core";
-import { __test } from "./quick-reply";
+import { __test, hasExplicitDirective, isQuickReplyEligible } from "./quick-reply";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -28,8 +28,20 @@ interface EmbeddingProvider {
 }
 
 export interface SemanticQuickReplyConfig {
-  /** Minimum cosine similarity to accept a category match (0–1). Default 0.45 */
+  /** Minimum cosine similarity to accept a category match (0–1). Default 0.6 */
   threshold?: number;
+  /**
+   * 最小 top1−top2 分差（margin）。默认 0.05。
+   *
+   * ★ 2026-11-26 实证：用户发「请只回复两个字：收到」，top3 为
+   * capability=0.7195 / worry=0.7106 / identity=0.7103 —— 冠军与亚军只差
+   * 0.009，纯属 embedding 噪声。旧实现只看绝对阈值 0.45，于是"谁排第一
+   * 谁赢"，把用户明确指令劫持成自我介绍。
+   *
+   * 语义：分类器自己都拿不准时，宁可交给 LLM。误判成任务只多花一次模型
+   * 调用；误判成闲聊会吞掉用户意图，代价高一个数量级。
+   */
+  margin?: number;
   /** Maximum message length (chars) to consider. Default 40 */
   maxMessageLength?: number;
 }
@@ -138,10 +150,13 @@ export class SemanticQuickReply {
   private initialized = false;
   private initPromise: Promise<void> | null = null;
   private threshold: number;
+  private margin: number;
   private maxMessageLength: number;
 
   constructor(config?: SemanticQuickReplyConfig) {
-    this.threshold = config?.threshold ?? 0.45;
+    // 0.45 → 0.6：旧阈值对本地 embedding 形同虚设（闲聊短句普遍 0.7+）
+    this.threshold = config?.threshold ?? 0.6;
+    this.margin = config?.margin ?? 0.05;
     this.maxMessageLength = config?.maxMessageLength ?? 40;
   }
 
@@ -237,6 +252,10 @@ export class SemanticQuickReply {
     const trimmed = message.trim();
     if (trimmed.length < 1 || trimmed.length > this.maxMessageLength) return null;
 
+    // ★ 输入闸门：显式指令（"只回复两个字"…）绝不能被闲聊模板劫持。
+    // 语义分类器是"模糊匹配"，比正则表更容易误伤，闸门必须前置。
+    if (!isQuickReplyEligible(trimmed)) return null;
+
     // Skip if provider not available
     if (!this.provider) return null;
 
@@ -274,6 +293,18 @@ export class SemanticQuickReply {
 
     if (!bestCategory || bestScore < this.threshold) return null;
 
+    // ★ margin 判据：冠军必须显著领先亚军，否则说明分类器在瞎猜。
+    // 实测事故里 top1−top2 = 0.009，而三个候选语义毫无关系。
+    const runnerUp = scores[1]?.score ?? -1;
+    const gap = bestScore - runnerUp;
+    if (gap < this.margin) {
+      process.stderr.write(
+        `[SemanticQuickReply] Ambiguous match (gap=${gap.toFixed(4)} < margin=${this.margin}), ` +
+        `falling through to LLM\n`,
+      );
+      return null;
+    }
+
     process.stderr.write(`[SemanticQuickReply] Matched category="${bestCategory}" score=${bestScore.toFixed(4)} for "${trimmed.slice(0, 30)}"\n`);
 
     // Find the reply pool for this category from the regex-based table
@@ -297,6 +328,10 @@ export class SemanticQuickReply {
     const trimmed = message.trim();
     if (trimmed.length < 2) return null;
     if (!this.provider) return null;
+    // 显式输出指令不是"意图类别"问题，别让下游拿它去自动触发 skill 搜索。
+    // 注意：这里**只**否决显式指令，不套 20 字闸门——action_task/skill_install
+    // 的合法表述本来就比闲聊长（如"帮我创建一个文件并写入内容"）。
+    if (hasExplicitDirective(trimmed)) return null;
 
     await this.initialize();
     if (this.centroids.length === 0) return null;
@@ -319,12 +354,13 @@ export class SemanticQuickReply {
   }
 
   /** Expose state for diagnostics */
-  getStatus(): { initialized: boolean; centroidCount: number; provider: boolean; threshold: number } {
+  getStatus(): { initialized: boolean; centroidCount: number; provider: boolean; threshold: number; margin: number } {
     return {
       initialized: this.initialized,
       centroidCount: this.centroids.length,
       provider: !!this.provider,
       threshold: this.threshold,
+      margin: this.margin,
     };
   }
 }

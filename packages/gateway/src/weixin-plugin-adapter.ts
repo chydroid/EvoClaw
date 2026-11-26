@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import crypto from "crypto";
 import { EventBus } from "@evoclaw/core";
-import { AgentModelExecutor } from "@evoclaw/agent";
+import { AgentModelExecutor, isQuickReplyEligible } from "@evoclaw/agent";
 import { estimateTaskComplexity } from "./protocol-adapter";
 import { atomicWriteFileSync } from "./atomic-write";
 
@@ -662,23 +662,21 @@ export function matchSimpleGreeting(text: string): string | null {
   const normalized = text.trim().toLowerCase().replace(/[？?。！!，,；;：:、\s]+/g, "");
   if (!normalized) return null;
 
-  // 限制最大长度：超过 12 字符（不含标点）的肯定不是简单问候
-  if (normalized.length > 12) return null;
+  // ★ 2026-11-26：统一走输入闸门（与 agent 侧同一条判据）。
+  // 长度按**原始消息**计——旧实现按归一化后长度（>12）判定，"啊，啊，啊…"
+  // 这类靠标点凑长的消息会被压短而误匹配；且显式指令（"只回复两个字"）
+  // 必须直接让路，不能被模板劫持。
+  if (!isQuickReplyEligible(text)) return null;
 
   // 先尝试匹配简单问候模式（具体模式优先于泛化模式）
   for (const entry of SIMPLE_GREETING_ENTRIES) {
     if (entry.pattern.test(normalized)) {
-      // 如果匹配到 react/wow/laugh 等，再做一次任务动词检查兜底
-      // （react 模式是单字符的"泛匹配"，可能误中带任务的短句）
-      // 实际上"react"分类内的单字符模式不会带任务动词，已在模式上限定了意图
       return pickByHash(entry.replies, normalized);
     }
   }
 
-  // 没匹配到任何简单问候模式 → 兜底任务动词检查 → 返回 null 走 LLM
-  if (/(帮我|请帮|请把|麻烦|请你|想要|需要|去做|帮我做|写一个|写个|写一段|搜索|查找|查一下|分析|总结|翻译|解释|生成|创建|删除|修改|打开|关闭|运行|执行|安装|卸载|部署)/.test(normalized)) {
-    return null;
-  }
+  // 没匹配到任何简单问候模式 → 走 LLM
+  // （旧实现在这里还有一段"任务动词检查"，但两个分支都 return null，是死代码）
   return null;
 }
 

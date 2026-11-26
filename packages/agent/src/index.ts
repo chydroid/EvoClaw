@@ -21,6 +21,8 @@ export type { ToolRuntimeContext } from "./tool-call-context";
 export { DurableTaskRunner, getDurableTaskRunner, resetDurableTaskRunner } from "./durable-task-runner";
 export type { DurableTask, DurableTaskStatus, ResumeDriver, DeliverFn } from "./durable-task-runner";
 export { reconcileCompletionTruthfulness, claimsCompletion, hasActionIntent } from "./completion-truthfulness";
+// 快捷回复输入闸门：闲聊模板/语义分类器的统一准入判据（gateway 侧同族复用）
+export { hasExplicitDirective, isQuickReplyEligible } from "./quick-reply";
 export type { ReconcileInput, ReconcileResult, PendingPermission } from "./completion-truthfulness";
 export {
   extractRequiredDeliverables,

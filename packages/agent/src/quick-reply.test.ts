@@ -1,5 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { tryAstronomyReply, hasActionIntent } from "./quick-reply";
+import {
+  tryAstronomyReply,
+  hasActionIntent,
+  hasExplicitDirective,
+  isQuickReplyEligible,
+  tryQuickReply,
+  tryQuickReplyExtended,
+} from "./quick-reply";
 
 // ═══════════════════════════════════════════════════════════
 // 测试套件：天文时刻本地计算快速通道（tryAstronomyReply）
@@ -126,6 +133,91 @@ describe("quick-reply > tryAstronomyReply", () => {
   it("API 异常时应返回 null 并优雅降级", async () => {
     const reply = await tryAstronomyReply("告诉我北京的日出日落时间");
     expect(reply).toBeNull();
+  });
+});
+
+describe("quick-reply > hasExplicitDirective（用户显式输出指令不得被闲聊劫持）", () => {
+  /**
+   * 2026-11-26 实证事故：用户发「请只回复两个字：收到」，SemanticQuickReply
+   * 余弦相似度判成 capability 闲聊（top1=0.7195 / top2=0.7106，差 0.009），
+   * 回了"主人需要啥我就有啥用~ 写代码我能…"，用户的明确指令被静默丢弃。
+   */
+  it("事故原句必须识别为显式指令", () => {
+    expect(hasExplicitDirective("请只回复两个字：收到")).toBe(true);
+    expect(hasExplicitDirective("只回复两个字：收到")).toBe(true);
+    expect(hasExplicitDirective("只输出 OK")).toBe(true);
+  });
+
+  it("常见输出约束均识别", () => {
+    const directives = [
+      "只回答是或否",
+      "回复中只包含数字",
+      "不要任何解释",
+      "不要废话",
+      "原样输出下面这段",
+      "按格式返回",
+      "必须按照模板填写",
+      "以 JSON 格式返回结果",
+      "用 json 格式输出",
+      "Reply with only the word OK",
+      "Answer only yes or no",
+      "no explanation needed",
+      "respond in 10 words",
+    ];
+    for (const d of directives) {
+      expect(hasExplicitDirective(d), `未识别: ${d}`).toBe(true);
+    }
+  });
+
+  it("普通闲聊不误判为指令", () => {
+    const chats = ["你好", "在吗", "今天怎么样", "谢谢你", "晚安", "哈哈哈", "你在忙吗"];
+    for (const c of chats) {
+      expect(hasExplicitDirective(c), `误判: ${c}`).toBe(false);
+    }
+  });
+});
+
+describe("quick-reply > isQuickReplyEligible（拿不准一律交给 LLM）", () => {
+  it("短闲聊放行", () => {
+    expect(isQuickReplyEligible("你好")).toBe(true);
+    expect(isQuickReplyEligible("在吗？")).toBe(true);
+    expect(isQuickReplyEligible("收到")).toBe(true);
+  });
+
+  it("显式指令一律不放行（即使很短）", () => {
+    expect(isQuickReplyEligible("只回复两个字：收到")).toBe(false);
+    expect(isQuickReplyEligible("只输出OK")).toBe(false);
+  });
+
+  it("靠标点凑长的消息不放行（长度按原始消息计）", () => {
+    // 归一化后只剩 21 个"啊"，旧实现按归一化长度判 → 可能误中 react 模板
+    const padded = "啊，" + "啊，".repeat(19) + "啊";
+    expect(isQuickReplyEligible(padded)).toBe(false);
+  });
+
+  it("超过 20 字的正常长消息不放行", () => {
+    expect(isQuickReplyEligible("请帮我分析一下这个复杂问题到底出在哪里了呢")).toBe(false);
+  });
+});
+
+describe("quick-reply > 事故回归：显式指令不得被模板回复", () => {
+  const deps = {
+    persona: { name: "EvoClaw", masterTerm: "主人", title: "助手" },
+    registeredTools: new Map(),
+    config: { model: "m", provider: "p" },
+    providers: [],
+    hasBeenGreeted: true,
+    workspacePath: "/tmp",
+  } as unknown as Parameters<typeof tryQuickReply>[0];
+
+  it("「请只回复两个字：收到」不得命中任何快捷回复", () => {
+    expect(tryQuickReply(deps, "请只回复两个字：收到")).toBeNull();
+    expect(tryQuickReplyExtended(deps, "请只回复两个字：收到")).toBeNull();
+  });
+
+  it("真正的闲聊仍然命中（闸门不能把功能关死）", () => {
+    expect(tryQuickReply(deps, "你好")).not.toBeNull();
+    expect(tryQuickReply(deps, "在吗")).not.toBeNull();
   });
 });
 
