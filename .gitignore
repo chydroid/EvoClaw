@@ -112,6 +112,20 @@ nouse/
 docs/hermes-alignment-*.md
 docs/openspace-alignment-*.md
 
+# 任务过程产物（分析报告 / 盘点快照 / 审计输出 / 临时骨架）：agent 跑任务时
+# 落在仓库根的一次性文件，2026-11-26 起不入库（已归档到 nouse/root-junk/）。
+# 注意：仓库根的 AGENTS.md / README.md / CHANGELOG.md 等真文档不在此列。
+/MEMORY.md
+/inventory.md
+/audit-report-evoclaw.json
+/audit-run-output.txt
+/performance-analysis.md
+/performance-optimization-roadmap.md
+/test-output.txt
+/actor-system.ts
+/packages/agent-model-executor.ts
+/gaps.py
+
 # Runtime data maintained by evolution engine (auto-recreated)
 LEARNINGS.md
 

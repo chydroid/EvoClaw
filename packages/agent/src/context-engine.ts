@@ -1,7 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as crypto from "crypto";
-// ★ P1 性能优化（performance-analysis.md 建议 3）：估算结果 LRU 缓存。
+// ★ P1 性能优化（2026-11 性能分析建议 3，分析稿已归档不入库）：估算结果 LRU 缓存。
 // 同一段 system prompt / 历史消息在多轮、多估算点间反复计算，命中率可观。
 import { estimateTokensCached } from "./token-estimate-cache";
 
