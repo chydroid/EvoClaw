@@ -321,7 +321,11 @@ const messageBubbleStyle = (role: string, content?: unknown): CSSProperties => (
     ? "var(--user-bubble-bg, var(--accent, #58a6ff))"
     : "var(--bot-bubble-bg, var(--bg-tertiary, #21262d))",
   color: role === "user" ? "#fff" : "var(--text-primary, #c9d1d9)",
-  border: role === "user" ? "none" : "1px solid var(--bot-bubble-border, var(--border, #30363d))",
+  // 用户气泡边框**常驻** 1px 淡青细线：宽度恒定，hover 只换颜色，避免
+  // 边框 0→1px 改变内容盒宽度导致文字重排（2026-11-26 用户诉求）。
+  border: role === "user"
+    ? "1px solid var(--user-bubble-border, rgba(125, 211, 252, 0.45))"
+    : "1px solid var(--bot-bubble-border, var(--border, #30363d))",
   fontSize: "14px",
   lineHeight: "1.6",
   wordBreak: "break-word",
@@ -371,15 +375,19 @@ function getMessageContainerStyle(msg: { role: string; content: string }, hovere
       transition: "box-shadow 0.15s",
     };
   }
+  const base = messageBubbleStyle(msg.role, msg.content);
+  const isUser = msg.role === "user";
   return {
-    ...messageBubbleStyle(msg.role, msg.content),
-    border: hovered
-      ? "1px solid var(--accent, #58a6ff)"
-      : messageBubbleStyle(msg.role, msg.content).border,
+    ...base,
+    // 边框宽度恒为 1px（base 已给出），hover 仅换 borderColor → 不参与布局、不重排。
+    // 用户气泡：常驻淡青细线，悬停变亮青；其余角色：悬停变主题色。
+    borderColor: hovered
+      ? (isUser ? "var(--user-bubble-border-hover, rgba(125, 211, 252, 0.95))" : "var(--accent, #58a6ff)")
+      : (isUser ? "var(--user-bubble-border, rgba(125, 211, 252, 0.45))" : "var(--bot-bubble-border, var(--border, #30363d))"),
     boxShadow: hovered
       ? "0 0 12px rgba(88, 166, 255, 0.2)"
       : "none",
-    transition: "border 0.15s, box-shadow 0.15s",
+    transition: "border-color 0.15s, box-shadow 0.15s",
     position: "relative",
     paddingTop: "32px",
   };
