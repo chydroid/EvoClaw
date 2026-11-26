@@ -100,6 +100,9 @@ _music_dl_*.py
 tests-tmp/
 local-models/
 screenshots/
+# 压测/工具行为核验产生的仓库根临时夹具（t<轮次>-<任务号> 命名），不入库
+t[0-9]*-[0-9]*/
+t[0-9]*-[0-9]*-tokens/
 
 # Archived useless files moved out of the repo but kept locally
 nouse/
