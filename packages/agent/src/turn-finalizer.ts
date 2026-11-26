@@ -25,6 +25,8 @@
  *    在回复末尾追加结构化工状态块。
  *    这不是提示词 nudge——它是确定性的后处理，
  *    从 createdFiles/modifiedFiles/successfulToolCalls 构建。
+ *    ★ 2026-11-26：仅对**复杂任务**生效（有文件变更 / 工具调用 ≥5 /
+ *      有失败写入）。简单问答（查天气、查股价）不再被追加完成总结。
  *
  * 3. 碎片终止守卫（Degenerate Final Guard）
  *    当 turn 做了工具工作后以碎片（≤24 字符、无句末标点）结束时，
@@ -56,6 +58,14 @@ export interface ToolExecutionStats {
   executedCommands: string[];
   /** 失败的文件写入操作（path + error）——用于文件变更 footer */
   failedFileMutations?: Array<{ path: string; error: string }>;
+  /**
+   * 本轮通过 shell_exec 执行的**写入类**命令数（echo > / tee / cat > 等）。
+   *
+   * ★ 2026-11-26：createdFiles 只跟踪 file_write/text_to_speech，用 shell 建
+   * 文件的任务会被误判成「零文件变更」的简单任务。复杂任务判据必须把 shell
+   * 写入算进去，否则「用 shell 建 3 个文件」这类任务得不到完成汇报。
+   */
+  shellWriteOpCount?: number;
 }
 
 /** 对话消息的最小结构（用于静默停止检测） */
@@ -121,6 +131,18 @@ export interface FinalizerVerdict {
 
 /** 碎片终止的最大字符数（对标 Hermes STOP_PATH_MIN_CHARS 的补集） */
 const DEGENERATE_FINAL_MAX_CHARS = 24;
+
+/**
+ * 完成状态强制器（Completion Status Enforcer）
+ *
+ * ★ 2026-11-26 分级（用户诉求：简单任务不要任务完成的总结）：
+ *   旧实现只要「本轮执行过工具 + 回复无完成标记」就无条件追加状态块。
+ *   实测一条查股价的问答（2 次工具调用）在模型已给出完整回答后，仍被追加
+ *   「📋 任务状态…✅ 已完成（2 次工具调用）」——纯噪音。
+ *
+ *   现在只在**复杂任务**上强制：把「完成汇报」当成复杂任务的交付要求，
+ *   而不是所有工具调用的默认收尾。判据见 isComplexWork()。
+ */
 
 /** 完成状态标记正则——检测回复是否已包含完成状态汇报 */
 const COMPLETION_STATUS_PATTERNS = [
@@ -242,6 +264,12 @@ function synthesizeSilentStopSummary(
   _conversationMessages: Array<ConversationMessageLite>,
   toolStats: ToolExecutionStats,
 ): string {
+  // ★ 2026-11-26 分级：简单任务（无文件变更、工具调用少）不该得到一整块
+  // 结构化状态表——用户要的是"做完了没有"，一句即可。
+  if (!isComplexWork(toolStats)) {
+    return "✅ 已处理完成（详细执行记录见上方工具调用）。";
+  }
+
   const parts: string[] = [];
 
   parts.push("📋 **任务状态汇报**（系统自动合成——模型在工具执行后未给出文字总结）");
@@ -271,6 +299,29 @@ function synthesizeSilentStopSummary(
 // ── 完成状态强制器 ─────────────────────────────────────────────────────────────
 
 /**
+ * 判断本轮工作是否「复杂到值得一份完成状态汇报」。
+ *
+ * 判据取**真实工作量**，不取用户消息长度（"帮我把这 3 个文件里的 API 改一下"
+ * 很短但很重；"查一下今天股价"很长但很轻）：
+ *
+ *   1. 有文件变更（createdFiles / modifiedFiles 非空）—— 有交付物
+ *   2. 或工具调用 ≥ COMPLEX_MIN_TOOL_CALLS（多步骤）
+ *   3. 或有失败的文件写入（必须让用户知道）
+ *
+ * 简单问答（查天气/股价/日期，1–3 次只读工具、零文件变更）不满足任一条件，
+ * 不追加状态块——模型已经用自然语言答完了。
+ */
+const COMPLEX_MIN_TOOL_CALLS = 5;
+
+export function isComplexWork(toolStats: ToolExecutionStats): boolean {
+  if (toolStats.createdFiles.length > 0 || toolStats.modifiedFiles.length > 0) return true;
+  if ((toolStats.failedFileMutations?.length ?? 0) > 0) return true;
+  // shell 写入也算交付物（createdFiles 只跟踪 file_write）
+  if ((toolStats.shellWriteOpCount ?? 0) > 0) return true;
+  return toolStats.successful + toolStats.failed >= COMPLEX_MIN_TOOL_CALLS;
+}
+
+/**
  * 检测回复是否已包含完成状态汇报。
  *
  * 对标 Hermes SOUL.md："finished work gets a short report of what changed,
@@ -287,9 +338,12 @@ export function hasCompletionStatusReport(reply: string): boolean {
  * 强制追加完成状态块。
  *
  * 触发条件（全部满足）：
- * 1. 本轮执行过工具（successful + failed > 0）
+ * 1. 本轮是**复杂任务**（isComplexWork：有文件变更 / 工具调用 ≥5 / 有失败写入）
  * 2. 回复不含完成状态标记
  * 3. 回复非空（空回复由静默停止检测器处理）
+ *
+ * ★ 2026-11-26：条件 1 由「执行过工具」收紧为「复杂任务」。简单问答不再被
+ *   追加状态块（用户诉求：简单任务不要完成总结）。
  *
  * 动作：在回复末尾追加结构化工状态块。
  * 这不是提示词 nudge——它是确定性的后处理，
@@ -314,12 +368,12 @@ export function enforceCompletionStatus(
     };
   }
 
-  // 条件 1：本轮执行过工具
-  if (toolStats.successful === 0 && toolStats.failed === 0) {
+  // 条件 1：简单任务不追加完成汇报（2026-11-26 分级）
+  if (!isComplexWork(toolStats)) {
     return {
       appended: false,
       statusBlock: "",
-      reason: "No tools executed this turn",
+      reason: "Simple task (no file changes, few tool calls) — completion report not required",
     };
   }
 
@@ -643,9 +697,12 @@ export function explainAbnormalExit(
  * 执行顺序（对标 Hermes turn_finalizer.finalize_turn 的后处理管线）：
  * 1. 静默停止检测 → 若触发，合成状态摘要作为 finalReply
  * 2. 碎片终止检测 → 若触发，标记 shouldContinue
- * 3. 完成状态强制 → 若触发，追加结构状态块
+ * 3. 完成状态强制 → 若触发，追加结构状态块（★仅复杂任务）
  * 4. 文件变更 Footer → 若触发，追加失败文件说明（对标 Hermes _append_file_mutation_footer）
  * 5. 异常退出说明 → 若触发，追加退出原因解释（对标 Hermes _explain_abnormal_exit）
+ *
+ * 分级原则（2026-11-26）：简单任务只要一句自然语言答复，不需要结构化总结。
+ * 「完成汇报」是复杂任务的交付要求，不是所有工具调用的默认收尾。
  *
  * 设计原则：
  *   - 纯函数，不调 LLM

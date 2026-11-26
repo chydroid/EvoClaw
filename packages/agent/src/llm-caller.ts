@@ -9501,6 +9501,9 @@ if (deps.contextPruningManager && !prunerNoop) {
               .filter((p) => p.length > 0),
             executedCommands: extractExecutedShellCommands(executedToolCalls),
             failedFileMutations: failedFileMutations.length > 0 ? failedFileMutations : undefined,
+            // shell 写入命令数：createdFiles 只跟踪 file_write，用 shell 建文件的
+            // 任务需要这个计数才能被判定为复杂任务（2026-11-26）
+            shellWriteOpCount: writeOps().filter((w) => w.name === "shell_exec").length,
           };
           const liteMessages: Array<ConversationMessageLite> = conversationMessages.map((m) => ({
             role: m.role,

@@ -20,6 +20,7 @@ import {
   detectDegenerateFinal,
   runTurnFinalizer,
   hasCompletionStatusReport,
+  isComplexWork,
   buildFileMutationFooter,
   buildVerificationFailureFooter,
   explainAbnormalExit,
@@ -122,12 +123,25 @@ describe("detectSilentStop", () => {
       { role: "user", content: "跑测试" },
       { role: "tool", content: "test output" },
     ]);
+    // 复杂任务（有文件变更）才会得到含命令明细的结构化摘要
     const verdict = detectSilentStop(messages, "", makeToolStats({
       successful: 1,
+      createdFiles: ["/tmp/x.py"],
       executedCommands: ["npm test", "pnpm typecheck"],
     }));
     expect(verdict.isSilentStop).toBe(true);
     expect(verdict.summary).toContain("npm test");
+  });
+
+  it("简单任务静默停止 → 只给一句简短说明（2026-11-26 分级）", () => {
+    const messages = makeMessages([
+      { role: "user", content: "查股价" },
+      { role: "tool", content: "quote" },
+    ]);
+    const verdict = detectSilentStop(messages, "", makeToolStats({ successful: 2 }));
+    expect(verdict.isSilentStop).toBe(true);
+    expect(verdict.summary).toContain("已处理完成");
+    expect(verdict.summary).not.toContain("任务状态汇报");
   });
 
   it("碎片回复也触发静默停止", () => {
@@ -197,6 +211,71 @@ describe("enforceCompletionStatus", () => {
     expect(verdict.appended).toBe(true);
     expect(verdict.statusBlock).toContain("✅ 已完成");
     expect(verdict.statusBlock).toContain("10 次工具调用");
+  });
+});
+
+describe("enforceCompletionStatus — 任务复杂度分级（2026-11-26 用户诉求）", () => {
+  /**
+   * 用户诉求：「简单任务不要任务完成的总结，只有复杂任务完成后才要总结」。
+   *
+   * 实证噪音：一条查股价的问答（2 次工具调用、零文件变更）在模型已给出完整
+   * 回答后，仍被追加「📋 任务状态…✅ 已完成（2 次工具调用）」。
+   */
+
+  it("isComplexWork：有文件变更 → 复杂", () => {
+    expect(isComplexWork(makeToolStats({ successful: 1, createdFiles: ["/tmp/a.py"] }))).toBe(true);
+    expect(isComplexWork(makeToolStats({ successful: 1, modifiedFiles: ["/tmp/b.ts"] }))).toBe(true);
+  });
+
+  it("isComplexWork：有失败的文件写入 → 复杂（必须让用户知道）", () => {
+    expect(isComplexWork(makeToolStats({
+      successful: 1,
+      failedFileMutations: [{ path: "/tmp/c.py", error: "EACCES" }],
+    }))).toBe(true);
+  });
+
+  it("isComplexWork：工具调用 ≥5 → 复杂", () => {
+    expect(isComplexWork(makeToolStats({ successful: 5 }))).toBe(true);
+    expect(isComplexWork(makeToolStats({ successful: 4 }))).toBe(false);
+    expect(isComplexWork(makeToolStats({ successful: 3, failed: 2 }))).toBe(true);
+  });
+
+  it("isComplexWork：shell 写入也算复杂（createdFiles 只跟踪 file_write）", () => {
+    // 2026-11-26 实证：用 shell_exec 建 3 个文件的任务，createdFiles 为空，
+    // 旧判据把它当成简单任务，得不到完成汇报。
+    expect(isComplexWork(makeToolStats({ successful: 3, shellWriteOpCount: 2 }))).toBe(true);
+    expect(isComplexWork(makeToolStats({ successful: 3, shellWriteOpCount: 0 }))).toBe(false);
+  });
+
+  it("isComplexWork：简单只读问答 → 不复杂", () => {
+    expect(isComplexWork(makeToolStats({ successful: 2 }))).toBe(false);
+    expect(isComplexWork(makeToolStats({ successful: 0 }))).toBe(false);
+  });
+
+  it("简单任务完整回答 → 不追加状态块", () => {
+    const reply = "中国一重现价 2.76 元，跌 2.13%，处于 52 周区间中下段。";
+    const verdict = enforceCompletionStatus(reply, makeToolStats({ successful: 2 }));
+    expect(verdict.appended).toBe(false);
+    expect(verdict.reason).toContain("Simple task");
+  });
+
+  it("复杂任务（有交付物）缺完成标记 → 追加状态块", () => {
+    const reply = "写好了。";
+    const verdict = enforceCompletionStatus(reply, makeToolStats({
+      successful: 3,
+      createdFiles: ["/tmp/report.md"],
+    }));
+    expect(verdict.appended).toBe(true);
+    expect(verdict.statusBlock).toContain("任务状态");
+  });
+
+  it("复杂任务已自带完成汇报 → 不重复追加", () => {
+    const reply = "✅ 任务完成。交付物：`/tmp/report.md`。";
+    const verdict = enforceCompletionStatus(reply, makeToolStats({
+      successful: 3,
+      createdFiles: ["/tmp/report.md"],
+    }));
+    expect(verdict.appended).toBe(false);
   });
 });
 
@@ -274,14 +353,28 @@ describe("runTurnFinalizer", () => {
     expect(result.finalReply).toContain("任务状态汇报");
   });
 
-  it("完成状态缺失 → 追加状态块", () => {
+  it("完成状态缺失 → 追加状态块（复杂任务）", () => {
     const messages = makeMessages([
       { role: "user", content: "创建脚本" },
       { role: "assistant", content: "已完成。" },
     ]);
-    const result = runTurnFinalizer("已完成。", messages, makeToolStats({ successful: 3 }));
+    // 有文件变更 → 复杂任务
+    const result = runTurnFinalizer("已完成。", messages, makeToolStats({
+      successful: 3,
+      createdFiles: ["/tmp/script.py"],
+    }));
     expect(result.completionStatusAppended).toBe(true);
     expect(result.finalReply).toContain("任务状态");
+  });
+
+  it("简单任务（无文件变更、工具调用少）→ 不追加状态块（2026-11-26 分级）", () => {
+    const messages = makeMessages([
+      { role: "user", content: "查一下股价" },
+      { role: "assistant", content: "现价 2.76 元，跌幅 2.13%。" },
+    ]);
+    const result = runTurnFinalizer("现价 2.76 元，跌幅 2.13%。", messages, makeToolStats({ successful: 2 }));
+    expect(result.completionStatusAppended).toBe(false);
+    expect(result.finalReply).toBe("现价 2.76 元，跌幅 2.13%。");
   });
 
   it("静默停止优先于完成状态强制", () => {
@@ -300,7 +393,8 @@ describe("runTurnFinalizer", () => {
       { role: "user", content: "创建脚本" },
       { role: "assistant", content: "工作完成。" },
     ]);
-    const toolStats = makeToolStats({ successful: 3 });
+    // 有文件变更 → 复杂任务，才会追加状态块
+    const toolStats = makeToolStats({ successful: 3, createdFiles: ["/tmp/a.py"] });
     const result1 = runTurnFinalizer("工作完成。", messages, toolStats);
     const result2 = runTurnFinalizer(result1.finalReply, messages, toolStats);
     // 第一次追加了状态块，第二次检测到已包含完成状态 → 不再追加
