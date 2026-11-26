@@ -133,6 +133,13 @@ export const TOOL_ALIASES: Record<string, string> = {
   search_web: "web_search",
   send_mail: "email",
   take_screenshot: "browser_screenshot",
+  // memory 复合工具（原 memory_search / memory_stats / memory_get 已合并为
+  // action 判别）。模型仍会按旧名调用——v25 会话实证 `memory_get` 直接
+  // 「Tool not registered」，参数完全够用却整轮报废。
+  memory_search: "memory",
+  memory_stats: "memory",
+  memory_get: "memory",
+  memory_add: "memory",
 };
 
 /**
@@ -141,6 +148,7 @@ export const TOOL_ALIASES: Record<string, string> = {
  * file_write 合并了 file_create/file_modify/file_edit 后 action 必填；
  * 模型沿用旧名调用时通常不带 action（v26 T7 R5 实证：file_edit 直接
  * 「not registered」，write_file/edit_file 即使改名成功也会因缺 action 失败）。
+ * memory 复合工具同理：旧名 memory_search / memory_stats 隐含对应 action。
  */
 export const TOOL_ALIAS_IMPLIED_ACTION: Record<string, string> = {
   write_file: "create",
@@ -148,20 +156,29 @@ export const TOOL_ALIAS_IMPLIED_ACTION: Record<string, string> = {
   file_create: "create",
   file_modify: "modify",
   file_edit: "edit",
+  memory_search: "search",
+  memory_stats: "stats",
+  memory_add: "add",
 };
 
 /**
  * 别名改名成功后补齐隐含 action。
- * 只对 file_write 生效；模型显式给了 action 或参数里带 old_string/new_string
- * （语义明确是定点编辑）时以其为准。
+ * 只对 file_write / memory 生效；模型显式给了 action 或参数里带
+ * old_string/new_string（语义明确是定点编辑）时以其为准。
  */
 export function applyImpliedToolAction(
   originalName: string,
   resolvedName: string,
   args: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (resolvedName !== "file_write") return args;
+  if (resolvedName !== "file_write" && resolvedName !== "memory") return args;
   if (typeof args.action === "string" && args.action.trim() !== "") return args;
+  if (resolvedName === "memory") {
+    // memory 没有 old_string 语义歧义：只按旧名推断；推断不出就让 handler
+    // 用它自己的默认 action=search。
+    const inferredMemory = TOOL_ALIAS_IMPLIED_ACTION[originalName];
+    return inferredMemory ? { ...args, action: inferredMemory } : args;
+  }
   const inferred = typeof args.old_string === "string" || typeof args.new_string === "string"
     ? "edit"
     : TOOL_ALIAS_IMPLIED_ACTION[originalName];

@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { inferCwdFromScript, resolveShellCwd, collapseWorkspaceRootAlias } from "../src/tools/shell-media-tools";
+import { inferCwdFromScript, resolveShellCwd, collapseWorkspaceRootAlias, inferCodeLanguage } from "../src/tools/shell-media-tools";
 
 const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
 const evalDir = path.join(workspaceDir, "eval15", "t05-cwd");
@@ -138,5 +138,43 @@ describe("collapseWorkspaceRootAlias — workspace 根别名确定性折叠", ()
     fs.writeFileSync(path.join(wsRoot, "there.txt"), "x", "utf-8");
     const out = collapseWorkspaceRootAlias("cat data/workspace/there.txt", sub, wsRoot);
     expect(out).toBe("cat there.txt");
+  });
+});
+
+/**
+ * execute_code 语言推断（2026-11-26 会话取证）。
+ *
+ * 事故：`language` 省略时旧实现一律按 node 跑，9 次缺 language 的调用里
+ * 4 次是 Python（`from pathlib import Path` → `SyntaxError: Unexpected
+ * identifier 'pathlib'`、`print(...)` → `ReferenceError: print is not
+ * defined`），整轮报废。hermes 的 execute_code 永远 Python 没有这层歧义。
+ */
+describe("inferCodeLanguage — 省略 language 时按代码形状判定", () => {
+  it("Python 独占语法 → python", () => {
+    expect(inferCodeLanguage("from pathlib import Path\np = Path('x')")).toBe("python");
+    expect(inferCodeLanguage("import json\ndata = json.loads('{}')")).toBe("python");
+    expect(inferCodeLanguage("def fnv1(s):\n    h = 2166136261\n    return h")).toBe("python");
+    expect(inferCodeLanguage("print(0x84 & 0x7F)")).toBe("python");
+    expect(inferCodeLanguage("class Foo:\n    pass")).toBe("python");
+    expect(inferCodeLanguage("if __name__ == '__main__':\n    main()")).toBe("python");
+  });
+
+  it("Node 语法 → node（含只有 Node 信号的混合）", () => {
+    expect(inferCodeLanguage("const x = 1;\nconsole.log(x);")).toBe("node");
+    expect(inferCodeLanguage("function f(a) { return a; }\nf(1);")).toBe("node");
+    expect(inferCodeLanguage("const fs = require('fs');")).toBe("node");
+    expect(inferCodeLanguage("import fs from 'node:fs';")).toBe("node");
+    expect(inferCodeLanguage("module.exports = { a: 1 };")).toBe("node");
+  });
+
+  it("判不出来 → 保持 node 旧默认（不因形状模糊就换解释器）", () => {
+    expect(inferCodeLanguage("")).toBe("node");
+    expect(inferCodeLanguage("42")).toBe("node");
+    expect(inferCodeLanguage("x + y")).toBe("node");
+  });
+
+  it("Python 信号多于 Node 信号 → python（FNV 压测里的混合片段）", () => {
+    const src = "def fnv1a(s):\n    h = 2166136261\n    for b in s.encode():\n        h = h ^ b\n    return h\nprint(fnv1a(''))";
+    expect(inferCodeLanguage(src)).toBe("python");
   });
 });

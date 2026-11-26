@@ -28,14 +28,34 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
     return { memoryHub, longTerm: memoryHub.getLongTerm() };
   };
 
-  // ── action=search：语义搜索历史记忆 ─────────────────────────
+  // ── action=search：语义搜索历史记忆（也支持按 id 精确取一条）─────────
+  // ★ 2026-11-26：旧工具名 memory_get(id) 合并进本工具后没有对应 action，
+  //   模型按旧名调用只能拿到「not registered」。现在 action=search 同时接受
+  //   id：给了 id 就按 id 精确取，否则按 query 语义搜索。
   const handleSearch = async (params: Record<string, unknown>) => {
     const query = String(params.query || "");
-    if (!query) return { success: false, error: "Query is required" };
-    const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "10"), 10) || 10, 100));
-
-    const { memoryHub } = getMemoryServices(executor);
+    const id = String(params.id || "").trim();
+    const { memoryHub, longTerm } = getMemoryServices(executor);
     if (!memoryHub) return { success: false, error: "Memory service not available" };
+
+    if (!query && id) {
+      if (!longTerm) return { success: false, error: "Memory service not available" };
+      try {
+        const entry = await longTerm.get(id);
+        if (!entry) return { success: false, error: `No memory entry with id "${id}"`, id };
+        return { success: true, id, entry, count: 1 };
+      } catch (err: any) {
+        return { success: false, error: `Memory get failed: ${err?.message || String(err)}` };
+      }
+    }
+    if (!query) {
+      return {
+        success: false,
+        error: "Query is required",
+        hint: "action=search 需要 query（自然语言检索）；按 id 取单条请传 id；统计请用 action=stats。",
+      };
+    }
+    const limit = Math.max(1, Math.min(parseInt(String(params.limit ?? "10"), 10) || 10, 100));
 
     try {
       const results = await memoryHub.semanticSearch(query, limit);
@@ -260,7 +280,7 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
         "action=add: store a new memory entry (content, type, tags, importance); " +
         "action=patch: replace old_string with new_string in the entry that uniquely matches (pass id to disambiguate; old_string must occur exactly once); " +
         "action=remove: delete an entry by id or by a unique content match (ambiguous matches return candidates); " +
-        "action=search: search conversation history and memory semantically; " +
+        "action=search: search conversation history and memory semantically (or pass id to fetch one entry by id); " +
         "action=stats: get memory system statistics.",
       parameters: {
         action: {
@@ -280,8 +300,8 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
         // action=search 参数
         query: { type: "string", description: "Search query (natural language)（action=search 使用）", required: false },
         limit: { type: "string", description: "Max results (default: 10)（action=search 使用）", required: false },
-        // action=remove 参数
-        id: { type: "string", description: "Memory entry id（action=patch / action=remove 使用，用于精确指定目标）", required: false },
+        // action=remove / action=search（按 id 取单条）
+        id: { type: "string", description: "Memory entry id（action=patch / action=remove 精确定位；action=search 且未给 query 时按 id 取单条）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {

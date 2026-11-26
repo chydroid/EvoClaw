@@ -79,6 +79,38 @@ describe("ReadTracker — 连续循环检测", () => {
     const v = rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined);
     expect(v.consecutive).toBe(1);
   });
+
+  it("★ notifyOtherToolCall 也清 dedupHits：其他工具可能刚创建/改了该路径", () => {
+    // 生产事故（v30-t6 frames.js）：读 → 写 → 读同一区域，第 4 次被判「连续读」
+    // 硬 BLOCK，模型拿不到内容却被告知「你已经读过」。hermes 对每个非 read 工具
+    // 都调用一次，dedup 命中计数同样不能跨工具累积。
+    const sid = "s1";
+    rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined);
+    rt.noteReadServed(sid, "/f.txt", "v1", 1, undefined, 10, 10, false);
+    // 第一次重复读 → stub（hits=1）
+    expect(rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined).action).toBe("stub");
+    // 中间发生任意其他工具调用 → 计数清零
+    rt.notifyOtherToolCall(sid);
+    // 再次重复读：不是 hits=2 的硬 BLOCK，而是重新从 stub 起算
+    expect(rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined).action).toBe("stub");
+  });
+
+  // ★ 2026-11-26 取证（v33-t6 连撞 4 次 BLOCK）：旧文案报 `consecutive`（连续
+  //   次数），而 consecutive 与「问过几次同一区域」口径不同（换 key/其他工具都会
+  //   重置），BLOCK 时可能报出一个小于命中次数的数字，模型据此判断「没读几次」
+  //   继续重读。servedCount = 真实读 1 次 + 每次 dedup 命中，才是真正的「第几次」。
+  it("★ block 的 servedCount 口径 = 1 次真实读 + 每次命中（不与 consecutive 混用）", () => {
+    const sid = "s1";
+    rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined);
+    rt.noteReadServed(sid, "/f.txt", "v1", 1, undefined, 10, 10, false);
+    const stub = rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined); // 命中 1
+    expect(stub.action).toBe("stub");
+    expect(stub.servedCount).toBe(2); // 1 次真实读 + 1 次命中
+    const blocked = rt.checkBeforeRead(sid, "/f.txt", "v1", 1, undefined); // 命中 2 → block
+    expect(blocked.action).toBe("block");
+    expect(blocked.servedCount).toBe(3); // 1 + 2
+    expect(blocked.servedCount).toBeGreaterThan(blocked.consecutive - 1);
+  });
 });
 
 describe("ReadTracker — 覆盖账与全文基线", () => {

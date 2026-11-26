@@ -18,7 +18,13 @@ import * as path from "path";
 import * as fs from "fs";
 import type { AgentModelExecutor, GitOperations, CodeIntelligence } from "@evoclaw/agent";
 import type { PermissionManager } from "@evoclaw/security";
-import { applyPatch as applyPatchFn, parsePatch } from "@evoclaw/agent";
+import {
+  applyPatch as applyPatchFn,
+  parsePatch,
+  FileStateRegistry,
+  ReadTracker,
+  getCurrentToolCallContext,
+} from "@evoclaw/agent";
 import { getWorkspaceDir } from "@evoclaw/core";
 
 /** 校验解析后的路径不超出允许的基目录，防止路径遍历攻击。
@@ -415,19 +421,59 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
     }
   }
 
+  /**
+   * 定点替换模式（对标 hermes patch_tool 的 mode=replace）。
+   *
+   * ★ 2026-11-26 取证（v27-t1 第 61 行）：模型按肌肉记忆把 apply_patch 当
+   *   patch 工具用，发 {action:"edit", path, old_string, new_string}，旧实现
+   *   直接回「未知 apply_patch action」——参数其实完全够用，白白烧一轮。
+   *   hermes 的 patch handler 对任何模型都同时接受 patch 文本与 replace 三件套，
+   *   这里同样：三件套齐备就合成为一段 SEARCH/REPLACE 走同一条应用路径
+   *   （4 趟模糊匹配、原子写、路径安全检查全部复用）。
+   */
+  function replaceModePatch(params: Record<string, unknown>): string | null {
+    const filePath = params.path ?? params.file_path;
+    const oldS = params.old_string ?? params.oldText ?? params.search;
+    const newS = params.new_string ?? params.newText ?? params.replace;
+    if (typeof filePath !== "string" || !filePath.trim()) return null;
+    if (typeof oldS !== "string" || oldS === "") return null;
+    if (typeof newS !== "string") return null;
+    return `<<<<<<< SEARCH ${filePath.trim()}\n${oldS}\n=======\n${newS}\n>>>>>>> REPLACE`;
+  }
+
   async function handleApplyPatch(params: Record<string, unknown>): Promise<unknown> {
     try {
-      const patchText = String(params.patch || "");
-      if (!patchText) return { success: false, error: "patch is required" };
-      const hunks = parsePatch(patchText);
-      if (hunks.length === 0) {
+      const patchText = String(params.patch || "") || replaceModePatch(params) || "";
+      if (!patchText) {
         return {
           success: false,
           error:
-            "No valid hunks parsed from patch text. 支持三种格式：" +
+            "patch 为空。两种用法：① 传 patch 文本（SEARCH/REPLACE 块 / OpenAI *** Update File 风格 / unified diff）；" +
+            "② 定点替换传 path + old_string + new_string（等价 file_write action=edit）。",
+        };
+      }
+      const hunks = parsePatch(patchText);
+      if (hunks.length === 0) {
+        // ★ 2026-11-26 取证（v27-t8）：模型把整段源码当 patch 发（没有任何
+        //   SEARCH/=======/REPLACE 标记），旧错误只说「支持三种格式」，模型
+        //   无法判断自己错在哪，重发同样内容。这里先做确定性诊断，再给格式说明。
+        const head = patchText.trim().split("\n").slice(0, 3).join("\n").slice(0, 200);
+        const hasAnyMarker = /(?:<{3,}\s*SEARCH|={5,}|>{3,}\s*REPLACE|\*\*\*\s*(?:Begin|Update|Add|End)|\+\+\+ |@@)/i.test(patchText);
+        const diagnosis = hasAnyMarker
+          ? "patch 文本里出现了标记，但没有组成完整的 SEARCH ... ======= ... >>>>>>> REPLACE 块（或 *** Update File + @@ hunk）。"
+          : "patch 文本里**没有任何 patch 标记**——看起来是直接粘贴的源码/文件内容，不是 patch。";
+        return {
+          success: false,
+          error:
+            `No valid hunks parsed from patch text. ${diagnosis}\n` +
+            `收到的开头：${JSON.stringify(head)}\n` +
+            "支持三种格式：" +
             "(1) <<<<<<< SEARCH path/to/file ... ======= ... >>>>>>> REPLACE（SEARCH 后路径可省略，但需先出现 *** Update File: path 或 --- a/path 头）；" +
             "(2) OpenAI 风格 *** Begin Patch / *** Update File: path / @@ hunks / *** End Patch；" +
             "(3) 简化 unified diff：--- a/path +++ b/path + @@ hunks。",
+          hint:
+            "如果只是想改文件里的几行，不要拼 patch——直接调 file_write action=edit + path + old_string + new_string（old_string 从 file_read 结果逐字复制）；" +
+            "整文件重写用 file_write action=modify + content。",
         };
       }
       // ★ 2026-11-09 P2 路径契约：apply_patch 的相对路径必须与 file_write /
@@ -440,7 +486,28 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       //   file-tools 的 resolveToolPath 同构）；绝对路径由 applyPatch 的
       //   path.resolve 语义原样直通。
       const workspaceRoot = getWorkspaceDir();
-      const result = await applyPatchFn(workspaceRoot, hunks);
+      // ★ 2026-11-26：patch 写盘后必须更新会话记账（FileStateRegistry 读戳 +
+      //   ReadTracker 全文基线），否则同一会话紧接着的 file_write action=modify
+      //   会被「was modified outside this session」/「没读过全文」误拒——
+      //   文件是本会话自己刚 patch 的（v26-t4 / v26-t9 / v28-t4 实证各烧 1-3 次）。
+      //   对齐 hermes `_note_edited`：每个写成功的路径做 note_write + 刷新读戳。
+      const sessionId = getCurrentToolCallContext()?.sessionId ?? "default";
+      const notePatched = (absPath: string, newContent: string): void => {
+        try {
+          FileStateRegistry.getInstance().recordWrite(sessionId, absPath, newContent);
+        } catch {
+          /* 记账失败不阻断 patch */
+        }
+        try {
+          const tracker = ReadTracker.getInstance();
+          const stat = fs.statSync(absPath);
+          const version = `${stat.mtimeMs}:${FileStateRegistry.hashContent(newContent)}`;
+          tracker.noteWriteServed(sessionId, absPath, version);
+        } catch {
+          /* 记账失败不阻断 patch */
+        }
+      };
+      const result = await applyPatchFn(workspaceRoot, hunks, notePatched);
       return result;
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -551,8 +618,8 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
       parameters: {
         action: {
           type: "string",
-          description: "要执行的补丁操作。action to perform: patch (default) / plan_rename / apply_rename",
-          enum: ["patch", "plan_rename", "apply_rename"],
+          description: "要执行的补丁操作。action to perform: patch (default) / edit（path+old_string+new_string 定点替换，等价 replace 模式）/ plan_rename / apply_rename",
+          enum: ["patch", "edit", "plan_rename", "apply_rename"],
           required: false, default: "patch",
         },
         patch: {
@@ -562,20 +629,29 @@ export function registerCodeIntelTools(deps: CodeIntelToolDeps): void {
             + "① <<<<<<< SEARCH path/to/file ... ======= ... >>>>>>> REPLACE（一个文件可多块；"
             + "SEARCH 后路径可省略，此时沿用上方 *** Update File: path 头声明的目标文件）；"
             + "② OpenAI 风格：*** Begin Patch / *** Update File: path/to/file / @@ 上下文 / *** End Patch / *** Add File: path；"
-            + "③ 简化 unified diff：--- a/path +++ b/path + @@ -x,y +x,y @@ + context/-old/+new（patch 用）",
+            + "③ 简化 unified diff：--- a/path +++ b/path + @@ -x,y +x,y @@ + context/-old/+new（patch 用）。"
+            + "也可改用 action=edit + path + old_string + new_string 做定点替换。",
           required: false,
         },
+        old_string: { type: "string", description: "（action=edit）要查找的原文（替代 patch 文本）", required: false },
+        new_string: { type: "string", description: "（action=edit）替换文本", required: false },
         oldName: { type: "string", description: "Current symbol name（plan_rename / apply_rename 用）", required: false },
         newName: { type: "string", description: "New symbol name（plan_rename / apply_rename 用）", required: false },
-        path: { type: "string", description: "Optional file path where the symbol is defined（plan_rename / apply_rename 用）", required: false },
+        path: { type: "string", description: "文件路径（action=edit 的目标文件；plan_rename / apply_rename 时为符号定义所在文件）", required: false },
       },
     },
     async (params: Record<string, unknown>) => {
-      const action = String(params.action || "patch");
-      if (action === "patch") return await handleApplyPatch(params);
+      const rawAction = String(params.action || "").trim();
+      // 首 token 归一化（与 file_write 同规则）：`edit\n</parameter=...>` 这类脏取值
+      const action = rawAction === "" ? "patch" : (/^[a-z_]+/i.exec(rawAction)?.[0] ?? "").toLowerCase();
+      // 模型把 apply_patch 当 patch 工具用、发 {action:"edit"/"replace"/"update", path, old_string, new_string}
+      // 时走 replace 模式（参数已齐备，不必报「未知 action」烧掉一轮）。
+      if (action === "patch" || action === "edit" || action === "replace" || action === "update") {
+        return await handleApplyPatch(params);
+      }
       if (action === "plan_rename") return await handlePlanRename(params);
       if (action === "apply_rename") return await handleApplyRename(params);
-      return { success: false, error: `未知 apply_patch action: ${action}（仅支持 patch / plan_rename / apply_rename）` };
+      return { success: false, error: `未知 apply_patch action: ${rawAction.slice(0, 40)}（仅支持 patch / edit / plan_rename / apply_rename）` };
     }
   );
 }

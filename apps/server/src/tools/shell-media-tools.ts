@@ -22,6 +22,52 @@ import type { SandboxPolicy } from "@evoclaw/core";
 const MAX_CAPTURE_CHARS = 200_000;
 
 /**
+ * 从代码形状推断语言（仅在模型**省略** language 时使用）。
+ *
+ * ★ 2026-11-26 取证：`language` 描述写的是 "default: 'node'"，于是
+ *   `{code: "from pathlib import Path..."}` 被当 Node 跑，报
+ *   `SyntaxError: Unexpected identifier 'pathlib'`；9 次缺 language 的调用里
+ *   4 次是 Python（v26-t9 / v29-t3 / v31-t1 等），全部整轮报废。
+ *   hermes 的 execute_code 根本没有 language 参数（永远 Python），没有这层
+ *   歧义；EvoClaw 双语言必须靠代码本身判定。
+ *
+ * 判据取「Python 独占语法」：`import x` / `from x import` / `def f(...):` /
+ * `print(...)` / `if __name__ ==` / 行首 `#` 注释 + `:` 结尾的块头。
+ * 判不出来就保持 node（旧行为），绝不因为「看起来都不像」去改默认值。
+ */
+export function inferCodeLanguage(code: string): "python" | "node" {
+  const src = code.trim();
+  if (!src) return "node";
+  const pythonSignals = [
+    /^\s*(?:import\s+[A-Za-z_][\w.]*\s*$|import\s+[A-Za-z_][\w.]*\s+as\s+\w+)/m,
+    /^\s*from\s+[A-Za-z_][\w.]*\s+import\s+/m,
+    /^\s*def\s+[A-Za-z_]\w*\s*\([^)]*\)\s*(?:->\s*[^:]+)?:\s*$/m,
+    /^\s*class\s+[A-Za-z_]\w*\s*(?:\([^)]*\))?\s*:\s*$/m,
+    /^\s*if\s+__name__\s*==\s*['"]__main__['"]\s*:/m,
+    /^\s*(?:elif|except|finally)\b[^\n]*:\s*$/m,
+    /^\s*print\s*\(/m,
+    /^\s*for\s+\w+(?:\s*,\s*\w+)*\s+in\s+[^\n:]+:\s*$/m,
+    /^\s*with\s+[^\n:]+:\s*$/m,
+  ];
+  const nodeSignals = [
+    /\b(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*=/,
+    /\bfunction\s+[A-Za-z_$][\w$]*\s*\(/,
+    /=>/,
+    /\bconsole\.\w+\s*\(/,
+    /\brequire\s*\(\s*['"]/,
+    /^\s*(?:import|export)\s+.*\bfrom\s+['"]/m,
+    /\bmodule\.exports\b/,
+  ];
+  const pyScore = pythonSignals.reduce((n, re) => n + (re.test(src) ? 1 : 0), 0);
+  const nodeScore = nodeSignals.reduce((n, re) => n + (re.test(src) ? 1 : 0), 0);
+  // Python 独占信号（import/def/class/print）比通用运算符更有判别力：
+  // 只要没有任何 Node 信号、且命中至少 1 个 Python 信号，就按 Python 跑。
+  if (pyScore > 0 && nodeScore === 0) return "python";
+  if (pyScore > nodeScore) return "python";
+  return "node";
+}
+
+/**
  * 解析 shell_exec 的 cwd（安全校验 + 存在性策略）。
  *
  * hermes 对齐（commit 8f95f721bfa）：**显式指定**的 workdir 不存在时必须
@@ -1407,7 +1453,9 @@ export function registerShellMediaTools(
         },
         language: {
           type: "string",
-          description: "Interpreter: 'python' or 'node' (default: 'node'). Programmatic tool calling requires 'node'.",
+          description:
+            "Interpreter: 'python' or 'node'。省略时会按代码形状自动判定（Python 的 import/def/print 等语法 → python，" +
+            "否则 node），建议显式指定以免歧义。Programmatic tool calling requires 'node'.",
           required: false,
         },
         timeout: {
@@ -1451,7 +1499,16 @@ export function registerShellMediaTools(
     },
     async (params: Record<string, unknown>) => {
       const programmatic = params.programmatic === true;
-      const requestedLanguage = String(params.language || "node").toLowerCase();
+      const codeText = String(params.code || "");
+      const explicitLanguage = String(params.language || "").trim().toLowerCase();
+      // language 省略时的推断（见 inferCodeLanguage 注释）：programmatic 固定 node，
+      // 其余按代码形状判定，判不出来保持 node 旧默认。
+      const requestedLanguage = explicitLanguage
+        ? explicitLanguage
+        : programmatic
+          ? "node"
+          : inferCodeLanguage(codeText);
+      const languageInferred = !explicitLanguage && !programmatic;
 
       // ── Programmatic Tool Calling 路径（node + 注入 tools API，LocalSandboxBackend 软沙箱） ──
       if (programmatic) {
@@ -1955,6 +2012,7 @@ export function registerShellMediaTools(
           //   「success:false, exitCode:-1」后只能靠猜（曾误判为源码被改写）。
           ...(result.error ? { error: result.error } : {}),
           language,
+          ...(languageInferred ? { language_inferred: language } : {}),
           sandbox: chosen,
           ...(chosen === "process"
             ? { note: "backend=process（本地软沙箱）：docker 不可用时的降级路径，隔离弱于 docker 硬隔离" }

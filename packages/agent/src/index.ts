@@ -239,7 +239,7 @@ export { PromptRegistry, registerBuiltinPromptTemplates } from "./prompt-registr
 export type { PromptTemplateEntry, PromptRegistryConfig } from "./prompt-registry";
 
 // FuzzyMatch — 多策略模糊匹配链（对标 Hermes tools/fuzzy_match.py）
-export { fuzzyFindAndReplace, fuzzyFind } from "./fuzzy-match";
+export { fuzzyFindAndReplace, fuzzyFind, isAlreadyApplied, formatMatchLocations } from "./fuzzy-match";
 export type { FuzzyMatchResult, FuzzyStrategy } from "./fuzzy-match";
 
 // PatchParser — V4A patch 格式解析器（对标 Hermes tools/patch_parser.py）

@@ -2093,7 +2093,10 @@ export class EvoClawServer {
         name: "complete_bootstrap",
         description: "Complete the initial bootstrap ritual. Call after finishing the first-run setup in BOOTSTRAP.md. Deletes BOOTSTRAP.md permanently.",
         parameters: {
-          summary: { type: "string", description: "Brief summary of what was accomplished" },
+          // required:false 必须显式标注：llm-caller 的 flat-schema 校验把「没写
+          // required:false 且没有 default」的参数一律当必填。summary 在 handler
+          // 里本就有默认值（"Bootstrap completed"），标错会让模型白丢一次调用。
+          summary: { type: "string", description: "Brief summary of what was accomplished（可省略，默认 Bootstrap completed）", required: false, default: "Bootstrap completed" },
         },
       },
       async (params: Record<string, unknown>) => {
@@ -2531,8 +2534,11 @@ export class EvoClawServer {
         name: "markitdown_convert",
         description: "Convert documents (PDF, Word, Excel, PowerPoint, HTML, etc.) or web pages to Markdown format for better readability. Uses microsoft/markitdown. Supports: .pdf .docx .pptx .xlsx .html .csv .json .xml .epub and more. Does NOT support images or videos.",
         parameters: {
-          source: { type: "string", description: "File path or URL to convert. Can be a local file path or an HTTP/HTTPS URL." },
-          output_format: { type: "string", description: "Output format: 'markdown' (default) or 'text' (plain text without markdown formatting)" },
+          // required:true 显式声明（handler 缺 source 直接报错）；output_format 有
+          // 默认值 'markdown'，必须标 required:false，否则 flat-schema 校验会把它
+          // 当必填——模型只传 source 时被「Missing required parameter」白拒一次。
+          source: { type: "string", description: "File path or URL to convert. Can be a local file path or an HTTP/HTTPS URL.", required: true },
+          output_format: { type: "string", description: "Output format: 'markdown' (default) or 'text' (plain text without markdown formatting)", required: false, default: "markdown" },
         },
       },
       async (params: Record<string, unknown>) => {

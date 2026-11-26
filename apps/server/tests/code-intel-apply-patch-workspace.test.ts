@@ -3,6 +3,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { setWorkspaceDir, clearWorkspaceOverride } from "@evoclaw/core";
+import { FileStateRegistry, ReadTracker } from "@evoclaw/agent";
 import { registerCodeIntelTools } from "../src/tools/code-intelligence-tools";
 
 /**
@@ -119,5 +120,66 @@ describe("apply_patch × 路径契约（相对=工作区基准，绝对原样直
     })) as Record<string, unknown>;
     expect(r.success).toBe(true);
     expect(fs.readFileSync(target, "utf-8")).toContain("for await (const row of rl)");
+  });
+
+  // ★ 2026-11-26 取证（v27-t1 第 61 行）：模型按肌肉记忆发
+  //   {action:"edit", path, old_string, new_string}，旧实现回「未知 apply_patch
+  //   action」——参数完全够用却白烧一轮。hermes patch handler 对任何模型都同时
+  //   接受 patch 文本与 replace 三件套。
+  it("action=edit + path/old_string/new_string → replace 模式（等价 patch 文本）", async () => {
+    const target = path.join(workspace, "v9-finance", "process-csv.js");
+    const r = (await registry.get("apply_patch")!.handler({
+      action: "edit",
+      path: "v9-finance/process-csv.js",
+      old_string: "for (const line of rl)",
+      new_string: "for await (const line of rl)",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+    expect(fs.readFileSync(target, "utf-8")).toContain("for await (const line of rl)");
+  });
+
+  it("action=patch 省略 patch 但给了三件套 → 同样走 replace 模式", async () => {
+    const target = path.join(workspace, "v9-finance", "process-csv.js");
+    const r = (await registry.get("apply_patch")!.handler({
+      path: "v9-finance/process-csv.js",
+      old_string: "const lines = [];",
+      new_string: "const rows = [];",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+    expect(fs.readFileSync(target, "utf-8")).toContain("const rows = [];");
+  });
+
+  it("action=edit 缺三件套 → 可执行的错误提示（指明两种用法）", async () => {
+    const r = (await registry.get("apply_patch")!.handler({
+      action: "edit",
+      path: "v9-finance/process-csv.js",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toContain("old_string");
+  });
+
+  // ★ 2026-11-26 取证（v26-t4 / v26-t9 / v28-t4 实证）：apply_patch 写盘后
+  //   不更新会话记账，同一会话紧接着的 file_write action=modify 被
+  //   「was modified outside this session」/「没读过全文」误拒——文件是本会话
+  //   自己刚 patch 的。修：patch 写盘回调做 recordWrite + noteWriteServed。
+  it("★ patch 写盘后登记会话基线（后续 file_write action=modify 不被误拒）", async () => {
+    const target = path.join(workspace, "v9-finance", "process-csv.js");
+    const r = (await registry.get("apply_patch")!.handler({
+      action: "patch",
+      patch: searchReplacePatch("v9-finance/process-csv.js", "for (const line of rl)", "for await (const line of rl)"),
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+
+    // 1) 跨会话 staleness：写者自己的读戳必须已刷新
+    const stale = FileStateRegistry.getInstance().checkStale("default", target);
+    expect(stale.stale, `写后自查不应 stale（${stale.reason}）`).toBe(false);
+
+    // 2) 会话内全文基线：覆盖前检查应放行
+    const content = fs.readFileSync(target, "utf-8");
+    const stat = fs.statSync(target);
+    const version = `${stat.mtimeMs}:${FileStateRegistry.hashContent(content)}`;
+    expect(
+      ReadTracker.getInstance().checkOverwriteBaseline("default", target, true, version),
+    ).toBeNull();
   });
 });

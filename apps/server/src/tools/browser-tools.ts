@@ -97,7 +97,22 @@ export async function fetchJsonFromUrl(
     if (!finalResponse.ok) {
       return { error: `HTTP ${finalResponse.status}`, url: currentUrl };
     }
-    return await finalResponse.json();
+    // 非 JSON 响应（JSONP / 纯文本 / 行情接口 `v_sh601106="..."`）不再抛错：
+    // 回传原始文本，调用方还能自行剥离前缀解析。见 browser-controller.fetchJSON 同款注释。
+    const raw = await finalResponse.text();
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {
+        url: currentUrl,
+        status: finalResponse.status,
+        text: raw.slice(0, 20000),
+        length: raw.length,
+        format_note:
+          "Response is not valid JSON — returning the raw body as text (action=json was requested). " +
+          "If the body is JSONP like `v_key={...}`, strip the `v_key=` prefix and parse the object yourself.",
+      };
+    }
   } catch (err) {
     return { error: err instanceof Error ? err.message : String(err) };
   }

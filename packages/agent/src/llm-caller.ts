@@ -1034,6 +1034,94 @@ function stripNestedRequired(schema: Record<string, unknown>): void {
   }
 }
 
+/**
+ * 把工具声明的参数名/类型渲染成一行可读清单（参数校验失败时回给模型）。
+ * 只列名字与类型，不带描述——描述可能很长，而模型此刻需要的是「该填什么」。
+ */
+export function describeAcceptedParameters(
+  definition: { parameters?: Record<string, unknown> } | undefined,
+): string[] {
+  if (!definition?.parameters) return [];
+  const { properties, required } = normalizeToolParameters(definition.parameters);
+  return Object.entries(properties).map(([key, schema]) => {
+    const p = (schema ?? {}) as Record<string, unknown>;
+    const type = typeof p.type === "string" ? p.type : "any";
+    const isRequired =
+      required !== undefined
+        ? required.includes(key)
+        : p.required !== false && p.default === undefined && !/optional/i.test(String(p.description ?? ""));
+    const enumVals = Array.isArray(p.enum) ? ` (${p.enum.join("|")})` : "";
+    return `${key}: ${type}${enumVals}${isRequired ? " [required]" : " [optional]"}`;
+  });
+}
+
+/**
+ * 找出模型传了、但工具 schema 没声明的参数名。
+ *
+ * ★ 2026-11-26 取证（全量 192 会话参数名普查）：模型会按其它框架的习惯传
+ *   `next_thought_needed` / `total_thoughts` / `overwritable` / `taskId` /
+ *   `action`（对无 action 的工具）等未声明键。旧实现**静默忽略**——这比报错
+ *   更糟：模型以为参数生效，按错误假设继续（例如以为 `total_thoughts` 已设、
+ *   以为 `overwritable` 已打开覆盖）。hermes `tools/arg_validation.py`
+ *   `flag_unknown_args` 的做法是不拒绝内置工具、只在结果里点名。
+ *
+ * 排除三类：下划线开头的内部注入键（`_signal` / `_sessionId` / `_parseError`…）、
+ * 已由别名归一化消化的键（`workdir`→`cwd`，模型传的确实是本工具认的别名）、
+ * 以及 schema 里声明的键。
+ */
+export function findUnknownToolArguments(
+  definition: { parameters?: Record<string, unknown> } | undefined,
+  args: Record<string, unknown>,
+  acceptedAliases: readonly string[] = [],
+): string[] {
+  if (!definition?.parameters) return [];
+  const { properties } = normalizeToolParameters(definition.parameters);
+  const aliasSet = new Set(acceptedAliases);
+  return Object.keys(args).filter(
+    (key) => !key.startsWith("_") && !aliasSet.has(key) && !(key in properties),
+  );
+}
+
+/** 工具声明的参数名（不含类型，用于「有效参数」清单）。 */
+export function listAcceptedParameterNames(
+  definition: { parameters?: Record<string, unknown> } | undefined,
+): string[] {
+  if (!definition?.parameters) return [];
+  return Object.keys(normalizeToolParameters(definition.parameters).properties);
+}
+
+/**
+ * 把「这些名字不是参数、已被忽略」写进结果 JSON 的 `_warning`（对齐 hermes
+ * `flag_unknown_args`）。非 JSON 对象结果（纯文本命令输出等）原样返回。
+ *
+ * `_warning` 放在对象**最前**：长结果会按头部截断，放末尾会被切掉。
+ */
+export function flagUnknownToolArguments(
+  toolResult: string,
+  toolName: string,
+  unknown: readonly string[],
+  validNames: readonly string[],
+): string {
+  if (unknown.length === 0) return toolResult;
+  let payload: unknown;
+  try {
+    payload = JSON.parse(toolResult);
+  } catch {
+    return toolResult;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return toolResult;
+  const obj = payload as Record<string, unknown>;
+  const unwrap = unknown.includes("arguments")
+    ? ' Do not wrap the arguments in an "arguments" field — pass each one at the top level.'
+    : "";
+  const warning =
+    `${unknown.join(", ")}: not a parameter of ${toolName} and was ignored. ` +
+    `Valid parameters: ${validNames.join(", ") || "none"}.${unwrap}`;
+  const previous = typeof obj._warning === "string" ? obj._warning : undefined;
+  if (previous?.includes(warning)) return toolResult;
+  return JSON.stringify({ _warning: previous ? `${previous}\n${warning}` : warning, ...obj });
+}
+
 export function validateToolParams(
   toolName: string,
   args: Record<string, unknown>,
@@ -7762,6 +7850,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           //   未声明的多余参数不会触发校验错误，若不归一化就会**静默**按默认值
           //   执行（最典型：workdir 被忽略 → 命令在 workspace 根跑，产物落错目录）。
           const aliasNorm = normalizeToolArgumentAliases(toolName, args);
+          const consumedAliases = aliasNorm.applied.map((a) => a.from);
           if (aliasNorm.applied.length > 0) {
             process.stderr.write(
               `[LLMCaller] Normalized "${toolName}" argument aliases: ${aliasNorm.applied
@@ -7770,6 +7859,18 @@ if (deps.contextPruningManager && !prunerNoop) {
             );
             args = aliasNorm.args;
           }
+
+          // ★ 2026-11-26（hermes `flag_unknown_args` 对齐）：模型传了 schema 没声明
+          //   的参数名时，旧实现**静默忽略**——比报错更糟（模型以为生效，按错误
+          //   假设继续）。这里只记录、不拒绝：内置工具的 handler 往往接受额外的
+          //   兼容字段，拒绝会打断正常调用；警告在结果里点名，模型下一轮即改。
+          //   别名归一化已消化的键不算未知（workdir 就是本工具认的 cwd）。
+          const unknownArgNames = findUnknownToolArguments(
+            toolEntry?.definition,
+            args,
+            consumedAliases,
+          );
+          const validParamNames = listAcceptedParameterNames(toolEntry?.definition);
 
           // ★ 2026-11-16 接线：ToolArgumentCoercer 参数类型强制转换。
           //   此前该类只有定义与 stats 占位端点，从未进入执行路径——
@@ -8027,7 +8128,18 @@ if (deps.contextPruningManager && !prunerNoop) {
                 role: "tool",
                 tool_call_id: tc.id,
                 name: toolName,
-                content: JSON.stringify({ error: `Invalid parameters: ${paramError}`, suggestion: "Check the parameter types and required fields." }),
+                content: JSON.stringify({
+                  success: false,
+                  retryable: true,
+                  error: `Invalid parameters: ${paramError}`,
+                  // ★ 2026-11-26：旧文案只说「检查类型和必填字段」，模型拿不到
+                  //   任何可执行信息，只能整段重发（62 次 file_write 缺 action 的
+                  //   调用里，多数是在这条错误后原样重试）。把该工具**当前实际
+                  //   接收的参数名与类型**列出来，模型一次就能改对。
+                  accepted_parameters: describeAcceptedParameters(toolEntry?.definition),
+                  suggestion:
+                    "Re-issue the call with the missing/invalid field fixed. Use only the parameter names listed in accepted_parameters.",
+                }),
               };
             }
           }
@@ -8084,6 +8196,20 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (cachedResult !== null) {
             asyncLog(`[AgentModelExecutor] Cache hit for ${toolName}\n`);
             return { role: "tool", tool_call_id: tc.id, name: toolName, content: cachedResult };
+          }
+
+          // ★ 2026-11-26（hermes `notify_other_tool_call` 对齐）：任何非读类工具
+          //   调用都重置连续读循环计数与 dedup 命中计数。旧实现里这个方法是死代码
+          //   （零调用点），于是「读 → 写 → 读同一区域」仍被当成连续读循环，
+          //   第 4 次直接 BLOCK（v30-t6 frames.js 实证：模型拿不到内容却被告知
+          //   「你已经读过」，只能 cat 绕过守卫）。其他工具也可能刚创建了这个路径
+          //   或改了权限，dedup 命中计数同样不能跨工具累积。
+          if (toolName !== "file_read" && toolName !== "code_search") {
+            try {
+              ReadTracker.getInstance().notifyOtherToolCall(sessionId);
+            } catch {
+              /* 记账失败不阻断执行 */
+            }
           }
 
           // ── Skip with result from plugin hook ──
@@ -8741,7 +8867,13 @@ if (deps.contextPruningManager && !prunerNoop) {
           //   速度雪崩（12s→58s→141s），180s 超时内根本无法完成复杂任务。
           //   思考痕迹已通过 trace 持久化，模型自身也记得思考内容，无需重复携带。
           if (toolName === "sequential_thinking") {
-            return { role: "tool", tool_call_id: tc.id, name: toolName, content: "思考步骤已记录。请继续或给出最终回复。" };
+            // ★ 2026-11-26：本工具返回值被丢弃，未声明参数的警告只能挂在这句上
+            //   （实证：11 次 `nextThoughtNeeded`、1 次 `total_thoughts`、
+            //   1 次 `next_thought_needed` 被静默忽略）。
+            const thinkingUnknown = unknownArgNames.length > 0
+              ? `\n\n[note] ${unknownArgNames.join(", ")}: not a parameter of sequential_thinking and was ignored. Valid parameters: ${validParamNames.join(", ")}.`
+              : "";
+            return { role: "tool", tool_call_id: tc.id, name: toolName, content: `思考步骤已记录。请继续或给出最终回复。${thinkingUnknown}` };
           }
           // ★ 2026-11-03 修复：file_read/code_search 使用 32K 上限，
           //   与上方 MAX_RESULT_LEN 保持一致。其他工具保持 4K 上限不变。
@@ -8819,7 +8951,11 @@ if (deps.contextPruningManager && !prunerNoop) {
             : (toolName === "shell_exec" || toolName === "execute_code")
               ? 60_000
               : TOOL_RESULT_MAX_CHARS;
-          return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(toolResult, maxChars) };
+          // ★ 2026-11-26（hermes `flag_unknown_args` 对齐）：未声明参数名写进结果
+          //   的 `_warning`。必须在截断**之前**注入（`_warning` 排在最前，长结果
+          //   头部截断也不会丢），且只在 JSON 对象结果上生效（纯文本命令输出原样）。
+          const flaggedResult = flagUnknownToolArguments(toolResult, toolName, unknownArgNames, validParamNames);
+          return { role: "tool", tool_call_id: tc.id, name: toolName, content: truncateToolResult(flaggedResult, maxChars) };
         };
 
         // ── Execute parallel-safe tools concurrently ──

@@ -431,10 +431,25 @@ const BUILTIN_TOOL_RULES: ToolRule[] = [
   // chr() 拼接构造源码，最终交付损坏文件。话题（出现 or）≠ 意图（布尔注入）：
   // SQL 注入的 `' OR '` 后面必须跟可比较结构（数字/TRUE/引号等值），
   // 单纯 `',' or ')'` 这类分隔符列举放行。
+  // 2026-11-26 修复第五类误伤（近十条会话取证）：旧的第一个分支
+  // `['"];?\s*(?:DROP|DELETE|…|SELECT)\s` 把「引号后紧跟 SQL 关键字」本身当注入，
+  // 于是任何实现 SQL 引擎/写查询常量的代码（`const q = "SELECT * FROM t"`、
+  // `"CREATE TABLE …"`、`"INSERT INTO …"`）都被硬拦，模型只能把字符串拆开或
+  // 改写 heredoc 绕过。引号内是**数据**，真正的注入特征是结构性的：语句分隔符后
+  // 的破坏性关键字（`; DROP`）、布尔恒真（`' OR 'a'='a`）、注释截断（`admin'--`）。
+  // 2026-11-26 修复第六类误伤（同一批会话）：裸 `1=1` / `OR 1=1` 会把「测试用例
+  // 字符串里写了一句注入样例」判成注入（v30-t1 实证：模型自测 SQL 引擎时写了
+  // `exec_sql(db, "... LIKE '_-' OR 1=1") if False else "skip"`，硬拦一轮）。
+  // 复现全量 4155 次工具调用：旧规则的 21 次命中**全部**是误拦，唯一残留命中的
+  // 就是这条 v30-t1。数字恒真在**源码文本**里几乎总是数据（真注入必然经字符串
+  // 拼接），且它与合法 LIKE 模式（`'_-'`）在文本上不可区分——因此彻底移除数字
+  // 恒真分支，只保留两种无歧义的结构判据：语句分隔符后的破坏性关键字、
+  // 引号锚定的**字符串等值**恒真（`' OR 'a'='a`）、注释截断（`admin'--`）。
+  // 对齐 hermes：其审批层没有通用 SQL 注入规则，只按写动词管自己的 store。
   {
     id: "tool-sql-injection",
     toolPattern: /(?:sql|query|database|\bdb\b|mysql|postgres|shell|exec|command|run|bash|terminal|execute)/i,
-    argPattern: /(?:['"];?\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|UNION|SELECT)\s|;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER)|\b1\s*=\s*1\b|OR\s+1\s*=\s*1|'\s+OR\s+(?:TRUE\b|\d+\s*=\s*\d+|'[^']*'\s*=\s*'|"[^"]*"\s*=\s*")|'\s*--(?![\-'"\w]))/im,
+    argPattern: /(?:;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|TRUNCATE|EXEC)\b|'\s+OR\s+(?:'[^']*'\s*=\s*'|"[^"]*"\s*=\s*")|'\s*--(?![\-'"\w]))/im,
     severity: "high",
     action: "block",
     description: "SQL injection pattern in tool arguments",

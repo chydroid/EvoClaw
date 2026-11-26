@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, describeAcceptedParameters, findUnknownToolArguments, listAcceptedParameterNames, flagUnknownToolArguments, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -508,6 +508,74 @@ describe("llm-caller > Optional 参数不进 required", () => {
     const fn = out.find((t) => t.function.name === "t")!;
     expect((fn.function.parameters as { required: string[] }).required).toContain("x");
     expect(validateToolParams("t", {}, reg.get("t")!.definition)).toMatch(/Missing required parameter "x"/);
+  });
+
+  // ★ 2026-11-26 取证：62 次「Missing required parameter action for file_write」
+  //   中，模型多数在收到旧文案（"Check the parameter types and required fields."）
+  //   后原样重发。校验失败必须回一份**该工具当前真实接受的参数清单**，模型一次
+  //   就能改对，而不是整段大文件内容再来一遍。
+  it("★ 参数校验失败时能列出工具真实接受的参数名与类型（供错误回执）", () => {
+    const lines = describeAcceptedParameters(def.definition);
+    expect(lines).toContain("command: string [required]");
+    expect(lines).toContain("cwd: string [optional]");
+    expect(lines).toContain("sandbox: boolean [optional]");
+    expect(lines).toHaveLength(4);
+  });
+
+  it("★ describeAcceptedParameters 渲染 enum 取值；空定义返回空数组", () => {
+    const withEnum = describeAcceptedParameters({
+      parameters: { action: { type: "string", enum: ["create", "edit"], required: false, default: "create" } },
+    });
+    expect(withEnum).toEqual(["action: string (create|edit) [optional]"]);
+    expect(describeAcceptedParameters(undefined)).toEqual([]);
+    expect(describeAcceptedParameters({})).toEqual([]);
+  });
+
+  // ★ 2026-11-26 取证（192 会话参数名普查）：模型会传 schema 未声明的键——
+  //   next_thought_needed(1) / total_thoughts(1) / overwritable(1) / taskId(1) /
+  //   nextThoughtNeeded(11)。旧实现静默忽略，模型以为生效按错误假设继续。
+  //   对齐 hermes `flag_unknown_args`：不拒绝，但在结果里点名。
+  it("★ 未声明参数名被识别（下划线内部键与已消化别名除外）", () => {
+    const def = {
+      parameters: {
+        thought: { type: "string", required: true },
+        totalThoughts: { type: "number", required: false },
+      },
+    };
+    expect(
+      findUnknownToolArguments(def, { thought: "x", total_thoughts: 3, next_thought_needed: false }),
+    ).toEqual(["total_thoughts", "next_thought_needed"]);
+    // 内部注入键（_signal/_sessionId）不算未知
+    expect(findUnknownToolArguments(def, { thought: "x", _signal: {} })).toEqual([]);
+    // 别名归一化已消化的键不算未知（workdir 就是 shell_exec 认的 cwd）
+    expect(findUnknownToolArguments(def, { thought: "x", workdir: "sub" }, ["workdir"])).toEqual([]);
+    expect(listAcceptedParameterNames(def)).toEqual(["thought", "totalThoughts"]);
+  });
+
+  it("★ 未声明参数写进结果 _warning，且排在最前（长结果头部截断不丢）", () => {
+    const out = flagUnknownToolArguments(
+      JSON.stringify({ success: true, content: "ok" }),
+      "file_write",
+      ["overwritable"],
+      ["action", "path", "content"],
+    );
+    const parsed = JSON.parse(out) as Record<string, unknown>;
+    expect(String(parsed._warning)).toContain("overwritable: not a parameter of file_write and was ignored");
+    expect(String(parsed._warning)).toContain("Valid parameters: action, path, content");
+    expect(out.startsWith("{\"_warning\":")).toBe(true);
+    expect(parsed.success).toBe(true);
+  });
+
+  it("★ 包裹在 arguments 字段里的调用给出解包提示；非 JSON / 数组结果原样返回", () => {
+    const wrapped = JSON.parse(
+      flagUnknownToolArguments(JSON.stringify({ ok: 1 }), "t", ["arguments"], ["query"]),
+    ) as Record<string, unknown>;
+    expect(String(wrapped._warning)).toContain("Do not wrap the arguments");
+    expect(flagUnknownToolArguments("plain text", "t", ["x"], ["y"])).toBe("plain text");
+    expect(flagUnknownToolArguments("[1,2]", "t", ["x"], ["y"])).toBe("[1,2]");
+    // 无未知参数 → 逐字返回（不重排 JSON）
+    const untouched = JSON.stringify({ b: 1, a: 2 });
+    expect(flagUnknownToolArguments(untouched, "t", [], ["b", "a"])).toBe(untouched);
   });
 });
 
@@ -1391,6 +1459,66 @@ describe("llm-caller > 空响应确定性短路（deterministic empty failover�
     // 若确定性短路被移除，第 4 轮 nudge 耗尽才 break，p1Calls 会 == 4。
     expect(p1Calls).toBe(3);
     expect(p2Calls).toBe(1);
+  });
+
+  // ★ 2026-11-26 取证（192 会话参数名普查）：模型传 schema 未声明的键
+  //   （next_thought_needed / total_thoughts / overwritable / taskId）时旧实现
+  //   静默忽略，模型以为生效按错误假设继续。对齐 hermes `flag_unknown_args`：
+  //   不拒绝内置工具，把「这些名字不是参数、已被忽略」写进结果 _warning。
+  it("未声明参数名写进工具结果 _warning（下一轮请求体可验证）", async () => {
+    const bodies: string[] = [];
+    let p1Calls = 0;
+    const p1 = http.createServer((req, res) => {
+      p1Calls++;
+      let raw = "";
+      req.on("data", (c) => { raw += c; });
+      req.on("end", () => {
+        bodies.push(raw);
+        res.setHeader("Content-Type", "application/json");
+        if (p1Calls === 1) {
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: null,
+                // total_thoughts / overwritable 都不是 echo_ping 的参数
+                tool_calls: [{ id: "tc1", type: "function", function: { name: "echo_ping", arguments: JSON.stringify({ total_thoughts: 3, overwritable: true }) } }],
+              },
+              finish_reason: "tool_calls",
+            }],
+            usage: { total_tokens: 2, prompt_tokens: 1 },
+          }));
+        } else {
+          res.end(JSON.stringify({
+            choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+            usage: { total_tokens: 1, prompt_tokens: 1 },
+          }));
+        }
+      });
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const { dep, provider1 } = emptyDeps(port1, port1, "p1-unknown", "p2-unknown");
+    // echo_ping 的 definition 声明空 parameters → 任何键都是未知参数
+    const res = await tryCallLLM(dep, {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers: [provider1],
+      startTime: Date.now(),
+      sessionId: `unknown-args-warning-test-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    p1.close();
+
+    expect(res).not.toBeNull();
+    // 第 2 轮请求体里应带上第 1 轮的工具结果消息
+    const round2 = bodies[1] ?? "";
+    expect(round2).toContain("not a parameter of echo_ping and was ignored");
+    expect(round2).toContain("total_thoughts");
+    expect(round2).toContain("overwritable");
+    expect(round2).toContain("Valid parameters: none");
   });
 
   it("混合证据 fail-open：空响应与出错交替时确定性计数清零，不提前短路", async () => {

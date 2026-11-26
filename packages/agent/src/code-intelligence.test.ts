@@ -404,6 +404,55 @@ describe("applyPatch", () => {
     expect(h?.relativePath).toBe("/home/chy/EvoClaw/packages/agent/src/llm-caller.ts");
   });
 
+  // ★ 2026-11-26 容错（近十条会话取证）：模型写过的标记变体——`<<< SEARCH`
+  //   （3 尖角）、`SEARCH /path` 裸头、`>>> REPLACE`（3 尖角）、
+  //   路径写在 SEARCH 头的下一行 `path: /x/y.py`。旧正则只认 7 尖角 + 行内路径，
+  //   这些整份 patch 解析为 0 hunk，报 "No valid hunks parsed"。
+  it("parsePatch 应容错 3 尖角 SEARCH/REPLACE 标记", () => {
+    const patch = ["<<< SEARCH", "old a", "=======", "new a", ">>> REPLACE"].join("\n");
+    const hunks = parsePatch(patch);
+    expect(hunks).toHaveLength(1);
+    expect(hunks[0].search).toBe("old a");
+    expect(hunks[0].replace).toBe("new a");
+  });
+
+  it("parsePatch 应容错 `SEARCH /abs/path` 裸头", () => {
+    const patch = ["SEARCH /home/x/queens.py", "old", "=======", "new", ">>>>>>> REPLACE"].join("\n");
+    const [h] = parsePatch(patch);
+    expect(h?.relativePath).toBe("/home/x/queens.py");
+    expect(h?.search).toBe("old");
+  });
+
+  it("parsePatch 应把 SEARCH 头下一行的 path: 行认作目标文件（v26-t9）", () => {
+    const patch = [
+      "<<< SEARCH",
+      "path: /home/chy/EvoClaw/data/workspace/v26-t9/gql.py",
+      'r"|(?P<number>)\\."',
+      "=======",
+      'r"|(?P<number>)"',
+      ">>> REPLACE",
+    ].join("\n");
+    const [h] = parsePatch(patch);
+    expect(h?.relativePath).toBe("/home/chy/EvoClaw/data/workspace/v26-t9/gql.py");
+    // path 行不得混进 search 正文
+    expect(h?.search).toBe('r"|(?P<number>)\\."');
+  });
+
+  it("parsePatch 不把正文首行 `path = ...` 误认成目标文件", () => {
+    const patch = [
+      "<<< SEARCH",
+      "path = os.path.join(a, b)",
+      "=======",
+      "path = os.path.join(a, c)",
+      ">>> REPLACE",
+    ].join("\n");
+    const [h] = parsePatch(patch);
+    // 没有可信路径 → 保持空（交给 applyPatch 报「未指定目标文件」），
+    // 正文首行必须留在 search 里
+    expect(h?.relativePath).toBe("");
+    expect(h?.search).toBe("path = os.path.join(a, b)");
+  });
+
   it("parsePatch+applyPatch：全无路径时给明确错误而非 no-hunks 幽灵错误", async () => {
     fs.writeFileSync(path.join(tmpDir, "ghost.ts"), "alpha");
     const hunks = parsePatch("<<<<<<< SEARCH\nalpha\n=======\nbeta\n>>>>>>> REPLACE");
@@ -495,5 +544,89 @@ describe("applyPatch", () => {
     } finally {
       fs.unlinkSync(outsideFile);
     }
+  });
+
+  // ══ 2026-11-26 失败会话取证：apply_patch 的 5 类调用失败 ══
+  // 取证口径：192 条会话 jsonl 里 apply_patch 的失败签名——File not found 16 次、
+  // SEARCH block not found 6 次、No valid hunks 5 次。下面按根因各一条回归。
+
+  it("路径容错：patch 头多带 data/workspace/ 前缀时按存在性剥离（v29-t4 实证 5 次）", async () => {
+    fs.mkdirSync(path.join(tmpDir, "data", "workspace", "v29-t4"), { recursive: true });
+    // 真实落点在「工作区根 + v29-t4/x.js」，模型却写了 data/workspace/v29-t4/x.js
+    fs.mkdirSync(path.join(tmpDir, "v29-t4"), { recursive: true });
+    const target = path.join(tmpDir, "v29-t4", "ratelimit.js");
+    fs.writeFileSync(target, "const x = 1;\n");
+    const result = await applyPatch(tmpDir, [
+      { relativePath: "data/workspace/v29-t4/ratelimit.js", search: "const x = 1;", replace: "const x = 2;" },
+    ]);
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(target, "utf-8")).toBe("const x = 2;\n");
+  });
+
+  it("路径容错：unified diff 剥 a/ 后丢掉的根斜杠可还原（v26-t3/v26-t9 实证 6 次）", async () => {
+    // `--- a/<tmpDir>/x.js` → cleanPatchPath 剥 `a/` 后成「相对路径」，
+    // 实际是去掉开头 / 的绝对路径；按 / + rel 存在性还原。
+    const abs = path.join(tmpDir, "restored.js");
+    fs.writeFileSync(abs, "old\n");
+    const rel = abs.slice(1); // 去掉开头的 /
+    const result = await applyPatch(tmpDir, [
+      { relativePath: rel, search: "old", replace: "new" },
+    ]);
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(abs, "utf-8")).toBe("new\n");
+  });
+
+  it("路径容错：裸文件名在工作区内唯一命中时自动锚定（v26-t4/v27-t1/v27-t10/v30-t1 实证 5 次）", async () => {
+    fs.mkdirSync(path.join(tmpDir, "task-sub"), { recursive: true });
+    const target = path.join(tmpDir, "task-sub", "sqleng.py");
+    fs.writeFileSync(target, "x = 1\n");
+    const result = await applyPatch(tmpDir, [
+      { relativePath: "sqleng.py", search: "x = 1", replace: "x = 2" },
+    ]);
+    expect(result.success).toBe(true);
+    expect(fs.readFileSync(target, "utf-8")).toBe("x = 2\n");
+  });
+
+  it("路径容错：裸文件名有歧义时不猜（保持原解析并给出可执行错误）", async () => {
+    fs.mkdirSync(path.join(tmpDir, "a"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "b"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "a", "dup.py"), "x = 1\n");
+    fs.writeFileSync(path.join(tmpDir, "b", "dup.py"), "x = 1\n");
+    const result = await applyPatch(tmpDir, [
+      { relativePath: "dup.py", search: "x = 1", replace: "x = 2" },
+    ]);
+    expect(result.success).toBe(false);
+    expect(result.errors[0].reason).toContain("File not found");
+    // 两份都没被动
+    expect(fs.readFileSync(path.join(tmpDir, "a", "dup.py"), "utf-8")).toBe("x = 1\n");
+    expect(fs.readFileSync(path.join(tmpDir, "b", "dup.py"), "utf-8")).toBe("x = 1\n");
+  });
+
+  it("已落盘检测：重发同一 patch 返回成功形状空操作（不报 SEARCH 未命中）", async () => {
+    // 上一次 patch 已生效：文件里是新文本、旧文本已消失
+    fs.writeFileSync(path.join(tmpDir, "applied.ts"), "const answer = 42;\n");
+    const result = await applyPatch(tmpDir, [
+      { relativePath: "applied.ts", search: "const answer = 41;", replace: "const answer = 42;" },
+    ]);
+    expect(result.success).toBe(true);
+    expect(result.alreadyAppliedHunks).toBe(1);
+    expect(result.note).toContain("已在文件中");
+    // 未重复写盘
+    expect(fs.readFileSync(path.join(tmpDir, "applied.ts"), "utf-8")).toBe("const answer = 42;\n");
+  });
+
+  it("已落盘检测不误判：new_string 过短或旧文本仍在时不走空操作", async () => {
+    fs.writeFileSync(path.join(tmpDir, "s.ts"), "a = 1;\nb = 2;\n");
+    // old 仍在文件里（真未应用）→ 必须正常失败
+    const r1 = await applyPatch(tmpDir, [
+      { relativePath: "s.ts", search: "a = 1;", replace: "a = 2;" },
+    ]);
+    expect(r1.success).toBe(true); // 能正常应用
+    // 短文本（<8 字符）不做 already-applied 判定
+    fs.writeFileSync(path.join(tmpDir, "short.ts"), "x\n");
+    const r2 = await applyPatch(tmpDir, [
+      { relativePath: "short.ts", search: "y", replace: "x" },
+    ]);
+    expect(r2.success).toBe(false);
   });
 });

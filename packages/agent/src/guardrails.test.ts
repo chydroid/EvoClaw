@@ -48,14 +48,18 @@ describe("guardrails tool-sql-injection（回归）", () => {
     expect(r.triggeredRules).toContain("tool-sql-injection");
   });
 
-  it("execute_code 裸赋值 count1=1 不拦；OR 1=1 天真注入仍拦", () => {
+  it("execute_code 裸赋值 count1=1 不拦；引号锚定的布尔注入仍拦", () => {
     const ok = mgr.checkToolCall("execute_code", {
       code: "count1 = 1\nprint(count1)",
     });
     expect(ok.passed).toBe(true);
 
+    // ★ 2026-11-26 口径调整：裸 `id = 1 OR 1=1` 在源码文本里几乎总是数据
+    //   （v30-t1 实证：模型自测 SQL 引擎时写了 `... OR 1=1") if False else "skip"`，
+    //   硬拦一轮）。全量 4155 次调用复现：该规则 21 次命中全部误拦。数字恒真与
+    //   合法 LIKE 模式（`'_-'`）在文本上不可区分，故只拦字符串等值恒真。
     const bad = mgr.checkToolCall("execute_code", {
-      code: "SELECT * FROM users WHERE id = 1 OR 1=1",
+      code: `q = "SELECT * FROM users WHERE name = 'x' OR '1'='1'"`,
     });
     expect(bad.passed).toBe(false);
     expect(bad.triggeredRules).toContain("tool-sql-injection");
@@ -71,13 +75,13 @@ describe("guardrails tool-sql-injection（回归）", () => {
     expect(ok.passed).toBe(true);
     expect(ok.triggeredRules).not.toContain("tool-sql-injection");
 
-    // 真布尔注入结构仍拦：`' OR 'a'='a` 与 `' OR 1=1`
+    // 真布尔注入结构仍拦：字符串等值恒真 `' OR 'a'='a`
     const bad1 = mgr.checkToolCall("shell_exec", {
       command: `mysql -e "SELECT * FROM t WHERE u = '' OR 'a'='a'"`,
     });
     expect(bad1.passed).toBe(false);
     const bad2 = mgr.checkToolCall("execute_code", {
-      code: `q = "SELECT * FROM users WHERE name = '' OR 1=1"`,
+      code: `q = "SELECT * FROM users WHERE name = 'x' OR '1'='1'"`,
     });
     expect(bad2.passed).toBe(false);
   });
@@ -107,6 +111,60 @@ describe("guardrails tool-sql-injection（回归）", () => {
       command: `mysql -e "SELECT 1 WHERE name = 'admin' -- "`,
     });
     expect(bad.passed).toBe(false);
+  });
+
+  // ★ 2026-11-26 第六类误伤（近十条会话取证）：旧规则的第一个分支
+  //   `['"];?\s*(?:…|SELECT)\s` 把「引号后紧跟 SQL 关键字」本身当注入，任何实现
+  //   SQL 引擎/写查询常量的代码都被硬拦。引号内是数据，真注入是结构性的。
+  it("★ 引号内的 SQL 关键字是数据，不拦（写 SQL 引擎/查询常量的代码）", () => {
+    const legit = [
+      `const q = "SELECT * FROM t";`,
+      `s = 'CREATE TABLE x (a INT)'`,
+      `sql = "INSERT INTO t VALUES (1)"`,
+      `sql = "UPDATE t SET a = 1 WHERE id = 2"`,
+      `"DELETE FROM t WHERE id=?"`,
+      `query = 'SELECT customer, COUNT(*) FROM orders GROUP BY customer'`,
+      `print(sqleng.exec_sql(db, "SELECT a FROM t WHERE b = 'x'"))`,
+    ];
+    for (const code of legit) {
+      const r = mgr.checkToolCall("execute_code", { code });
+      expect(r.passed, `不应拦: ${code}`).toBe(true);
+      expect(r.triggeredRules, code).not.toContain("tool-sql-injection");
+    }
+  });
+
+  it("★ 结构性注入仍拦：语句分隔 + 破坏性关键字 / 引号锚定布尔恒真 / 注释截断", () => {
+    const bad = [
+      `mysql -e "'; DROP TABLE users; --"`,
+      `mysql -e "1; DELETE FROM users"`,
+      `mysql -e "SELECT * FROM t WHERE u = '' OR 'a'='a'"`,
+      `mysql -e "SELECT * FROM t WHERE u = '' OR '1'='1'"`,
+      `mysql -e "SELECT * FROM t WHERE name = 'admin'--"`,
+      `psql -c "admin'-- "`,
+    ];
+    for (const cmd of bad) {
+      const r = mgr.checkToolCall("shell_exec", { command: cmd });
+      expect(r.passed, `应拦: ${cmd}`).toBe(false);
+      expect(r.triggeredRules, cmd).toContain("tool-sql-injection");
+    }
+  });
+
+  // ★ 2026-11-26 第六类误伤（v30-t1 实证）：模型写 SQL 引擎自测时，源码里出现
+  //   `exec_sql(db, "... LIKE '_-' OR 1=1") if False else "skip"`——裸 `1=1` 不带
+  //   引号锚点被硬拦一轮。裸数字恒真在**源码文本**里几乎总是数据；真注入必然经
+  //   字符串拼接，只保留引号锚定的结构判据（对齐 hermes：无全量 SQL 规则）。
+  it("★ 源码里的裸 `OR 1=1` 测试样例不拦（无引号锚点）", () => {
+    const legit = [
+      `exec_sql(db, "SELECT * FROM t WHERE a LIKE '_-' OR 1=1") if False else "skip"`,
+      `bad_query = "SELECT * FROM users WHERE id = 1 OR 1=1"  # 注入样例，用于测试`,
+      `assert detect("id = 1 OR 1=1") == True`,
+      `sql = "SELECT * FROM t WHERE id = 1 OR 2=2"`,
+    ];
+    for (const code of legit) {
+      const r = mgr.checkToolCall("execute_code", { code });
+      expect(r.passed, `不应拦: ${code}`).toBe(true);
+      expect(r.triggeredRules, code).not.toContain("tool-sql-injection");
+    }
   });
 });
 

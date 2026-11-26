@@ -196,7 +196,22 @@ export function registerDevTools(
       cmd = isWin ? "python" : "python3";
       args = ["-m", "pytest", target, "-v"].filter(Boolean);
     } else {
-      return { success: false, error: `Unsupported framework: ${framework}` };
+      // ★ 2026-11-26 取证：模型把**语言**当框架传（`framework: "node"`，
+      //   v30 会话），旧文案 `Unsupported framework: node` 只报错不指路，
+      //   模型无从知道该填什么。这里列出合法取值，并说明「语言 ≠ 框架」。
+      return {
+        success: false,
+        error:
+          `Unsupported framework: "${framework}". Valid values: vitest / jest / pytest / auto.`,
+        hint:
+          `"${framework}" 看起来是语言而不是测试框架——请填框架名，或直接省略 framework（默认 auto 自动检测）。` +
+          (framework === "node" || framework === "javascript" || framework === "typescript"
+            ? "Node/TS 项目通常用 vitest 或 jest。"
+            : framework === "python"
+              ? "Python 项目用 pytest。"
+              : ""),
+        validFrameworks: ["vitest", "jest", "pytest", "auto"],
+      };
     }
 
     // ── 执行 ──

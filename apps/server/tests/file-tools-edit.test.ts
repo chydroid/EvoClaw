@@ -253,6 +253,118 @@ describe("file_write action=edit — 精确编辑三件套（R11 GAP-7）", () =
   });
 });
 
+describe("file_write content 缺失守卫（v31-t3 静默截断取证）", () => {
+  let tmp: string;
+  let workspace: string;
+  let registry: Map<string, Registered>;
+
+  beforeEach(() => {
+    ReadTracker.resetInstance();
+    FileStateRegistry.resetInstance();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-content-"));
+    workspace = path.join(tmp, "data", "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    registry = mountTools(tmp, workspace);
+  });
+
+  afterEach(() => {
+    resetActiveSecurityLevel();
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  const fw = () => registry.get("file_write")!;
+
+  it("★ action=modify 缺 content 时拒绝，绝不把文件截断为 0 字节", async () => {
+    const f = path.join(workspace, "test_sched.py");
+    fs.writeFileSync(f, "print('hello')\n", "utf-8");
+    const r = (await fw().handler({ action: "modify", path: "test_sched.py" })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.error)).toContain("缺少 content");
+    // 关键：磁盘内容原封不动（旧实现会写成 "" 并回报 success:true, size:0）
+    expect(fs.readFileSync(f, "utf-8")).toBe("print('hello')\n");
+  });
+
+  it("★ action=create 缺 content 时拒绝，不创建 0 字节文件", async () => {
+    const r = (await fw().handler({ action: "create", path: "empty_new.py" })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(fs.existsSync(path.join(workspace, "empty_new.py"))).toBe(false);
+  });
+
+  it("缺 content 但带了 old_string/new_string → hint 指向 action=edit", async () => {
+    const r = (await fw().handler({
+      action: "modify", path: "x.py", old_string: "a", new_string: "b",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.hint)).toContain("action=edit");
+  });
+
+  it("显式 content: \"\" 仍然合法（有意清空文件）", async () => {
+    const f = path.join(workspace, "clear.py");
+    fs.writeFileSync(f, "old\n", "utf-8");
+    // 先读全文建立基线，再显式清空
+    await registry.get("file_read")!.handler({ path: "clear.py" });
+    const r = (await fw().handler({ action: "modify", path: "clear.py", content: "" })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+    expect(fs.readFileSync(f, "utf-8")).toBe("");
+  });
+});
+
+describe("file_write action=edit — 已落盘空操作（hermes is_already_applied）", () => {
+  let tmp: string;
+  let workspace: string;
+  let registry: Map<string, Registered>;
+
+  beforeEach(() => {
+    ReadTracker.resetInstance();
+    FileStateRegistry.resetInstance();
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-applied-"));
+    workspace = path.join(tmp, "data", "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    registry = mountTools(tmp, workspace);
+  });
+
+  afterEach(() => {
+    resetActiveSecurityLevel();
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  const fw = () => registry.get("file_write")!;
+
+  it("★ 重发已生效的 edit → 成功形状空操作，不写盘", async () => {
+    const f = path.join(workspace, "done.py");
+    fs.writeFileSync(f, "def compute_total(items):\n    return sum(items)\n", "utf-8");
+    const r = (await fw().handler({
+      action: "edit", path: "done.py",
+      old_string: "def compute_sum(items):\n    return sum(items)",
+      new_string: "def compute_total(items):\n    return sum(items)",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+    expect(r.no_change).toBe(true);
+    expect(String(r.note)).toContain("已经生效");
+    // 文件未被二次改写
+    expect(fs.readFileSync(f, "utf-8")).toBe("def compute_total(items):\n    return sum(items)\n");
+  });
+
+  it("old_string === new_string 且文本不在文件中 → 失败并提示「记忆与磁盘不符」", async () => {
+    const f = path.join(workspace, "m.py");
+    fs.writeFileSync(f, "real = 1\n", "utf-8");
+    const r = (await fw().handler({
+      action: "edit", path: "m.py",
+      old_string: "imaginary = 99", new_string: "imaginary = 99",
+    })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(String(r.hint)).toContain("记忆里的内容与磁盘不符");
+  });
+});
+
 describe("stale 阻断 — 整文件覆盖守卫（R11 GAP-5）", () => {
   let tmp: string;
   let fsBase: string;
@@ -377,18 +489,34 @@ describe("stale 阻断 — 整文件覆盖守卫（R11 GAP-5）", () => {
 
   // ★ 2026-11-21（v23 Task 5 实证）：create 撞已有文件是确定性失败，必须给
   //   模型「下一步怎么改」的 hint，而不是只透传裸 EEXIST 让其反复试错。
-  it("create 撞已有文件 → EEXIST 附三选一恢复 hint", async () => {
+  // ★ 2026-11-26（v33-t10 实证）口径调整：不再先调 fsMgr 抛 EEXIST 再给 hint，
+  //   而是在写盘前用 stale-overwrite 守卫拿到**真实理由**（本会话没见过该文件
+  //   当前全文）直接拒绝。理由更准确，且 hint 里三条出路都是活的——旧的
+  //   「① 改用 action=modify」是死路（modify 撞同一个守卫、同样的理由失败）。
+  it("create 撞已有文件 → 给真实理由 + 三条可行出路", async () => {
     const f = path.join(workspace, "exists.txt");
     fs.writeFileSync(f, "old", "utf-8");
     const r = (await fw().handler({ action: "create", path: "exists.txt", content: "new" })) as Record<string, unknown>;
     expect(r.success).toBe(false);
-    expect(String(r.error)).toContain("EEXIST");
+    expect(r.stale_write_blocked).toBe(true);
+    expect(String(r.error)).toContain("has not seen its full current content");
     const hint = String(r.hint ?? "");
-    expect(hint).toContain("action=modify");
+    expect(hint).toContain("file_read");
     expect(hint).toContain("overwrite=true");
     expect(hint).toContain("action=edit");
     // 原内容未被破坏
     expect(fs.readFileSync(f, "utf-8")).toBe("old");
+  });
+
+  // 已完整读过（磁盘未变）→ create 自动按覆盖执行，不再让模型改判 action。
+  it("create 撞已有文件但本会话读过全文 → 自动覆盖（不再 EEXIST 死循环）", async () => {
+    const f = path.join(workspace, "seen.txt");
+    fs.writeFileSync(f, "old", "utf-8");
+    await fr().handler({ path: "seen.txt" });
+    const r = (await fw().handler({ action: "create", path: "seen.txt", content: "new" })) as Record<string, unknown>;
+    expect(r.success).toBe(true);
+    expect(String(r.note ?? "")).toContain("已按覆盖写入");
+    expect(fs.readFileSync(f, "utf-8")).toBe("new");
   });
 
   it("edit 不受「未全文读」阻断（hermes patch_tool 语义：old_string 命中即安全）", async () => {

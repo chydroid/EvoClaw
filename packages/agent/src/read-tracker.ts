@@ -67,6 +67,13 @@ export interface ReadVerdict {
   action: "allow" | "stub" | "block";
   /** 连续重复读次数（1 = 首次/非连续） */
   consecutive: number;
+  /**
+   * 该 region 本 generation 内已被 serve 的次数（含本次）。block 文案必须报这个
+   * 而不是 consecutive——两者口径不同，混用会给出自相矛盾的提示
+   * （旧实现报「called file_read on this exact region 1 times」同时要求 STOP，
+   * 模型据此判断「我只读过一次」而继续重读，v33-t6 实证连撞 4 次）。
+   */
+  servedCount: number;
 }
 
 /** 读追踪器（单例） */
@@ -143,10 +150,13 @@ export class ReadTracker {
     ) {
       const hits = (s.dedupHits.get(key) ?? 0) + 1;
       s.dedupHits.set(key, hits);
-      if (hits >= 2) return { action: "block", consecutive: s.consecutive };
-      return { action: "stub", consecutive: s.consecutive };
+      // servedCount = 真实读 1 次 + 之后每次命中（hits）——即模型「第几次问同一区域」。
+      // 文案口径与 hermes `hits + 1` 一致。
+      const servedCount = hits + 1;
+      if (hits >= 2) return { action: "block", consecutive: s.consecutive, servedCount };
+      return { action: "stub", consecutive: s.consecutive, servedCount };
     }
-    return { action: "allow", consecutive: s.consecutive };
+    return { action: "allow", consecutive: s.consecutive, servedCount: 0 };
   }
 
   /**
@@ -338,12 +348,21 @@ export class ReadTracker {
     this.sessions.clear();
   }
 
-  /** 任意其他工具调用后重置连续读计数（hermes notify_other_tool_call） */
+  /**
+   * 任意其他工具调用后重置连续读计数（hermes `notify_other_tool_call`）。
+   *
+   * ★ 2026-11-26：此前本方法是死代码（零生产调用点），于是「读 → 写 → 读同一
+   * 区域」仍被判成连续读循环，第 4 次直接 BLOCK（v30-t6 frames.js /
+   * frames.test.js 实证：模型拿不到内容却被告知「你已经读过」，只能 cat 绕过）。
+   * hermes 在分发前对**每个非 read/search 工具**调用一次：既清 consecutive，
+   * 也清 dedup_hits（其他工具可能刚创建了这个路径、或改了它的权限）。
+   */
   notifyOtherToolCall(sessionId: string): void {
     const s = this.sessions.get(sessionId);
     if (s) {
       s.lastKey = null;
       s.consecutive = 0;
+      s.dedupHits.clear();
     }
   }
 }

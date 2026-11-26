@@ -33,6 +33,14 @@ describe("resolveRegisteredToolName", () => {
     expect(resolveRegisteredToolName("file_modify", registered("file_write"))).toBe("file_write");
     expect(resolveRegisteredToolName("edit_file", registered("file_write"))).toBe("file_write");
   });
+  // ★ 2026-11-26：memory 复合工具合并了 memory_search / memory_stats /
+  //   memory_get，旧名调用此前直接「Tool not registered」整轮报废。
+  it("resolves legacy memory_* names to memory", () => {
+    expect(resolveRegisteredToolName("memory_search", registered("memory"))).toBe("memory");
+    expect(resolveRegisteredToolName("memory_stats", registered("memory"))).toBe("memory");
+    expect(resolveRegisteredToolName("memory_get", registered("memory"))).toBe("memory");
+    expect(resolveRegisteredToolName("memory_add", registered("memory"))).toBe("memory");
+  });
 });
 
 /**
@@ -60,5 +68,20 @@ describe("applyImpliedToolAction", () => {
     const args = { path: "a" };
     expect(applyImpliedToolAction("write_file", "file_read", args)).toBe(args);
     expect(applyImpliedToolAction("my_tool", "file_write", args)).toBe(args);
+  });
+
+  // ★ 2026-11-26：memory 复合工具合并了 memory_search / memory_stats /
+  //   memory_get，旧名调用此前直接「Tool not registered」整轮报废。
+  it("fills the implied memory action for legacy names", () => {
+    expect(applyImpliedToolAction("memory_search", "memory", { query: "q" }).action).toBe("search");
+    expect(applyImpliedToolAction("memory_stats", "memory", {}).action).toBe("stats");
+    expect(applyImpliedToolAction("memory_add", "memory", { content: "c" }).action).toBe("add");
+    // memory_get 无对应 action：保持不带 action（handler 默认 search + id 取单条）
+    expect(applyImpliedToolAction("memory_get", "memory", { id: "x" }).action).toBeUndefined();
+  });
+
+  it("never overrides an explicit memory action", () => {
+    const args = { action: "stats", id: "x" };
+    expect(applyImpliedToolAction("memory_get", "memory", args)).toBe(args);
   });
 });

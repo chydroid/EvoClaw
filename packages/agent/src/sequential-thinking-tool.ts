@@ -55,9 +55,14 @@ Parameters:
 - needsMoreThoughts: If more thoughts are needed beyond initial estimate`,
       parameters: {
         thought: { type: "string", description: "Your current thinking step", required: true },
-        nextThoughtNeeded: { type: "boolean", description: "Whether another thought step is needed", required: true },
-        thoughtNumber: { type: "number", description: "Current thought number (e.g. 1, 2, 3)", required: true },
-        totalThoughts: { type: "number", description: "Estimated total thoughts needed (e.g. 5, 10)", required: true },
+        // ★ 2026-11-26 取证：nextThoughtNeeded / thoughtNumber / totalThoughts 此前
+        //   声明 required:true，而 llm-caller 会**丢弃本工具的返回值**（只回一句
+        //   「思考步骤已记录」），三者对行为零影响——纯记账。历史上 3 次
+        //   `Missing required parameter "nextThoughtNeeded"` 让整条调用报废。
+        //   改为可选 + 处理器内给确定性回退，缺字段不再失败。
+        nextThoughtNeeded: { type: "boolean", description: "Whether another thought step is needed（可选，默认 false）", required: false, default: false },
+        thoughtNumber: { type: "number", description: "Current thought number (e.g. 1, 2, 3)（可选，默认按已记录条数递增）", required: false },
+        totalThoughts: { type: "number", description: "Estimated total thoughts needed (e.g. 5, 10)（可选，默认同 thoughtNumber）", required: false },
         isRevision: { type: "boolean", description: "Whether this revises previous thinking", required: false },
         revisesThought: { type: "number", description: "Which thought is being reconsidered", required: false },
         branchFromThought: { type: "number", description: "Branching point thought number", required: false },
@@ -68,9 +73,18 @@ Parameters:
     async (args: Record<string, unknown>) => {
       const sessionId = (args._sessionId as string) || "default";
       const thought = args.thought as string;
-      const thoughtNumber = args.thoughtNumber as number;
-      const totalThoughts = args.totalThoughts as number;
-      const nextThoughtNeeded = args.nextThoughtNeeded as boolean;
+      // 三个数字/布尔字段可选（见 schema 注释）：缺省时用已记录条数推导，
+      // 保证「只给 thought」的调用也能落一条结构完整的思考记录。
+      const history = thinkingHistory.get(sessionId) || [];
+      const thoughtNumber =
+        typeof args.thoughtNumber === "number" && Number.isFinite(args.thoughtNumber)
+          ? args.thoughtNumber
+          : history.length + 1;
+      const totalThoughts =
+        typeof args.totalThoughts === "number" && Number.isFinite(args.totalThoughts)
+          ? args.totalThoughts
+          : thoughtNumber;
+      const nextThoughtNeeded = args.nextThoughtNeeded === true;
       const isRevision = args.isRevision as boolean | undefined;
       const revisesThought = args.revisesThought as number | undefined;
       const branchFromThought = args.branchFromThought as number | undefined;
@@ -81,7 +95,6 @@ Parameters:
       const adjustedTotal = Math.max(totalThoughts, thoughtNumber + (needsMoreThoughts ? 1 : 0));
 
       // Store in history
-      const history = thinkingHistory.get(sessionId) || [];
       history.push({
         thoughtNumber,
         thought,

@@ -48,7 +48,7 @@ export type FuzzyStrategy =
   | "context_aware";
 
 /** 匹配位置 [start, end) */
-type Match = [number, number];
+export type Match = [number, number];
 
 /** Unicode → ASCII 归一化映射 */
 const UNICODE_MAP: Record<string, string> = {
@@ -396,6 +396,29 @@ function preserveUnicodeInReplacement(
   return result;
 }
 
+/**
+ * 把匹配位置渲染成 `L<行号>: <片段>` 行（对标 hermes `_format_match_locations`）。
+ *
+ * 为什么需要：只说「找到 N 处匹配」模型不知道该加哪段上下文，只能重读整个文件
+ * 再猜一次（历史 file_write 失败里这一类共 15 次，全部靠重试收敛）。
+ * 给出具体行号与片段后，模型可以直接把相邻行加进 old_string。
+ */
+export function formatMatchLocations(content: string, matches: Match[], cap = 5): string {
+  const rows: string[] = [];
+  for (const [start] of matches.slice(0, cap)) {
+    const lineNo = content.slice(0, start).split("\n").length;
+    const lineStart = content.lastIndexOf("\n", start - 1) + 1;
+    const lineEndIdx = content.indexOf("\n", lineStart);
+    const lineEnd = lineEndIdx === -1 ? content.length : lineEndIdx;
+    let snippet = content.slice(lineStart, lineEnd).trim();
+    if (snippet.length > 80) snippet = snippet.slice(0, 77) + "...";
+    rows.push(`  L${lineNo}: ${snippet}`);
+  }
+  const extra = matches.length - cap;
+  if (extra > 0) rows.push(`  ... and ${extra} more`);
+  return rows.join("\n");
+}
+
 // ── 主入口 ────────────────────────────────────────────────
 
 /**
@@ -441,7 +464,9 @@ export function fuzzyFindAndReplace(
         newContent: content,
         matchCount: 0,
         strategy: null,
-        error: `找到 ${matches.length} 处匹配。请提供更多上下文使其唯一，或使用 replace_all=true。`,
+        error:
+          `找到 ${matches.length} 处匹配。请提供更多上下文使其唯一，或使用 replace_all=true。\n` +
+          `匹配位置：\n${formatMatchLocations(content, matches)}`,
       };
     }
 
@@ -476,6 +501,24 @@ export function fuzzyFindAndReplace(
     strategy: null,
     error: "未能在文件中找到 old_string 的匹配（所有 9 种策略均失败）",
   };
+}
+
+/**
+ * 该编辑是否**已经落盘**（重发的同一编辑 → 成功形状的空操作）。
+ *
+ * 对标 hermes `tools/fuzzy_match.py:is_already_applied`。保守判据：
+ * - new_string 非平凡（去空白后 >= 8 字符），否则太容易在文件里偶然命中；
+ * - new_string 必须**逐字**出现在当前内容中；
+ * - old_string 已经不在内容中（说明替换确实发生了），或 old/new 相同。
+ *
+ * 为什么需要：生产中最常见的 patch 失败是「上一次编辑其实已经成功，模型没看懂
+ * 结果又发了一遍」。此时报「找不到 old_string」会把模型推去重读文件、重发、
+ * 甚至整文件重写，白烧好几轮。返回成功形状的空操作让它直接继续。
+ */
+export function isAlreadyApplied(content: string, oldString: string, newString: string): boolean {
+  if (!newString || newString.trim().length < 8) return false;
+  if (!content.includes(newString)) return false;
+  return oldString === newString || !content.includes(oldString);
 }
 
 /** 仅查找（不替换），返回所有匹配位置 */

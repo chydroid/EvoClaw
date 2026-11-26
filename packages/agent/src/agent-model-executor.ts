@@ -1147,8 +1147,10 @@ export class AgentModelExecutor {
         name: "execute_tool_chain",
         description: "Execute a predefined tool chain by name. Use this when the task matches a known workflow pattern.",
         parameters: {
-          chain_name: { type: "string", description: "Name of the tool chain to execute" },
-          initial_params: { type: "object", description: "Optional initial parameters for the chain" },
+          // required:true 显式声明——handler 缺 chain_name 会去查 undefined，
+          // 报「Tool chain "undefined" not found」。校验层提前拒绝更省一轮。
+          chain_name: { type: "string", description: "Name of the tool chain to execute", required: true },
+          initial_params: { type: "object", description: "Optional initial parameters for the chain", required: false },
         },
       },
       handler: async (params: Record<string, unknown>) => {

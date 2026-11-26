@@ -527,9 +527,26 @@ export function registerWebTools(
       }
 
       if (format === "json") {
-        const data = await finalResponse.json();
+        // ★ 2026-11-26 取证：很多「API 端点」其实返回非 JSON 文本
+        //   （v13 会话实证：qt.gtimg.cn 回 `v_sh601106="1~..."`，旧实现直接
+        //   `response.json()` 抛 `Unexpected token 'v'`，整条抓取报废）。
+        //   改为：JSON 解析成功就返回结构化 data；失败则把原文作为 text 返回
+        //   并标注 format_note，模型拿到内容后可以自行处理。
+        const raw = await finalResponse.text();
         clearTimeout(timeout);
-        return { url: redirectUrl, status: finalResponse.status, data };
+        try {
+          const data: unknown = JSON.parse(raw);
+          return { url: redirectUrl, status: finalResponse.status, data };
+        } catch {
+          return {
+            url: redirectUrl,
+            status: finalResponse.status,
+            text: raw.slice(0, 20000),
+            length: raw.length,
+            format_note:
+              "Response is not valid JSON — returning the raw body as text (format='json' was requested).",
+          };
+        }
       }
 
       const text = await finalResponse.text();
@@ -730,8 +747,22 @@ except Exception as e:
           { ...process.env, PYTHONIOENCODING: "utf-8", Path: extendedPath, PATH: extendedPath },
           60000,
         );
-        const parsed = JSON.parse(result.trim());
-        return { success: true, ...parsed };
+        // ★ 2026-11-26：Python 脚本的 stdout 若不是 JSON（Scrapling 未装、警告行、
+        //   被截断），旧实现把 `Unexpected token 'v', "v_shN"...` 当成工具失败
+        //   抛给模型，模型只能换工具重试。这里区分「脚本跑完但输出非 JSON」
+        //   与「脚本真的失败」：前者把原始输出带回去（有内容比报错有用）。
+        try {
+          const parsed = JSON.parse(result.trim());
+          return { success: true, ...parsed };
+        } catch {
+          return {
+            success: true,
+            url,
+            text: result.slice(0, 20000),
+            format_note:
+              "Stealth fetch produced non-JSON output — returning the raw script output instead of failing.",
+          };
+        }
       } catch (err: any) {
         const stderr = err.stderr?.toString() || err.message || String(err);
         return { success: false, error: stderr.slice(0, 5000) };

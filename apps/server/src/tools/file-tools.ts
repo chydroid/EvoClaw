@@ -7,6 +7,7 @@ import {
   FileStateRegistry,
   ReadTracker,
   fuzzyFindAndReplace,
+  isAlreadyApplied,
   maybeCorrectEscapeDrift,
   AmbiguousEscapeDriftError,
   CONSECUTIVE_READ_BLOCK,
@@ -354,9 +355,40 @@ export function registerFileTools(
   // 合并自 file_create 与 file_modify。两者仅「新建还是覆盖」的语义不同，
   // handler 逻辑体逐字保留，由 action 分发。旧工具名不再注册。
 
+  /**
+   * content 缺失守卫（对标 hermes write_file：content 是必填字段）。
+   *
+   * ★ 2026-11-26 取证（v31-t3 第 17 行）：模型调 file_write action=modify 只带
+   *   {path}，旧实现 `String(params.content || "")` 把 content 静默当成空串 →
+   *   文件被截断成 0 字节，却回报 success:true、size:0。同族：action=create
+   *   缺 content 时创建 0 字节文件，还顺手把写基线记成空内容，后续 modify 全被
+   *   「没读过全文」挡住（v25-t3 连环失败）。
+   *   判据用「键是否存在」而不是「值是否为空」：显式 content:"" 是合法的
+   *   （有意清空文件），只有键缺失才是调用错误。
+   */
+  function missingContentGuard(
+    action: "create" | "modify",
+    params: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    if (params.content !== undefined) return null;
+    const hasEditArgs = params.old_string !== undefined || params.new_string !== undefined;
+    return {
+      success: false,
+      error:
+        `file_write action=${action} 缺少 content（整文件内容）。` +
+        "为避免把文件静默截断为 0 字节，本次调用未执行。",
+      hint: hasEditArgs
+        ? "你传了 old_string/new_string 但没传 content —— 定点替换请改用 file_write action=edit + old_string/new_string（不需要 content）。"
+        : "整文件写入请传 content（完整文件内容）；只改局部请用 action=edit + old_string/new_string；有意清空文件请显式传 content: \"\"。",
+      retryable: true,
+    };
+  }
+
   async function handleFileWriteCreate(params: Record<string, unknown>): Promise<unknown> {
+    const guard = missingContentGuard("create", params);
+    if (guard) return guard;
     const filePath = String(params.path || "");
-    const content = String(params.content || "");
+    const content = String(params.content ?? "");
     const overwrite = params.overwrite === true;
     const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
     const pf = preflight(resolvedPath, fsBase, true);
@@ -377,6 +409,23 @@ export function registerFileTools(
         effectiveOverwrite = true;
         autoOverwriteNote =
           "目标文件已存在，且本会话持有其当前全文（你写过或完整读过、磁盘未变）——已按覆盖写入（等价 action=modify）。";
+      } else {
+        // ★ 2026-11-26（v33-t10 实证）：旧实现此时仍以 overwrite=false 调 fsMgr →
+        //   抛 EEXIST，再给「① 改用 action=modify」的 hint。可 modify 会撞**同一个**
+        //   stale-overwrite 守卫、以同样的理由失败——hint 指向一条死路，模型在
+        //   create/modify 之间来回试两轮才转向 overwrite=true。
+        //   直接把守卫给出的真实理由和唯一可行出路一次说清。
+        return {
+          success: false,
+          error: blocker,
+          stale_write_blocked: true,
+          path: filePath,
+          resolved_path: resolvedPath,
+          hint:
+            "三选一：① 先 file_read 完整读一遍该文件（不要只看片段），再重发本次写入——那时覆盖是安全的；" +
+            "② 若你**确定**要用本次 content 整文件替换（不关心磁盘上的旧内容），显式传 overwrite=true；" +
+            "③ 只改局部时用 file_write action=edit + old_string/new_string（不需要先读全文）。",
+        };
       }
     }
     // 沙箱外的写操作在「一般安全」档需要用户确认
@@ -443,8 +492,8 @@ export function registerFileTools(
             error: message,
             hint:
               `文件已存在（${resolvedPath}）。三选一：` +
-              `① 用 file_write action=modify + content 覆盖为完整新内容；` +
-              `② 用 file_write action=create + overwrite=true 显式替换；` +
+              `① 用 file_write action=create + overwrite=true 显式替换为本次 content；` +
+              `② 先 file_read 完整读一遍该文件，再重发本次写入（那时整文件覆盖是安全的）；` +
               `③ 只改局部时用 file_write action=edit + old_string/new_string。`,
           };
         }
@@ -453,8 +502,10 @@ export function registerFileTools(
   }
 
   async function handleFileWriteModify(params: Record<string, unknown>): Promise<unknown> {
+    const guard = missingContentGuard("modify", params);
+    if (guard) return guard;
     const filePath = String(params.path || "");
-    const content = String(params.content || "");
+    const content = String(params.content ?? "");
     const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
     const pf = preflight(resolvedPath, fsBase, true);
     if (!pf.ok) return { success: false, error: pf.error };
@@ -584,9 +635,28 @@ export function registerFileTools(
           }
           throw err;
         }
-        // d. 9 策略模糊匹配替换
+        // d. 已落盘检测（对标 hermes patch_replace 的 is_already_applied）：
+        //    生产里最常见的 patch 失败是「上一次编辑其实已经成功，模型又发了一遍」。
+        //    旧实现报「找不到 old_string」，把模型推去重读/重发/整文件重写，白烧
+        //    好几轮。这里返回**成功形状的空操作**，让它直接继续。
+        if (isAlreadyApplied(content, effectiveOld, effectiveNew)) {
+          return {
+            success: true,
+            no_change: true,
+            path: resolvedPath,
+            workspaceRelative: display,
+            note:
+              "文件已包含目标文本——该编辑看起来**已经生效**，本次未写盘。" +
+              "不要重发这条调用；如需继续修改，请基于 file_read 的当前内容发出新的 old_string/new_string。",
+            ...(driftNote ? { drift_note: driftNote } : {}),
+          };
+        }
+        // e. 9 策略模糊匹配替换
         const result = fuzzyFindAndReplace(content, effectiveOld, effectiveNew, replaceAll);
         if (!result.success) {
+          // old/new 完全相同却没有落在文件里：几乎总是「模型记错了当前内容」。
+          // 给一句可执行的纠正，而不是让它继续猜（hermes IDENTICAL_STRINGS_ERROR 同义）。
+          const identical = effectiveOld === effectiveNew;
           const failures = readTracker.recordEditFailure(sessionId, resolvedPath);
           const escalate =
             failures >= EDIT_FAILURE_ESCALATE
@@ -595,7 +665,9 @@ export function registerFileTools(
           return {
             success: false,
             error: result.error + escalate,
-            hint: `用 file_read 核对当前内容，或加长 old_string 提供更多上下文使其唯一。${driftNote ? ` note: ${driftNote}` : ""}`,
+            hint: identical
+              ? `old_string 与 new_string 相同，且该文本不在文件中——说明你记忆里的内容与磁盘不符。请先 file_read 核对，再提供「当前真实内容 → 期望内容」的 old_string/new_string。${driftNote ? ` note: ${driftNote}` : ""}`
+              : `用 file_read 核对当前内容，或加长 old_string 提供更多上下文使其唯一。${driftNote ? ` note: ${driftNote}` : ""}`,
             path: filePath,
           };
         }
@@ -804,12 +876,12 @@ export function registerFileTools(
           return {
             success: false,
             error:
-              `BLOCKED: You have called file_read on this exact region ${verdict.consecutive} times ` +
-              "and the file has NOT changed. STOP calling file_read for this path — the content " +
-              "from your earlier file_read result in this conversation is still current. " +
-              "Proceed with your task using the information you already have.",
+              `BLOCKED: You have asked for this exact region ${verdict.servedCount} times ` +
+              "(1 full read + repeated calls) and the file has NOT changed. STOP calling file_read " +
+              "for this path — the content from your earlier file_read result in this conversation " +
+              "is still current. Proceed with your task using the information you already have.",
             guardrail_refusal: true,
-            already_read: verdict.consecutive,
+            already_read: verdict.servedCount,
             path: filePath,
           };
         }
