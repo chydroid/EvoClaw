@@ -73,13 +73,16 @@ describe.skipIf(!IS_WIN)("file-tools × 总体安全等级 —— 集成执法�
     return (await entry.handler(params)) as Record<string, unknown>;
   };
 
-  it("★ file_write 是复合工具：action 必填且只开放 create / modify / edit", () => {
-    // 合并自 file_create + file_modify：判别字段缺失或拼错会让模型静默走错分支
+  it("★ file_write 是复合工具：action 可选（缺省 auto），开放 create / modify / edit / auto", () => {
+    // 合并自 file_create + file_modify：判别字段缺失或拼错会让模型静默走错分支。
+    // 2026-11-26（v33 实证）：旧契约 required:true 会把「省略 action」的参数校验
+    // 直接判死（模型漏一个字段 → 整条写路径报废）。现对齐 hermes write_file：
+    // action 可省略，缺省 auto 按磁盘现状选 create/modify。
     const tools = mountTools();
     const def = tools.get("file_write")!.definition;
     const action = (def.parameters as Record<string, { required?: boolean; enum?: string[] }>).action;
-    expect(action.required).toBe(true);
-    expect(action.enum).toEqual(["create", "modify", "edit"]);
+    expect(action.required).toBe(false);
+    expect(action.enum).toEqual(["create", "modify", "edit", "auto"]);
     // 原 file_create / file_modify 两个独立工具已不再注册
     expect(tools.has("file_create")).toBe(false);
     expect(tools.has("file_modify")).toBe(false);

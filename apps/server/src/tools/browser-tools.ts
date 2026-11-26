@@ -284,7 +284,7 @@ export function registerBrowserTools(
         action: {
           type: "string",
           description: "取数操作类型：text（默认）/ html / elements",
-          required: true,
+          required: false, default: "text",
           enum: ["text", "html", "elements"],
         },
         selector: { type: "string", description: "CSS 选择器（text / elements 使用；text 缺省为 'body'）", required: false },
@@ -306,7 +306,7 @@ export function registerBrowserTools(
       name: "browser_tabs",
       description: "Manage browser tabs (list, new, switch, close)",
       parameters: {
-        action: { type: "string", description: "Action: list, new, switch, or close", required: true, enum: ["list", "new", "switch", "close"] },
+        action: { type: "string", description: "Action: list, new, switch, or close", required: false, default: "list", enum: ["list", "new", "switch", "close"] },
         tabId: { type: "string", description: "Tab ID for switch/close actions", required: false },
       },
     },
@@ -648,7 +648,7 @@ export function registerBrowserTools(
         action: {
           type: "string",
           description: "页面操作类型：click（默认）/ hover / check / select / fill / submit",
-          required: true,
+          required: false, default: "click",
           enum: ["click", "hover", "check", "select", "fill", "submit"],
         },
         selector: { type: "string", description: "CSS 选择器（click / hover / check / select / fill 使用）", required: false },
@@ -765,7 +765,7 @@ export function registerBrowserTools(
         action: {
           type: "string",
           description: "滚动操作类型（保留 action 判别字段，当前仅支持 scroll）",
-          required: true,
+          required: false, default: "scroll",
           enum: ["scroll"],
         },
         selector: { type: "string", description: "CSS 选择器（滚动目标元素，缺省滚动整页）", required: false },
@@ -841,7 +841,7 @@ export function registerBrowserTools(
         action: {
           type: "string",
           description: "操作类型：extract（默认）/ clear",
-          required: true,
+          required: false, default: "extract",
           enum: ["extract", "clear"],
         },
         max_elements: { type: "string", description: "提取的最大交互元素数量（默认 200）（extract 使用）", required: false },

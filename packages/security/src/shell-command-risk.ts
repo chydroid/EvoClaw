@@ -10,14 +10,23 @@
  *   - `safe`     常规命令，直接执行（保持现有自动化能力）
  *   - `caution`  有副作用但可恢复（如 rm -rf 相对路径、pip install），放行但标记
  *   - `critical` 不可逆 / 系统级破坏 → **必须人工审批**，审批通过后才执行
- *   - `blocked`  命令注入特征（换行注入、反引号替换）→ 硬拦，不接受审批
+ *   - `blocked`  空命令（无法判定）
  *
- * 「硬拦」与「需审批」必须分开：注入特征是攻击信号，不该给用户一个
+ * 「硬拦」与「需审批」必须分开：硬线模式是攻击信号，不该给用户一个
  * "点同意就放行" 的机会；而 `rm -rf /` 是用户可能真的需要的高危操作，
  * 应该让用户知情后决策。
  *
  * 另有「硬线地板」（hermes alignment round4）：归一化后命中
  * command-guard 的无条件阻止模式时，任何安全等级都硬拦，不接受审批。
+ *
+ * ★ hermes 对齐（2026-11-26）：不再把「换行」「`$(...)`」「反引号」这些**裸语法特征**
+ *   当成注入硬拦（对齐 hermes tools/approval_detection.py）：
+ *   - 换行是 shell 语法（多行脚本），危险与否取决于它分隔出来的命令本身；
+ *   - `$(...)` / 反引号的正文**会被执行**，所以把正文当作独立命令再扫一遍规则表——
+ *     `$(stat -c%s f)` 放行，`$(rm -rf /)` 照样命中硬线；
+ *   - `${VAR}` 只是参数展开、不执行命令，不再参与判定。
+ *   旧实现按裸特征整条硬拦，实测把 `python3 -c "多行脚本"`、heredoc + 收尾命令、
+ *   `for` 循环里的 `$(wc -c < "$f")` 全部误杀（v32/v33 压测 5 次，每次白烧一轮）。
  */
 
 import { checkHardline, normalizeCommand } from "./command-guard";
@@ -40,13 +49,16 @@ export interface ShellRiskAssessment {
 
 /**
  * 命令注入特征 —— 命中即硬拦，不接受人工审批。
- * 这些是攻击信号而非合法的高危操作。
+ *
+ * ★ hermes 对齐（2026-11-26）：这张表已清空。裸语法特征（换行、反引号、`$(...)`、
+ *   `${...}`）不再作为硬拦理由——见文件头注释。安全不靠「语法长得可疑」，
+ *   而靠规则表与硬线地板对**实际会执行的内容**判定：
+ *     - 换行分隔出的命令照常进规则表，`ls\nrm -rf /` 仍被硬线地板拦住；
+ *     - `$(...)` / 反引号的正文本来就在命令文本里，`$(rm -rf /)` 仍命中 rm_rf_root；
+ *       `$(stat -c%s f)`、`$(wc -c < "$f")` 这类正常展开不再被误杀。
+ *   保留这个空表是为了让 `blocked` 语义（"不可审批的硬拦"）与 guidance 分支不散架。
  */
-const INJECTION_RULES: Array<{ id: string; re: RegExp; reason: string }> = [
-  { id: "newline_injection", re: /\r|\n/, reason: "命令包含换行符，存在命令注入风险" },
-  { id: "backtick_substitution", re: /`[^`]*`/, reason: "命令包含反引号命令替换，存在注入风险" },
-  { id: "command_substitution", re: /\$\([^)]*\)|\$\{[^}]*\}/, reason: "命令包含命令替换语法，存在注入风险" },
-];
+const INJECTION_RULES: Array<{ id: string; re: RegExp; reason: string }> = [];
 
 /**
  * 不可逆 / 系统级破坏 —— 需人工审批。
@@ -105,30 +117,144 @@ function stripQuotedHeredocBodies(command: string): string {
   return command.replace(/<<['"](\w+)['"][\r\n]([\s\S]*?)[\r\n]\1/g, " <<HEREDOC>");
 }
 
-function hasOnlySafeNewlines(command: string): boolean {
-  const stripped = stripQuotedHeredocBodies(command);
-  // 追踪引号状态：引号内的换行是安全的
-  let inSingle = false;
-  let inDouble = false;
-  for (let i = 0; i < stripped.length; i++) {
-    const ch = stripped[i];
-    if (ch === "\\" && (inSingle || inDouble)) {
-      i++; // 跳过转义字符
+/**
+ * 引号感知掩码：把「引号内的数据」替换为空格，只留下 shell 真正会执行的内容。
+ *
+ * 对齐 hermes tools/approval_quoted_newlines.py `_mask_quoted_newlines` 的判定模型：
+ * 引号内的换行、`rm -rf /` 之类的**文本**是数据，不该触发命令规则；但引号内的
+ * `$(...)` / 反引号正文会被 shell **执行**，所以它的正文按代码区重新扫描（引号
+ * 状态重置），`$(rm -rf /)` 照样命中，`$(stat -c%s f)` 放行。
+ *
+ * 单引号内没有转义也没有展开 → 全部是数据。
+ * 双引号内除 `$(...)` / 反引号外都是数据（含换行，掩成空格）。
+ */
+function maskQuotedData(command: string): string {
+  type Frame = { kind: "single" | "double" | "paren" | "tick"; depth: number };
+  const out: string[] = [];
+  const stack: Frame[] = [];
+  const top = () => stack[stack.length - 1];
+  let i = 0;
+  while (i < command.length) {
+    const ch = command[i];
+    const frame = top();
+    const inData = frame?.kind === "single" || frame?.kind === "double";
+
+    if (inData) {
+      if (frame.kind === "double") {
+        if (ch === "\\" && i + 1 < command.length) {
+          out.push(" ", " ");
+          i += 2;
+          continue;
+        }
+        if (ch === "$" && command[i + 1] === "(") {
+          stack.push({ kind: "paren", depth: 0 });
+          out.push("$", "(");
+          i += 2;
+          continue;
+        }
+        if (ch === "`") {
+          stack.push({ kind: "tick", depth: 0 });
+          out.push("`");
+          i++;
+          continue;
+        }
+        if (ch === '"') {
+          stack.pop();
+          out.push('"');
+          i++;
+          continue;
+        }
+        out.push(" "); // 双引号内的一切（含换行）都是数据
+        i++;
+        continue;
+      }
+      if (ch === "'") {
+        stack.pop();
+        out.push("'");
+        i++;
+        continue;
+      }
+      out.push(" ");
+      i++;
       continue;
     }
-    if (ch === "'" && !inDouble) {
-      inSingle = !inSingle;
+
+    // ── 代码区（顶层，或 `$(...)` / 反引号的正文）──
+    if (ch === "\\" && i + 1 < command.length) {
+      out.push(ch, command[i + 1]);
+      i += 2;
       continue;
     }
-    if (ch === '"' && !inSingle) {
-      inDouble = !inDouble;
+    if (ch === "'") {
+      stack.push({ kind: "single", depth: 0 });
+      out.push("'");
+      i++;
       continue;
     }
-    if ((ch === "\n" || ch === "\r") && !inSingle && !inDouble) {
-      return false; // 不安全换行（引号外）
+    if (ch === '"') {
+      stack.push({ kind: "double", depth: 0 });
+      out.push('"');
+      i++;
+      continue;
     }
+    if (ch === "$" && command[i + 1] === "(") {
+      stack.push({ kind: "paren", depth: 0 });
+      out.push("$", "(");
+      i += 2;
+      continue;
+    }
+    if (ch === "`") {
+      if (frame?.kind === "tick" && frame.depth === 0) {
+        stack.pop();
+      } else {
+        stack.push({ kind: "tick", depth: 0 });
+      }
+      out.push("`");
+      i++;
+      continue;
+    }
+    if (frame?.kind === "paren") {
+      if (ch === "(") frame.depth++;
+      else if (ch === ")" && frame.depth > 0) frame.depth--;
+      else if (ch === ")" && frame.depth === 0) {
+        stack.pop();
+        out.push(")");
+        i++;
+        continue;
+      }
+    }
+    out.push(ch);
+    i++;
   }
-  return true;
+  return out.join("");
+}
+
+/**
+ * 引号内的载荷交给另一个 shell **执行**的命令（sh -c / eval / source …）。
+ * 这种引号不是数据边界，掩码会把真正的命令藏起来，因此整条命令按原文检测。
+ */
+const SHELL_CARRIER_RE =
+  /\b(?:eval|source)\b|\b(?:sh|bash|zsh|ksh|dash)\b[^\n]*?\s-[A-Za-z]*c\b/;
+
+/**
+ * 去掉「纯路径参数」外层的引号：`rm -rf "/home"` → `rm -rf /home`。
+ *
+ * 对齐 hermes `_hardline_rm_path` 的 `(?:["'](?:path)["']|...)` 分支——引号包裹的
+ * **路径操作数**仍是真实目标，不是数据。只对「整段引号内不含空白、且以路径字符开头」
+ * 的片段去引号，所以 `echo "rm -rf / is bad"` 这类散文仍是数据（含空格 → 不动）。
+ */
+function unquotePathWords(command: string): string {
+  return command.replace(
+    /(["'])((?:~|\$HOME|\$[A-Za-z_][A-Za-z0-9_]*|\/|[A-Za-z]:)[^"'\s]*)\1/g,
+    (_m, _q: string, body: string) => body
+  );
+}
+
+/** 供规则匹配的「shell 实际执行内容」：去路径引号 + 引号数据掩码 + 引号 heredoc 正文剥离。 */
+function shellVisibleText(command: string): string {
+  const heredocStripped = stripQuotedHeredocBodies(command);
+  if (SHELL_CARRIER_RE.test(heredocStripped)) return heredocStripped;
+  return maskQuotedData(unquotePathWords(heredocStripped));
 }
 
 /** 对单条命令做风险分级。永不抛出。 */
@@ -137,33 +263,24 @@ export function assessShellCommand(command: string): ShellRiskAssessment {
     return { level: "blocked", reason: "命令为空", rule: "empty_command" };
   }
   const cmd = command;
-  // hermes alignment round4：规则匹配用归一化后的命令，防止 ANSI/null/fullwidth/
-  // 反斜杠/空字符串字面量混淆（此前 command-guard.ts 的 normalizeCommand 零调用点）。
-  // 注入换行判定仍用原文——它依赖引号/heredoc 状态机，归一化会破坏该语义。
-  const normalized = normalizeCommand(cmd);
+  // ★ hermes 对齐（2026-11-26）：判定对象是「shell 实际会执行的内容」——
+  //   引号内的数据掩码、引号 heredoc 正文剥离；换行/`$()`/反引号本身不再是
+  //   拦截理由，危险与否取决于它们分隔/包裹出来的命令。见文件头注释。
+  //   归一化（ANSI/null/fullwidth/反斜杠/空字面量）在掩码之后进行，
+  //   防止混淆绕过（hermes alignment round4）。
+  const visible = shellVisibleText(cmd);
+  const normalized = normalizeCommand(visible);
 
-  // 硬线地板（hermes approval_floors 语义）：在「归一化 + 剥离引号 heredoc
-  // 正文」后的 shell 可见文本上判定。正文里的 `os.system('rm -rf /')` 是
-  // 传给程序的数据，不能误杀（2026-11-02 既有设计）；而命令前缀本身若含
-  // hardline 仍会被拦。结果作为附加字段并入分级返回，不改写既有 rule/level，
-  // 由 decideShellCommand 在任何安全等级下优先硬拦。
-  const shellVisible = normalizeCommand(stripQuotedHeredocBodies(cmd));
-  const hardline = checkHardline(shellVisible);
+  // 硬线地板（hermes approval_floors 语义）：任何安全等级都硬拦，不接受审批。
+  // _CMDPOS 把行首、`;`、`&`、`|`、换行、`$(`、反引号都当作命令起始位置，
+  // 所以 `ls\nrm -rf /`、`$(rm -rf /)` 依然命中，而引号里的同名文本是数据。
+  const hardline = checkHardline(normalized);
   const hardlineReason = hardline.blocked ? hardline.reason : undefined;
   const floor = hardlineReason ? { hardlineReason } : {};
 
-  // 1. 注入特征优先：攻击信号不接受审批（原文判定，保留 heredoc 语义；
-  //    反引号/替换规则同时查归一化文本，防反斜杠混淆绕过）
+  // 1. 空命令已在上方拦截；INJECTION_RULES 保留为空表（语义占位）。
   for (const rule of INJECTION_RULES) {
-    if (rule.id === "newline_injection") {
-      // ★ 2026-11-02 修复：仅拦截引号/heredoc 之外的换行
-      // 旧规则拦截所有换行，误杀 heredoc（python3 <<'EOF' ... EOF）和
-      // 引号内多行字符串（python3 -c "行1\n行2"），模型被迫改用
-      // file_write+execute_code 绕行，浪费轮次与 token。
-      if (!hasOnlySafeNewlines(cmd)) {
-        return { level: "blocked", reason: rule.reason, rule: rule.id, ...floor };
-      }
-    } else if (rule.re.test(cmd) || rule.re.test(normalized)) {
+    if (rule.re.test(cmd) || rule.re.test(normalized)) {
       return { level: "blocked", reason: rule.reason, rule: rule.id, ...floor };
     }
   }
@@ -200,28 +317,25 @@ export function requiresApprovalForShellCommand(assessment: ShellRiskAssessment)
   return assessment.level === "critical";
 }
 
-/** 命令注入类规则 ID（任何安全等级都硬拦，调低等级无法放开） */
-const INJECTION_RULE_IDS = new Set(INJECTION_RULES.map((r) => r.id));
-
 /**
  * 硬拦命令的可执行恢复指引（拼在 shell_exec 的 blocked 错误之后）。
  *
- * 关键不变式：注入类（换行 / 反引号 / $() 替换）在**任何**安全等级下都硬拦，
- * 所以绝不能对它们提示「调低安全等级可放开」——那会误导模型反复重试内联命令
- * 或直接把「被拦截」误判成「沙箱环境不可用」而放弃（v12 压测 Task 2 实证：
- * 模型反复用 $(...) 内联命令被 command_substitution 拦，最终 0 交付）。
- * 改为给出真正可用的路径：写脚本文件再执行，或改用 execute_code。
- * 硬线地板（删根/写盘/fork bomb 等）则明确「无法放开」，不提供绕过指引。
+ * 关键不变式：硬线地板（删根 / 写盘 / fork bomb / 关机…）在**任何**安全等级下都硬拦，
+ * 所以绝不能提示「调低安全等级可放开」——那会误导模型反复重试，或直接把
+ * 「被拦截」误判成「沙箱环境不可用」而放弃（v12 压测 Task 2 实证：模型反复
+ * 内联命令被拦，最终 0 交付）。改为给出真正可用的路径：写脚本文件再执行，
+ * 或改用 execute_code。
+ *
+ * ★ hermes 对齐（2026-11-26）：换行 / `$()` / 反引号不再硬拦（见文件头注释），
+ *   所以「改用脚本文件 / execute_code」的旧话术只对真正的硬线命令保留。
  */
 export function shellBlockGuidance(assessment: ShellRiskAssessment): string {
-  if (INJECTION_RULE_IDS.has(assessment.rule ?? "")) {
-    return " 命令注入特征（换行 / 反引号 / $() 命令替换）在任何安全等级下都会硬拦，" +
-      "调低「总体安全」等级无法放开，请勿反复重试内联命令。" +
-      "改用可执行路径：把命令写成脚本文件（用 file_write 生成 .sh/.py/.js）后" +
-      "再用 shell_exec 只执行该文件；或直接改用 execute_code 工具（沙箱内支持多行代码与命令替换）。";
-  }
   if (assessment.hardlineReason) {
-    return " 该命令命中无条件高危模式（如删根 / 写盘 / fork bomb 等），任何安全等级都不会执行，也无法通过审批放开。";
+    return " 该命令命中无条件高危模式（如删根 / 写盘 / fork bomb / 关机等），任何安全等级都不会执行，也无法通过审批放开。" +
+      " 若确实需要，请把操作拆成只读的核查步骤，危险动作交由用户手工执行。";
+  }
+  if (assessment.level === "blocked") {
+    return " 该命令被安全策略硬拦，不接受审批。请改用 file_write 写脚本文件后用 shell_exec 只执行该文件，或改用 execute_code。";
   }
   return "如需放开，请到「安全 → 总体安全」调整等级。";
 }

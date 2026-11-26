@@ -116,7 +116,9 @@ describe("memory 工具 schema（P4）", () => {
       { required?: boolean; enum?: string[] }
     >;
     expect(params.action.enum).toEqual(["add", "patch", "remove", "search", "stats"]);
-    expect(params.action.required).toBe(true);
+    // 判别字段有默认值（search）→ 非必填，省略即用默认（对齐 hermes）
+    expect(params.action.required).toBe(false);
+    expect((params.action as { default?: string }).default).toBe("search");
     expect(params.id.required).toBe(false);
     expect(params.old_string.required).toBe(false);
   });

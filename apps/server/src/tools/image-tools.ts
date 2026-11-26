@@ -643,7 +643,7 @@ export function registerImageTools(executor: AgentModelExecutor): void {
         action: {
           type: "string",
           description: "图片操作类型：generate（默认，生成图片）/ info（查询生成能力）",
-          required: true,
+          required: false, default: "generate",
           enum: ["generate", "info"],
         },
         prompt: {

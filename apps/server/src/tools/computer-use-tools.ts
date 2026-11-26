@@ -448,7 +448,7 @@ export function registerComputerUseTools(deps: ComputerUseToolDeps): () => void 
         action: {
           type: "string",
           description: "操作类型（默认 screenshot）",
-          required: true,
+          required: false, default: "screenshot",
           enum: [
             "screenshot", "click", "move", "drag", "scroll",
             "type", "press", "window_list", "window_focus",

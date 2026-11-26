@@ -151,6 +151,43 @@ function withEbusyHint(text: string): string {
   return /EBUSY/i.test(text) ? text + EBUSY_HINT : text;
 }
 
+/**
+ * `data/workspace/` 前缀折叠（WS-DUP）。
+ *
+ * ★ 2026-11-26（footer-probe 实证）：cwd 恰为 workspace 根时，`data/workspace/`
+ *   就是「workspace 根」的同义别名（与 file_write 路径契约一致，hermes 的
+ *   write_file 也从不做这种猜测式前缀改写）。旧实现用「剥掉后路径或其父目录
+ *   存在」做门禁，但该判断在 spawn 前求值、看不到同一命令里刚 `mkdir` 出来的
+ *   目录：`mkdir -p data/workspace/probe` 被剥成 `probe`（父=wsDir 存在），
+ *   紧随其后的 `> data/workspace/probe/hello.txt` 却因父目录此刻尚不存在而**不被剥**，
+ *   于是一条命令被劈成两个基准——文件写进 data/workspace/data/workspace/…，
+ *   `ls data/workspace/probe` 又按剥掉后的路径列出空目录。结果 exit=0 但产物错位。
+ *   修法：cwd 为 workspace 根时无条件按别名折叠（确定性、与命令内先后无关）；
+ *   cwd 为其它子目录时仍保留存在性门禁（绝对路径因前置 `/` 永不匹配）。
+ */
+export function collapseWorkspaceRootAlias(command: string, cwd: string, wsDir: string): string {
+  const cwdIsWorkspaceRoot = path.resolve(cwd) === path.resolve(wsDir);
+  return command.replace(
+    /(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g,
+    (match, offset: number) => {
+      if (cwdIsWorkspaceRoot) {
+        console.log(`[shell_exec] Collapsed workspace-root alias (data/workspace/ -> ./)`);
+        return "";
+      }
+      // 非 workspace 根 cwd：仅当「剥掉后」的路径在 cwd 下存在（或父目录已存在）
+      // 时才改写，避免误伤真的叫 data/workspace 的相对目录
+      const rest = command.slice(offset + match.length).split(/\s+/)[0].replace(/["']/g, "");
+      const normalized = rest ? (match + rest).replace(/\\/g, "/") : match;
+      const candidateRel = normalized.replace(/^data\/workspace\//, "");
+      if (candidateRel && (fs.existsSync(path.resolve(wsDir, candidateRel)) || fs.existsSync(path.dirname(path.resolve(wsDir, candidateRel))))) {
+        console.log(`[shell_exec] Stripped workspace-relative prefix: data/workspace/${rest}`);
+        return "";
+      }
+      return match;
+    }
+  );
+}
+
 /** Recursively search for a file by name under a directory tree (max depth 4) */
 function findFileRecursive(root: string, filename: string, maxDepth = 4): string | null {
   if (maxDepth <= 0) return null;
@@ -481,21 +518,7 @@ export function registerShellMediaTools(
       // scheduler_execute 把 tick.txt 写到嵌套路径，shell_exec 直写正常路径
       // 失败 3 轮后才自行 mkdir）。
       const wsDir = getWorkspaceDir();
-      effectiveCommand = effectiveCommand.replace(
-        /(?<![:\w/.])data[\\/]workspace[\\/](?=\S)/g,
-        (match, offset: number) => {
-          // 仅当「剥掉后」的路径在 cwd 下存在（或父目录已存在）时才改写，
-          // 避免误伤真的叫 data/workspace 的相对目录
-          const rest = effectiveCommand.slice(offset + match.length).split(/\s+/)[0].replace(/["']/g, "");
-          const normalized = rest ? (match + rest).replace(/\\/g, "/") : match;
-          const candidateRel = normalized.replace(/^data\/workspace\//, "");
-          if (candidateRel && (fs.existsSync(path.resolve(wsDir, candidateRel)) || fs.existsSync(path.dirname(path.resolve(wsDir, candidateRel))))) {
-            console.log(`[shell_exec] Stripped workspace-relative prefix: data/workspace/${rest}`);
-            return "";
-          }
-          return match;
-        }
-      );
+      effectiveCommand = collapseWorkspaceRootAlias(effectiveCommand, cwd, wsDir);
       for (const m of effectiveCommand.matchAll(/\s([A-Za-z0-9_./-]+\.(?:py|js|mjs|ts|json|txt|csv|log|sh))\b/g)) {
         const relPath = m[1];
         if (path.isAbsolute(relPath)) continue;
@@ -1029,7 +1052,7 @@ export function registerShellMediaTools(
         action: {
           type: "string",
           description: "音乐操作类型：search（默认，搜索歌曲）/ download（下载音乐）",
-          required: true,
+          required: false, default: "search",
           enum: ["search", "download"],
         },
         artist: { type: "string", description: "歌手名（search 使用）", required: false },

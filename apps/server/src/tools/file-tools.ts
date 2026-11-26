@@ -361,6 +361,24 @@ export function registerFileTools(
     const { resolved: resolvedPath, forFs: fsPath, display } = resolveToolPath(fsBase, resolveWorkspaceBase(),filePath);
     const pf = preflight(resolvedPath, fsBase, true);
     if (!pf.ok) return { success: false, error: pf.error };
+    const sessionId = currentSessionId();
+    // ★ 2026-11-26（v33 压测实证）：模型经常「整文件重发」现有文件（把刚写的文件按
+    //   新方案再写一遍），却用 action=create 且不带 overwrite=false → fsMgr 抛
+    //   EEXIST，模型再花一整轮改判 action=modify。hermes write_file 的语义是
+    //   「存在则覆盖」并只在一个前提下拒绝：本任务没有该文件的当前全文、
+    //   或文件在磁盘上已被改动。这里对齐：目标已存在但本会话持有其当前全文
+    //   （刚写过 / 完整读过，且磁盘未变）→ 按覆盖执行（与 modify 同语义），
+    //   否则维持 EEXIST 拒绝（绝不静默覆盖未见内容）。
+    let effectiveOverwrite = overwrite;
+    let autoOverwriteNote: string | undefined;
+    if (!overwrite && fs.existsSync(resolvedPath)) {
+      const blocker = checkStaleOverwrite(sessionId, resolvedPath);
+      if (!blocker) {
+        effectiveOverwrite = true;
+        autoOverwriteNote =
+          "目标文件已存在，且本会话持有其当前全文（你写过或完整读过、磁盘未变）——已按覆盖写入（等价 action=modify）。";
+      }
+    }
     // 沙箱外的写操作在「一般安全」档需要用户确认
     if (pf.needsConfirm) {
       const cReq = permMgr.requestPermission("file_create", filePath, { size: content.length, outsideSandbox: true }, "tool");
@@ -376,13 +394,12 @@ export function registerFileTools(
     }
     const doCreate = async () => {
       const r = pf.insideSandbox
-        ? await fsMgr.createFile(fsPath, content, overwrite)
-        : await fsMgr.operateAbsolute(resolvedPath, content, "create", overwrite);
+        ? await fsMgr.createFile(fsPath, content, effectiveOverwrite)
+        : await fsMgr.operateAbsolute(resolvedPath, content, "create", effectiveOverwrite);
       // ★ v26 实证（T4 R14 / T7 R11）：create 成功后必须登记会话内全文基线。
       //   否则同一会话紧接着 action=modify 会被「没读过全文」守卫拒绝，
       //   模型被迫先 file_read 整个文件再重试——白白多一轮，还会误以为
       //   文件被外部改动。刚写入的就是完整内容，基线即 content。
-      const sessionId = currentSessionId();
       try {
         stateRegistry.recordWrite(sessionId, resolvedPath, content);
       } catch { /* 记账失败不阻断写 */ }
@@ -393,7 +410,13 @@ export function registerFileTools(
       // ★ 回报可直接复用的绝对路径。真实事故：早前只回报 fsBase 相对路径
       // （data/workspace/x.py），模型拿它当 cwd 又拼一次 →
       // `...\data\workspace\data\workspace`，连踩两个坑。
-      return { success: true, ...(r as object), path: resolvedPath, workspaceRelative: display };
+      return {
+        success: true,
+        ...(r as object),
+        ...(autoOverwriteNote ? { note: autoOverwriteNote } : {}),
+        path: resolvedPath,
+        workspaceRelative: display,
+      };
     };
     return await errRecovery
       .executeWithRetry("file_create", fsPath, doCreate)
@@ -636,9 +659,9 @@ export function registerFileTools(
     "file_write",
     {
       name: "file_write",
-      description: "Create a new file, overwrite an existing file, or edit an existing file in place. action=create 新建文件（overwrite=true 时替换已存在文件）；action=modify 覆盖已有文件内容；action=edit 用 old_string/new_string 定点替换已有文件中的一段文本（改大文件的首选——只发变更段，不整文件重发）。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。路径契约：相对路径以工作区根（workspace）为基准；绝对路径一律原样直通、不被改写——写产物请始终使用「工作区根相对路径」（如 v9-novel/the-last-city.md），不要把 /data/workspace/ 拼进相对路径。",
+      description: "Write a file: create it if absent, replace its full content if present (对标 hermes write_file), or edit it in place。action 可省略——省略（或 auto）时按磁盘现状自动判定：文件不存在→create，已存在→modify。create 新建（目标已存在时：若本会话持有其当前全文/刚写过则自动替换，否则拒绝并给出三条出路；overwrite=true 可强制替换）；modify 整文件覆盖（覆盖前校验「本会话已见过当前全文」，防用陈旧副本静默丢改动）；edit 用 old_string/new_string 定点替换（改大文件首选，只发变更段）。创建后请告知用户文件路径，并说明可通过 /api/files/download/{path} 下载。路径契约：相对路径以工作区根（workspace）为基准；绝对路径一律原样直通、不被改写——写产物请始终使用「工作区根相对路径」（如 v9-novel/the-last-city.md），不要把 /data/workspace/ 拼进相对路径。",
       parameters: {
-        action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容；edit = old_string/new_string 定点替换", required: true, enum: ["create", "modify", "edit"] },
+        action: { type: "string", description: "create = 新建文件；modify = 覆盖已有文件内容；edit = old_string/new_string 定点替换；省略或 auto = 按磁盘现状自动选择（推荐，等价 hermes write_file 的「不存在则建、存在则覆盖」）", required: false, default: "auto", enum: ["create", "modify", "edit", "auto"] },
         path: { type: "string", description: "File path. 相对路径以 workspace 根为基准；绝对路径原样直通（不会被剥段改写）。", required: true },
         content: { type: "string", description: "Content to write to the file（仅 create/modify 使用）", required: false, default: "" },
         overwrite: { type: "boolean", description: "Whether to overwrite if the file already exists（仅 action=create 生效，default: false）", required: false, default: false },
@@ -653,15 +676,27 @@ export function registerFileTools(
       // 换行与伪 XML 尾巴混进取值），严格 === 判定整条写路径报废 →
       // 交付物缺失 → 续跑空转到 loop 检测。取首个字母 token 判定意图；
       // 仍不认识的取值原样（截断）回报，便于定位。
+      //
+      // ★ 2026-11-26（v33 压测实证）：旧 schema 把 action 声明为 required，
+      //   模型在 6 次调用里按 hermes write_file 的肌肉记忆只传 {path, content}
+      //   （甚至带了 overwrite 也没带 action）→ 校验层「Missing required parameter
+      //   action」直接拒，模型再花一整轮把整段大文件内容重新发一遍。
+      //   hermes 的 write_file 只有 path+content：不存在则创建、存在则覆盖。
+      //   对齐：action 可省略，省略/auto 时按磁盘现状自动判定（存在→modify，
+      //   不存在→create）。显式 create/modify/edit 行为不变。
       const rawAction = String(params.action || "").trim();
-      const action =
-        rawAction === ""
-          ? "create"
-          : (/^[a-z_]+/i.exec(rawAction)?.[0] ?? "").toLowerCase();
+      let action: string;
+      if (rawAction === "" || rawAction.toLowerCase() === "auto") {
+        const filePath = String(params.path || "");
+        const { resolved } = resolveToolPath(fsBase, resolveWorkspaceBase(), filePath);
+        action = fs.existsSync(resolved) ? "modify" : "create";
+      } else {
+        action = (/^[a-z_]+/i.exec(rawAction)?.[0] ?? "").toLowerCase();
+      }
       if (action === "modify") return await handleFileWriteModify(params);
       if (action === "create") return await handleFileWriteCreate(params);
       if (action === "edit") return await handleFileWriteEdit(params);
-      return { success: false, error: `未知 file_write action: ${rawAction.slice(0, 40)}（仅支持 create / modify / edit）` };
+      return { success: false, error: `未知 file_write action: ${rawAction.slice(0, 40)}（仅支持 create / modify / edit / auto（省略即 auto））` };
     }
   );
 
@@ -864,6 +899,20 @@ export function registerFileTools(
       const { resolved: resolvedPath, forFs: fsDir } = resolveToolPath(fsBase, resolveWorkspaceBase(),dirPath);
       const pf = preflight(resolvedPath, fsBase, false);
       if (!pf.ok) return { success: false, error: pf.error };
+      // ★ 2026-11-26（v33 complex-report-probe 实证）：模型常在「创建目录之前」
+      //   先 file_list 探测目标目录是否存在。目录不存在时旧实现抛 ENOENT →
+      //   被判定为一次工具失败（并进失败链），可这是正常的存在性探测，不是错误。
+      //   对齐 shell `ls` 的直觉：目录缺失 → 返回空列表 + exists:false + 提示，
+      //   让模型直接进入创建流程，而不是先处理一次假失败。
+      if (!fs.existsSync(resolvedPath)) {
+        return {
+          path: dirPath,
+          files: [],
+          dirs: [],
+          exists: false,
+          hint: `目录尚不存在（解析为 ${resolvedPath}）。若要创建，用 file_write 写文件或 shell_exec 执行 mkdir -p。`,
+        };
+      }
       if (pf.insideSandbox) {
         return await errRecovery.executeWithRetry("file_list", fsDir, () => fsMgr.listAll(fsDir));
       }

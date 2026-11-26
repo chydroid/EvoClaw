@@ -781,7 +781,7 @@ except Exception as e:
         action: {
           type: "string",
           description: "抓取操作类型：fetch（默认）/ stealth / json",
-          required: true,
+          required: false, default: "fetch",
           enum: ["fetch", "stealth", "json"],
         },
         url: { type: "string", description: "要抓取的 URL（fetch / stealth / json 使用）", required: true },
@@ -1124,7 +1124,7 @@ except Exception as e:
         action: {
           type: "string",
           description: "搜索操作类型：search（默认）/ research / browser",
-          required: true,
+          required: false, default: "search",
           enum: ["search", "research", "browser"],
         },
         query: { type: "string", description: "搜索关键词（search / browser 使用；research 用 question 代替）", required: false },

@@ -448,7 +448,7 @@ export function registerDevTools(
           type: "string",
           description: "要执行的自检操作。action to perform: test (default) / lint",
           enum: ["test", "lint"],
-          required: true,
+          required: false, default: "test",
         },
         target: {
           type: "string",

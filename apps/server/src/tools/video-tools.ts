@@ -736,7 +736,7 @@ export function registerVideoTools(
         action: {
           type: "string",
           description: "视频操作类型：generate（默认，生成视频）/ info（查询生成能力）/ download（下载视频）",
-          required: true,
+          required: false, default: "generate",
           enum: ["generate", "info", "download"],
         },
         prompt: {

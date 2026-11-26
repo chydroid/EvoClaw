@@ -266,7 +266,7 @@ export function registerMemoryTools(executor: AgentModelExecutor): void {
         action: {
           type: "string",
           description: "memory 操作类型",
-          required: true,
+          required: false, default: "search",
           enum: ["add", "patch", "remove", "search", "stats"],
         },
         // action=add 参数

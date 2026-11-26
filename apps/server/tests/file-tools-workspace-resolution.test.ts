@@ -280,7 +280,7 @@ describe("file_write × action 取值归一化（v10 Task 6 事故回归）", ()
     expect(spy.calls).toHaveLength(0);
   });
 
-  it("action 缺省 → 默认 create（既有契约不变）", async () => {
+  it("action 缺省 → auto：磁盘不存在 → create", async () => {
     const spy = spyFsMgr();
     const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
     const entry = registry.get("file_write");
@@ -289,5 +289,149 @@ describe("file_write × action 取值归一化（v10 Task 6 事故回归）", ()
     expect(r.success).not.toBe(false);
     expect(spy.calls).toHaveLength(1);
     expect(spy.calls[0].startsWith("create:")).toBe(true);
+  });
+
+  it("action 缺省 → auto：磁盘已存在但会话无全文基线 → 拒绝覆盖（对齐 hermes）", async () => {
+    // hermes write_file 只在「本任务有该文件当前全文」时才覆盖；否则拒绝。
+    const abs = (p: string) => (path.isAbsolute(p) ? p : path.join(fsBase, p));
+    const seen: Array<{ op: string; path: string }> = [];
+    const realFsMgr = {
+      createFile: async (p: string, c: string) => {
+        const file = abs(p);
+        seen.push({ op: "create", path: file });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length, created: true };
+      },
+      modifyFile: async (p: string, c: string) => {
+        const file = abs(p);
+        seen.push({ op: "modify", path: file });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length };
+      },
+      readFile: async () => "",
+      deleteFile: async () => undefined,
+      listAll: () => [],
+      operateAbsolute: async (p: string, c: string, mode: string) => {
+        const file = abs(p);
+        seen.push({ op: String(mode), path: file });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length, created: true };
+      },
+      deleteFileAbsolute: async () => undefined,
+    };
+    fs.writeFileSync(path.join(fsBase, "data", "workspace", "note.md"), "existing\n", "utf-8");
+    const { registry } = mountTools(fsBase, throwingRecovery(), realFsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({ path: "note.md", content: "x" })) as Record<string, unknown>;
+    expect(r.success).toBe(false);
+    expect(r.stale_write_blocked).toBe(true);
+    expect(seen).toHaveLength(0);
+  });
+
+  it("action=create 命中会话全文基线 → 透明覆盖并附 note（v33 实证修复）", async () => {
+    // v33 事故：模型整文件重发刚写的文件却用 action=create 且不带 overwrite
+    // → fsMgr 抛 EEXIST，模型再花一整轮改判 modify。本会话持有当前全文时
+    // create 语义等同 modify（hermes write_file 的「存在则覆盖」）。
+    const abs = (p: string) => (path.isAbsolute(p) ? p : path.join(fsBase, p));
+    const seen: Array<{ op: string; path: string; overwrite: boolean }> = [];
+    const realFsMgr = {
+      createFile: async (p: string, c: string, overwrite: boolean) => {
+        const file = abs(p);
+        if (!overwrite && fs.existsSync(file)) {
+          throw new Error(`EEXIST: file already exists, open '${file}'`);
+        }
+        seen.push({ op: "create", path: file, overwrite });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length, created: true };
+      },
+      modifyFile: async (p: string, c: string) => {
+        const file = abs(p);
+        seen.push({ op: "modify", path: file, overwrite: false });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length };
+      },
+      readFile: async () => "",
+      deleteFile: async () => undefined,
+      listAll: () => [],
+      operateAbsolute: async (p: string, c: string, mode: string, overwrite: boolean) => {
+        const file = abs(p);
+        if (!overwrite && mode === "create" && fs.existsSync(file)) {
+          throw new Error(`EEXIST: file already exists, open '${file}'`);
+        }
+        seen.push({ op: String(mode), path: file, overwrite });
+        fs.writeFileSync(file, c, "utf-8");
+        return { path: p, size: c.length, created: true };
+      },
+      deleteFileAbsolute: async () => undefined,
+    };
+    const { registry } = mountTools(fsBase, throwingRecovery(), realFsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const target = path.join(fsBase, "data", "workspace", "rewrite.md");
+    // 第一次：建文件并登记全文基线
+    const r1 = (await entry.handler({ action: "create", path: target, content: "v1\n" })) as Record<string, unknown>;
+    expect(r1.success).not.toBe(false);
+    // 第二次：同一会话整文件重发（模型漏写 overwrite），不得 EEXIST 报废
+    const r2 = (await entry.handler({ action: "create", path: target, content: "v2\n" })) as Record<string, unknown>;
+    expect(r2.success).not.toBe(false);
+    expect(typeof r2.note).toBe("string");
+    expect(fs.readFileSync(target, "utf-8")).toBe("v2\n");
+    expect(seen.map((s) => s.op)).toEqual(["create", "create"]);
+    expect(seen[1].overwrite).toBe(true);
+  });
+
+  it("auto 显式取值与缺省等价", async () => {
+    const spy = spyFsMgr();
+    const { registry } = mountTools(fsBase, throwingRecovery(), spy.fsMgr);
+    const entry = registry.get("file_write");
+    if (!entry) throw new Error("file_write not registered");
+    const r = (await entry.handler({ action: "AUTO", path: "auto.md", content: "x" })) as Record<string, unknown>;
+    expect(r.success).not.toBe(false);
+    expect(spy.calls).toHaveLength(1);
+    expect(spy.calls[0].startsWith("create:")).toBe(true);
+  });
+});
+
+describe("file_list × 目录不存在（v33 实证：探测不是失败）", () => {
+  let tmp: string;
+  let fsBase: string;
+
+  beforeEach(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-fttools-list-"));
+    fsBase = tmp;
+    fs.mkdirSync(path.join(fsBase, "data", "workspace"), { recursive: true });
+    setActiveSecurityLevel("normal");
+  });
+
+  afterEach(() => {
+    resetActiveSecurityLevel();
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {
+      // 忽略清理失败
+    }
+  });
+
+  it("目录缺失 → 空列表 + exists:false + 提示，而不是 ENOENT 失败", async () => {
+    const { registry } = mountTools(fsBase, throwingRecovery());
+    const entry = registry.get("file_list");
+    if (!entry) throw new Error("file_list not registered");
+    const r = (await entry.handler({ path: "not-yet-created" })) as Record<string, unknown>;
+    expect(r.success).not.toBe(false);
+    expect(r.exists).toBe(false);
+    expect(r.files).toEqual([]);
+    expect(r.dirs).toEqual([]);
+    expect(String(r.hint)).toContain("file_write");
+  });
+
+  it("目录存在 → 正常列出（回归：不得被存在性预检短路）", async () => {
+    fs.mkdirSync(path.join(fsBase, "data", "workspace", "exists-dir"), { recursive: true });
+    fs.writeFileSync(path.join(fsBase, "data", "workspace", "exists-dir", "a.txt"), "x", "utf-8");
+    const { registry } = mountTools(fsBase, throwingRecovery());
+    const entry = registry.get("file_list");
+    if (!entry) throw new Error("file_list not registered");
+    const r = (await entry.handler({ path: "exists-dir" })) as Record<string, unknown>;
+    expect(r.exists).not.toBe(false);
   });
 });

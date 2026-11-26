@@ -103,7 +103,7 @@ export function registerSessionSearchTools(executor: AgentModelExecutor): void {
         action: {
           type: "string",
           description: "session_search 操作类型",
-          required: true,
+          required: false, default: "discover",
           enum: ["discover", "scroll", "browse"],
         },
         // discover 参数

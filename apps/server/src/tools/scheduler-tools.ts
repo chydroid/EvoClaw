@@ -374,7 +374,7 @@ export function registerSchedulerTools(
           type: "string",
           description: "要执行的定时任务操作。action to perform: create / list (default) / update / delete / execute / history / recall_runs / retry_dlq",
           enum: ["create", "list", "update", "delete", "execute", "history", "recall_runs", "retry_dlq"],
-          required: true,
+          required: false, default: "list",
         },
         name: { type: "string", description: "Task name（create 用）", required: false },
         cronExpression: { type: "string", description: "Cron expression (e.g. '0 9 * * *')（create / update 用）", required: false },

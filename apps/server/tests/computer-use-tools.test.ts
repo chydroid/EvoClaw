@@ -126,9 +126,11 @@ describe("registerComputerUseTools", () => {
     expect(tool).toBeDefined();
     expect(captured.size).toBe(1);
 
-    const actionDef = tool!.definition.parameters.action as { required?: boolean; enum?: string[] };
-    // action 必须是必填判别字段，否则模型可能不带 action 直接调用
-    expect(actionDef.required).toBe(true);
+    const actionDef = tool!.definition.parameters.action as { required?: boolean; enum?: string[]; default?: string };
+    // action 是判别字段但有默认值（screenshot）→ 声明必填只会制造
+    // 「Missing required parameter "action"」空转轮（2026-11-26 失败会话取证）。
+    expect(actionDef.required).toBe(false);
+    expect(actionDef.default).toBe("screenshot");
     expect(actionDef.enum).toEqual(expectedActions);
   });
 

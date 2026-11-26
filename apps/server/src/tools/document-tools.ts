@@ -468,7 +468,7 @@ export function registerDocumentTools(
         action: {
           type: "string",
           description: "document 操作类型",
-          required: true,
+          required: false, default: "create_docx",
           enum: ["create_docx", "create_xlsx", "create_pptx"],
         },
         path: { type: "string", description: "Relative file path to create（如 outputs/report.docx / report.xlsx / slides.pptx，全部 action 必填）", required: true },

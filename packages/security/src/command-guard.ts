@@ -106,6 +106,17 @@ export interface HardlinePattern {
 }
 
 /**
+ * rm 目标路径的终止符类。
+ *
+ * 对齐 hermes `_hardline_rm_path` 的 tail：空白、行尾，以及 `)` `` ` `` `;` `|` `&` `"` `'`。
+ * 只认空白/行尾会让被包裹的写法从地板漏过去：
+ *   - `$(rm -rf /)`      → `/` 后是 `)`
+ *   - `bash -c "rm -rf /"` → `/` 后是 `"`
+ * 这两种都是真的执行删根，必须命中。
+ */
+const _RM_TAIL = String.raw`(?:\s|$|[)\`;|&"'])`;
+
+/**
  * Hardline 无条件阻止模式。
  *
  * 这些命令如此灾难性，以至于永远不应通过 agent 运行——
@@ -125,15 +136,18 @@ export const HARDLINE_PATTERNS: HardlinePattern[] = [
   // 注意：alternation 必须包含 /\*（匹配 /*），不能只匹配 / 和 *
   // 否则 rm -rf /* 会因 / 后跟 * 不匹配 \s|$ 而漏检
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(\/|\/\*|\/ \*)(\s|$)/i,
+    pattern: new RegExp(String.raw`\brm\s+(-[^\s]*\s+)*(\/|\/\*|\/ \*|"\/"|'\/'|"\$HOME"|'\$HOME'|"~"|'~')${_RM_TAIL}`, "i"),
     reason: "recursive delete of root filesystem",
   },
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(\/home|\/home\/\*|\/root|\/root\/\*|\/etc|\/etc\/\*|\/usr|\/usr\/\*|\/var|\/var\/\*|\/bin|\/bin\/\*|\/sbin|\/sbin\/\*|\/boot|\/boot\/\*|\/lib|\/lib\/\*)(\s|$)/i,
+    pattern: new RegExp(
+      String.raw`\brm\s+(-[^\s]*\s+)*["']?(?:\/(?:home|root|etc|usr|var|bin|sbin|boot|lib)(?:\/\*)?)\/?["']?${_RM_TAIL}`,
+      "i"
+    ),
     reason: "recursive delete of system directory",
   },
   {
-    pattern: /\brm\s+(-[^\s]*\s+)*(~|\$HOME)(\/?|\/\*)?(\s|$)/i,
+    pattern: new RegExp(String.raw`\brm\s+(-[^\s]*\s+)*(~|\$HOME|"\$HOME"|'~')(\/?|\/\*)?${_RM_TAIL}`, "i"),
     reason: "recursive delete of home directory",
   },
   // 文件系统格式化

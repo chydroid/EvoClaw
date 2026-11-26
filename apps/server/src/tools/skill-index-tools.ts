@@ -125,7 +125,7 @@ export function registerSkillIndexTools(
         "action=search: search for available skills matching a task description; " +
         "action=retrieve: retrieve the most relevant skills for a mid-task query, with quality statistics.",
       parameters: {
-        action: { type: "string", description: "skill_list 操作类型", required: true, enum: ["index", "search", "retrieve"] },
+        action: { type: "string", description: "skill_list 操作类型", required: false, default: "index", enum: ["index", "search", "retrieve"] },
         task: { type: "string", description: "Description of the task to search skills for（action=search 使用）", required: false },
         query: { type: "string", description: "检索关键词/任务描述（action=retrieve 使用）", required: false },
         limit: { type: "number", description: "retrieve 返回上限（1-50，默认 8）", required: false },

@@ -144,7 +144,7 @@ export function registerKanbanTools(deps: KanbanToolDeps): void {
         action: {
           type: "string",
           description: "kanban 操作类型",
-          required: true,
+          required: false, default: "create_board",
           enum: ["create_board", "add_task", "claim_task", "complete_task", "list_tasks", "get_stats"],
         },
         boardId: { type: "string", description: "Board identifier（create_board/add_task/list_tasks/get_stats 使用）", required: false },

@@ -234,7 +234,7 @@ export function registerEmailTools(
           type: "string",
           description: "要执行的邮箱操作。action to perform: send (default) / add_account / list_accounts / list_inbox / get_email / analyze / summarize / inbox_summary",
           enum: ["send", "add_account", "list_accounts", "list_inbox", "get_email", "analyze", "summarize", "inbox_summary"],
-          required: true,
+          required: false, default: "send",
         },
         email: { type: "string", description: "Email address（add_account 用）", required: false },
         password: { type: "string", description: "邮箱授权码（app-specific password），非登录密码（add_account 用）", required: false },

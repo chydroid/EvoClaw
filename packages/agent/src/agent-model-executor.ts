@@ -58,6 +58,7 @@ import { TokenBudgetOptimizer, type BudgetReport } from "./token-budget";
 import * as crypto from "crypto";
 import { DurableTaskRunner, getDurableTaskRunner, type DurableTask } from "./durable-task-runner";
 import { SessionArchiveStore, computeKeepFromIndex, DEFAULT_WINDOW_ROUNDS } from "./session-archive";
+import { ReadTracker } from "./read-tracker";
 import { resolveContextWindow } from "./model-context-window";
 import { normalizeToolActionArg } from "./tool-arg-normalization";
 
@@ -527,6 +528,89 @@ export class AgentModelExecutor {
   setSessionManager(sm: import("./session-manager").SessionManager): void {
     this.sessionManager = sm;
     process.stdout.write(`[AgentModelExecutor] Session manager integrated\n`);
+  }
+
+  /**
+   * 每轮 chat() 入口从 transcript 重载活动历史（窗口化 + 只保留 user/assistant）。
+   *
+   * ★ 2026-11-26（v33 续跑实证）：重载时 **tool 结果不进入活动上下文**（resume 还会
+   *   进一步裁到最近 3 轮）。但 ReadTracker 的 dedup 是 per-session 的：它把
+   *   「文件未变、内容仍在上下文里」当作去重依据，直接回 stub/BLOCK——可上一轮的
+   *   工具结果其实已被丢弃。模型拿不到内容却被告知「内容仍是最新的」，只能改用
+   *   `cat` 绕过，白白多一轮（task-6/10 实证）。与压缩边界同理：上下文一旦被
+   *   重载/裁剪，前进 read generation，让每个 key 的首次读回全文。dedup 因此只在
+   *   「同一回合内」生效——这正是它成立的唯一前提。
+   */
+  private async reloadSessionHistory(agentId: string, sessionId: string, isResume: boolean): Promise<void> {
+    let session = this.sessionManager?.loadSessionMeta(agentId, sessionId) ?? null;
+    if (!session) {
+      session = this.sessionManager?.createSession(agentId, { sessionId }) ?? null;
+      if (session) {
+        this.eventBus.publish("session.created", { agentId, sessionId }, "agent-model-executor");
+      }
+    }
+    if (!this.sessionManager || !sessionId) return;
+    const loadedHistory = this.sessionManager.loadTranscript(agentId, sessionId);
+    if (loadedHistory.length === 0) return;
+
+    // 上下文被重载 → 旧工具结果不再可见，读去重必须重新计代。
+    ReadTracker.getInstance().advanceGeneration(sessionId);
+
+    // ── 会话窗口化 ──
+    // 活动上下文只保留最近 windowRounds 轮；更早轮次卸载到长期记忆，
+    // 解除"长任务受最大上下文长度封顶"的限制。归档为 fire-and-forget，
+    // 失败不影响本次会话加载。
+    // ★ 2026-10-26 修复：resume 调用使用更小的对话窗口（3 轮而非默认 10 轮）。
+    //   续跑任务的历史包含上一轮尝试的完整对话，10 轮会携带大量无用上下文
+    //   （重复的工具调用结果、失败的尝试等），导致每次 LLM 调用输入变大、
+    //   速度变慢、token 消耗指数级增长。3 轮足够保留"原始请求 + 最近进度"。
+    const effectiveWindow = isResume ? Math.min(this.windowRounds, 3) : this.windowRounds;
+    let windowedHistory = loadedHistory;
+    if (this.sessionArchive && effectiveWindow > 0) {
+      // ★ P1-3：归档不再阻塞会话加载。原来 `await archiveOlderTurns(...)`
+      // 让会话加载关键路径多一次串行 I/O，把 LLM 调用启动往后推。
+      //
+      // 改为：先用纯函数 `computeKeepFromIndex` 同步快算 keepFrom（无 I/O），
+      // 立刻把 windowedHistory 切片并 set 进 conversationHistory；真正的
+      // 持久化归档（写长期记忆 + 事件日志）放到后台 fire-and-forget，
+      // 失败只记日志不影响本次会话加载。
+      //
+      // 语义等价性：`slice(keepFrom)` 与 `archiveOlderTurns` 内部算出的
+      // keepFrom 完全一致（同一纯函数），windowedHistory 在归档完成前
+      // 就已就绪，LLM 调用不再等待归档 I/O。
+      const keepFrom = computeKeepFromIndex(loadedHistory.map((t) => t.role), effectiveWindow);
+      if (keepFrom > 0) {
+        windowedHistory = loadedHistory.slice(keepFrom);
+        this.sessionArchive
+          .archiveOlderTurns(sessionId, loadedHistory, this.memoryHub?.getLongTerm(), effectiveWindow)
+          .then(({ newlyArchived }) => {
+            if (newlyArchived > 0) {
+              asyncLog(
+                `[AgentModelExecutor] Session window (${isResume ? "resume" : "normal"}): archived ${newlyArchived} old turn(s) to long-term memory, ` +
+                `active window = last ${effectiveWindow} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
+              );
+            }
+          })
+          .catch((err: unknown) => {
+            asyncErr(
+              `[AgentModelExecutor] Background session archive failed for "${sessionId}": ` +
+              `${err instanceof Error ? err.message : String(err)}\n`
+            );
+          });
+      }
+    }
+
+    this.conversationHistory.set(sessionId, windowedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => {
+      const entry: Record<string, unknown> = {
+        role: t.role,
+        content: t.content,
+      };
+      // Preserve tool_calls for assistant messages to maintain conversation context
+      if (t.role === "assistant" && (t as any).tool_calls) {
+        entry.tool_calls = (t as any).tool_calls;
+      }
+      return entry as any;
+    }));
   }
 
   /** Set context engine */
@@ -2445,77 +2529,7 @@ export class AgentModelExecutor {
     }
 
     // ── Session management ──
-    const sessionLoadFn = async () => {
-      let session = this.sessionManager?.loadSessionMeta(agentId, sessionId) ?? null;
-      if (!session) {
-        session = this.sessionManager?.createSession(agentId, { sessionId }) ?? null;
-        if (session) {
-          this.eventBus.publish("session.created", { agentId, sessionId }, "agent-model-executor");
-        }
-      }
-      // If SessionManager is available, use its transcript for history
-      if (this.sessionManager && sessionId) {
-        const loadedHistory = this.sessionManager.loadTranscript(agentId, sessionId);
-        if (loadedHistory.length > 0) {
-          // ── 会话窗口化 ──
-          // 活动上下文只保留最近 windowRounds 轮；更早轮次卸载到长期记忆，
-          // 解除"长任务受最大上下文长度封顶"的限制。归档为 fire-and-forget，
-          // 失败不影响本次会话加载。
-          // ★ 2026-10-26 修复：resume 调用使用更小的对话窗口（3 轮而非默认 10 轮）。
-          //   续跑任务的历史包含上一轮尝试的完整对话，10 轮会携带大量无用上下文
-          //   （重复的工具调用结果、失败的尝试等），导致每次 LLM 调用输入变大、
-          //   速度变慢、token 消耗指数级增长。3 轮足够保留"原始请求 + 最近进度"。
-          const isResume = !!(context?.resume);
-          const effectiveWindow = isResume ? Math.min(this.windowRounds, 3) : this.windowRounds;
-          let windowedHistory = loadedHistory;
-          if (this.sessionArchive && effectiveWindow > 0) {
-            // ★ P1-3：归档不再阻塞会话加载。原来 `await archiveOlderTurns(...)`
-            // 让会话加载关键路径多一次串行 I/O，把 LLM 调用启动往后推。
-            //
-            // 改为：先用纯函数 `computeKeepFromIndex` 同步快算 keepFrom（无 I/O），
-            // 立刻把 windowedHistory 切片并 set 进 conversationHistory；真正的
-            // 持久化归档（写长期记忆 + 事件日志）放到后台 fire-and-forget，
-            // 失败只记日志不影响本次会话加载。
-            //
-            // 语义等价性：`slice(keepFrom)` 与 `archiveOlderTurns` 内部算出的
-            // keepFrom 完全一致（同一纯函数），windowedHistory 在归档完成前
-            // 就已就绪，LLM 调用不再等待归档 I/O。
-            const keepFrom = computeKeepFromIndex(loadedHistory.map((t) => t.role), effectiveWindow);
-            if (keepFrom > 0) {
-              windowedHistory = loadedHistory.slice(keepFrom);
-              this.sessionArchive
-                .archiveOlderTurns(sessionId, loadedHistory, this.memoryHub?.getLongTerm(), effectiveWindow)
-                .then(({ newlyArchived }) => {
-                  if (newlyArchived > 0) {
-                    asyncLog(
-                      `[AgentModelExecutor] Session window (${isResume ? "resume" : "normal"}): archived ${newlyArchived} old turn(s) to long-term memory, ` +
-                      `active window = last ${effectiveWindow} round(s) (${windowedHistory.length} entries) for session "${sessionId}"\n`
-                    );
-                  }
-                })
-                .catch((err: unknown) => {
-                  asyncErr(
-                    `[AgentModelExecutor] Background session archive failed for "${sessionId}": ` +
-                    `${err instanceof Error ? err.message : String(err)}\n`
-                  );
-                });
-            }
-          }
-
-          this.conversationHistory.set(sessionId, windowedHistory.filter(t => t.role === "user" || t.role === "assistant").map(t => {
-            const entry: Record<string, unknown> = {
-              role: t.role,
-              content: t.content,
-            };
-            // Preserve tool_calls for assistant messages to maintain conversation context
-            if (t.role === "assistant" && (t as any).tool_calls) {
-              entry.tool_calls = (t as any).tool_calls;
-            }
-            return entry as any;
-          }));
-        }
-      }
-    };
+    const sessionLoadFn = () => this.reloadSessionHistory(agentId, sessionId, !!(context?.resume));
     if (tracing?.isEnabled()) {
       await tracing.withSpan("agent.session.load", async (s: Span) => {
         s.setAttribute("session.id", sessionId);

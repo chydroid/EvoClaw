@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { inferCwdFromScript, resolveShellCwd } from "../src/tools/shell-media-tools";
+import { inferCwdFromScript, resolveShellCwd, collapseWorkspaceRootAlias } from "../src/tools/shell-media-tools";
 
 const workspaceDir = path.resolve(__dirname, "..", "..", "..", "data", "workspace");
 const evalDir = path.join(workspaceDir, "eval15", "t05-cwd");
@@ -91,5 +91,52 @@ describe("resolveShellCwd — 显式 cwd 缺失必须拒绝执行", () => {
     const result = resolveShellCwd("/tmp", "echo hi", workspaceDir);
     expect("error" in result).toBe(true);
     if ("error" in result) expect(result.error).toContain("within workspace");
+  });
+});
+
+describe("collapseWorkspaceRootAlias — workspace 根别名确定性折叠", () => {
+  const wsRoot = path.join(workspaceDir, "eval15", "alias-probe");
+
+  beforeAll(() => {
+    fs.mkdirSync(wsRoot, { recursive: true });
+  });
+  afterAll(() => {
+    fs.rmSync(wsRoot, { recursive: true, force: true });
+  });
+
+  it("★ cwd = workspace 根：同一命令内「先 mkdir 后写入」两处前缀都被折叠", () => {
+    // footer-probe 事故：存在性门禁在 spawn 前求值，mkdir 出来的目录看不到，
+    // 导致一条命令被劈成两个路径基准（产物写进 data/workspace/data/workspace/…）。
+    const cmd = "mkdir -p data/workspace/probe && echo hi > data/workspace/probe/hello.txt && ls data/workspace/probe";
+    const out = collapseWorkspaceRootAlias(cmd, wsRoot, wsRoot);
+    expect(out).not.toContain("data/workspace/");
+    expect(out).toContain("mkdir -p probe");
+    expect(out).toContain("> probe/hello.txt");
+    expect(out).toContain("ls probe");
+  });
+
+  it("★ cwd = workspace 根：反斜杠写法同样折叠", () => {
+    const out = collapseWorkspaceRootAlias("cat data\\workspace\\a.txt", wsRoot, wsRoot);
+    expect(out).toBe("cat a.txt");
+  });
+
+  it("cwd 为子目录且目标与其父目录都不存在 → 保留原样（不猜测）", () => {
+    const sub = path.join(wsRoot, "sub");
+    fs.mkdirSync(sub, { recursive: true });
+    const out = collapseWorkspaceRootAlias("cat data/workspace/missing-dir/file.txt", sub, wsRoot);
+    expect(out).toContain("data/workspace/");
+  });
+
+  it("绝对路径永不匹配（前置 / 由 lookbehind 排除）", () => {
+    const out = collapseWorkspaceRootAlias(`cat ${wsRoot}/data/workspace/a.txt`, wsRoot, wsRoot);
+    expect(out).toContain("/data/workspace/a.txt");
+  });
+
+  it("cwd 非 workspace 根且目标存在 → 仍按旧门禁折叠", () => {
+    const sub = path.join(wsRoot, "sub2");
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(wsRoot, "there.txt"), "x", "utf-8");
+    const out = collapseWorkspaceRootAlias("cat data/workspace/there.txt", sub, wsRoot);
+    expect(out).toBe("cat there.txt");
   });
 });

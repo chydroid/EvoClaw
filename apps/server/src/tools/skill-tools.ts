@@ -471,7 +471,7 @@ export function registerAutoSkillTools(
         action: {
           type: "string",
           description: "skill_manage 操作类型",
-          required: true,
+          required: false, default: "create",
           enum: ["create", "install", "uninstall", "execute", "find_and_install", "orchestrate"],
         },
         task: { type: "string", description: "Task description（find_and_install 使用）", required: false },
