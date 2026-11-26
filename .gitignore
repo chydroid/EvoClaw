@@ -72,6 +72,10 @@ test-*.mjs
 !scripts/test-sim-tasks-v32.mjs
 !scripts/test-v32-lib.mjs
 !scripts/test-v32-tasks.mjs
+# v33 参考实现（随 runner 一并入库，2026-11-26）
+!scripts/test-sim-tasks-v33.mjs
+!scripts/test-v33-lib.mjs
+!scripts/test-v33-tasks.mjs
 test-*.json
 *-report.json
 *-report.html
