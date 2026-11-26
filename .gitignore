@@ -126,6 +126,12 @@ docs/openspace-alignment-*.md
 /packages/agent-model-executor.ts
 /gaps.py
 
+# 任务产出落在仓库根的整目录（网页生成 demo / 评测残留）。注意 /some/ 是
+# workspace-path.test.ts 相对路径用例的历史污染，已改为写 tmpRoot，勿再保留。
+/newweb/
+/eval10/
+/some/
+
 # Runtime data maintained by evolution engine (auto-recreated)
 LEARNINGS.md
 

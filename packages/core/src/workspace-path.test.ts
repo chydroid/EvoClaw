@@ -95,10 +95,13 @@ describe("workspace-path", () => {
     });
 
     it("setWorkspacePath 接受相对路径并 resolve 为绝对路径", () => {
-      // Node 相对路径 - "cwd/data/workspace"
-      const relative = "some/relative/ws";
+      // 相对路径必须以 cwd 为基准解析——若直接传 "some/relative/ws"，ensureDir
+      // 会在仓库根建目录（测试污染源码树）。这里取指向 tmpRoot 的相对路径，
+      // 既保留「相对入参 → 绝对结果」的语义，又落在 afterEach 会清理的临时目录里。
+      const relative = path.relative(process.cwd(), path.join(tmpRoot, "ws"));
       const resolved = setWorkspaceDir(relative);
       expect(resolved).toBe(path.resolve(relative));
+      expect(resolved).toBe(path.join(tmpRoot, "ws"));
       expect(fs.existsSync(resolved)).toBe(true);
       // reset
       clearWorkspaceOverride();
