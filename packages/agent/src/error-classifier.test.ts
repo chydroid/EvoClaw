@@ -11,8 +11,14 @@ import {
   parseAvailableOutputTokens,
   estimateTokensFromText,
   estimateMessagesTokens,
+  formatClassifiedErrorForUser,
   LLMErrorType,
 } from "../src/error-classifier";
+import {
+  CONTENT_POLICY_BLOCKED_PATTERNS,
+  MODEL_NOT_FOUND_PATTERNS as MODEL_NOT_FOUND_PATTERNS_TEXT,
+  resolveFailoverReason,
+} from "../src/failover-policy";
 
 describe("classifyLLMError", () => {
   describe("HTTP status code classification", () => {
@@ -338,6 +344,65 @@ describe("fix-1: Content policy errors", () => {
     expect(isContentPolicyError(451, "")).toBe(true);
     expect(isContentPolicyError(500, "server error")).toBe(false);
   });
+
+  it("★ 403 + 「our safety system」必须判 content_policy，不得落到 AUTH", () => {
+    // v34 实证（server log）：provider 返回
+    //   HTTP 403 {"message":"...rejected as a result of our safety system..."}
+    // 旧模式只认 `safety filter`，于是走到 403→AUTH：provider 被 skip 300s、
+    // 同一提示词换 provider 再发一次，必然再被拒。hermes 在状态码分类**之前**
+    // 判安全拒绝（safety refusal beats status code）。
+    const r = classifyLLMError(403, '{"error":{"message":"Your request was rejected as a result of our safety system."}}');
+    expect(r.type).toBe(LLMErrorType.CONTENT_POLICY);
+    expect(r.retryable).toBe(false);
+  });
+
+  it("★ hermes 精选措辞表逐条生效", () => {
+    const phrases = [
+      "flagged for possible cybersecurity risk",
+      "trusted access for cyber",
+      "violates our usage policies",
+      "your request was flagged by",
+      "prompt was flagged by our safety",
+      "responses cannot be generated due to safety",
+      "data_inspection_failed",
+      "new_sensitive",
+      "content exists risk",
+      "data may contain inappropriate content",
+    ];
+    for (const p of phrases) {
+      expect(isContentPolicyError(400, p), p).toBe(true);
+    }
+  });
+
+  it("★ 泛化词 'policy' 不得把计费/鉴权误判为内容策略", () => {
+    expect(isContentPolicyError(402, "billing policy requires payment")).toBe(false);
+    expect(isContentPolicyError(401, "invalid api key")).toBe(false);
+  });
+
+  it("★ 451 必须判 content_policy（不得落到 unknown/transient 反复重试）", () => {
+    // isContentPolicyError 早已特判 451，主分类器此前没有对应分支 → 451 被
+    // 当成 unknown 反复重试 + 换 provider 重发。同一类漂移。
+    const r = classifyLLMError(451, "Unavailable For Legal Reasons");
+    expect(r.type).toBe(LLMErrorType.CONTENT_POLICY);
+    expect(r.shouldSkipProvider).toBe(true);
+    expect(r.retryable).toBe(false);
+    expect(r.reason).toBe("content_policy_blocked");
+    // 两条分类路径对 451 必须一致
+    expect(resolveFailoverReason(451, "Unavailable For Legal Reasons")).toBe("content_policy_blocked");
+  });
+
+  it("★ 两条分类路径（resolveFailoverReason / classifyLLMError）必须同源", () => {
+    // v34 治本回归：content-policy 措辞此前在 failover-policy.ts（子串）与
+    // error-classifier.ts（正则）各存一份，已经漂移。现在唯一真相在
+    // failover-policy.ts:CONTENT_POLICY_BLOCKED_PATTERNS，两处必须同判。
+    for (const p of CONTENT_POLICY_BLOCKED_PATTERNS) {
+      const text = `Request refused: ${p}.`;
+      // 路径 1：resolveFailoverReason 的 reason 分类
+      expect(resolveFailoverReason(400, text), p).toBe("content_policy_blocked");
+      // 路径 2：classifyLLMError 的 LLMErrorType 分类
+      expect(classifyLLMError(400, text).type, p).toBe(LLMErrorType.CONTENT_POLICY);
+    }
+  });
 });
 
 describe("fix-1: Model not found errors", () => {
@@ -351,6 +416,42 @@ describe("fix-1: Model not found errors", () => {
   it("should classify 404 without specific text as model_not_found", () => {
     const result = classifyLLMError(404, "model not found");
     expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+  });
+
+  it("404 措辞不匹配任何模式时仍归 model_not_found（不得落成可重试 provider_error）", () => {
+    // ★ v34 实证：OpenRouter 下线 slug 的 404 措辞未命中旧模式表 → 旧实现返回
+    //   { type: PROVIDER_ERROR, retryable: true, reason: "model_not_found" }
+    //   ——对象自相矛盾，且与 resolveFailoverReason(404) 相反，导致过载阶梯
+    //   重试一个已下线的模型 27 次。
+    const result = classifyLLMError(404, "some gateway said no");
+    expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+    expect(result.retryable).toBe(false);
+    expect(result.isTransient).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+    expect(result.reason).toBe("model_not_found");
+  });
+
+  it("404 两条路径（reason 与 classifier）对下线措辞同判", () => {
+    // 实测原文（DOTS3/OpenRouter 网关）
+    const text =
+      "OpenRouterFree: dots-studio/dots-3-note-preview:free is no longer available on OpenRouter: " +
+      "no provider serves this model anymore. See available models at https://openrouter.ai/models";
+    expect(resolveFailoverReason(404, text)).toBe("model_not_found");
+    const result = classifyLLMError(404, text);
+    expect(result.type).toBe(LLMErrorType.MODEL_NOT_FOUND);
+    expect(result.reason).toBe("model_not_found");
+    expect(result.retryable).toBe(false);
+    expect(result.shouldSkipProvider).toBe(true);
+  });
+
+  it("MODEL_NOT_FOUND 措辞表逐条：两条路径同判", () => {
+    for (const phrase of MODEL_NOT_FOUND_PATTERNS_TEXT) {
+      const text = `HTTP 404: ${phrase}`;
+      expect(resolveFailoverReason(404, text), phrase).toBe("model_not_found");
+      const r = classifyLLMError(404, text);
+      expect(r.type, phrase).toBe(LLMErrorType.MODEL_NOT_FOUND);
+      expect(r.retryable, phrase).toBe(false);
+    }
   });
 
   it("should detect model_not_found in text without status code", () => {
@@ -495,5 +596,87 @@ describe("★ 2026-10-30: ABORT classification (deliberate cancellation)", () =>
     // 真实超时仍归 TIMEOUT——确保 ABORT 检查不抢占超时分类
     const result = classifyLLMError(undefined, "request timed out after 60000ms");
     expect(result.type).toBe(LLMErrorType.TIMEOUT);
+  });
+});
+// ═══════════════════════════════════════════════════════════
+// ★ v34 治本：两条失败分类路径的**同判门禁**
+//
+// 同一个错误文本会经过两条独立实现：
+//   - classifyLLMError()   → 决定 type / retryable / shouldSkipProvider（行为）
+//   - resolveFailoverReason() → 决定 reason（记账/熔断/文案）
+// 二者若对同一输入给出不同 reason，就会出现「记账说不可重试、行为却在重试」
+// 这类自相矛盾（v34 实测两例：404 下线 slug、无状态码 model does not exist）。
+// 这个门禁把所有已知形态钉死在表里——新增分支必须同时更新两条路径。
+// ═══════════════════════════════════════════════════════════
+describe("★ 跨模块同判门禁：classifyLLMError.reason === resolveFailoverReason", () => {
+  const CASES: Array<[number | undefined, string, string]> = [
+    // [status, errorText, 期望 reason]
+    [400, "thinking block signature cannot be modified", "thinking_signature"],
+    [400, "text is not set", "multimodal_tool_content_unsupported"],
+    [400, "invalid request body: malformed json", "unclassified"],
+    [401, "invalid api key", "auth"],
+    [402, "insufficient quota", "billing"],
+    [403, "forbidden", "auth"],
+    [403, "DOTS3: rejected as a result of our safety system", "content_policy_blocked"],
+    [404, "model not found", "model_not_found"],
+    [404, "no provider serves this model anymore", "model_not_found"],
+    [404, "totally unrecognized 404 body", "model_not_found"],
+    [408, "timeout", "timeout"],
+    [413, "payload too large", "payload_too_large"],
+    [422, "unprocessable entity", "format"],
+    [429, "rate limit exceeded", "rate_limit"],
+    [451, "unavailable for legal reasons", "content_policy_blocked"],
+    [500, "Internal Server Error", "server_error"],
+    [502, "Bad Gateway", "server_error"],
+    [503, "Service Unavailable", "overloaded"],
+    [504, "Gateway Timeout", "timeout"],
+    [529, "at capacity", "overloaded"],
+    [undefined, "context length exceeded", "context_overflow"],
+    [undefined, "invalid api key", "auth"],
+    [undefined, "your request was rejected as a result of our safety system", "content_policy_blocked"],
+    [undefined, "model does not exist", "model_not_found"],
+    [undefined, "unknown model specified", "model_not_found"],
+    [undefined, "connection reset by peer", "network"],
+    [undefined, "overloaded", "overloaded"],
+  ];
+
+  for (const [status, text, expected] of CASES) {
+    it(`${status ?? "无状态码"} ${text.slice(0, 46)} → ${expected}`, () => {
+      const c = classifyLLMError(status, text);
+      const r = resolveFailoverReason(status, text);
+      expect(c.reason).toBe(r);
+      expect(c.reason).toBe(expected);
+      // 不可重试的 reason 不得同时标 retryable（反之亦然）
+      const nonRetryable = ["model_not_found", "auth", "billing", "content_policy_blocked", "provider_policy_blocked"];
+      if (nonRetryable.includes(expected)) expect(c.retryable, `${text} 不可重试`).toBe(false);
+    });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// v34 T4：「已自动切换到下一个 provider」必须在真的还有下一个时才说
+// 事故：magpie 401 后文案宣称已切换，实际循环直接 break、下一个 provider
+// 从未被调用——用户被误导为「已换人重试」。
+// ═══════════════════════════════════════════════════════════
+describe("formatClassifiedErrorForUser — 切换措辞属实性", () => {
+  const auth = classifyLLMError(401, "invalid api key");
+
+  it("还有下一个 provider → 说已切换", () => {
+    const msg = formatClassifiedErrorForUser(auth, "magpie", true);
+    expect(msg.userMessage).toContain("已自动切换");
+  });
+
+  it("没有下一个 provider → 不得说已切换", () => {
+    const msg = formatClassifiedErrorForUser(auth, "magpie", false);
+    expect(msg.userMessage).not.toContain("已自动切换");
+    expect(msg.userMessage).toContain("没有其他可用");
+  });
+
+  it("billing / model_not_found 同口径", () => {
+    const billing = classifyLLMError(402, "insufficient balance");
+    expect(formatClassifiedErrorForUser(billing, "x", false).userMessage).not.toContain("已自动切换");
+    const mnf = classifyLLMError(404, "model does not exist");
+    expect(formatClassifiedErrorForUser(mnf, "x", false).userMessage).not.toContain("已自动");
+    expect(formatClassifiedErrorForUser(mnf, "x", true).userMessage).toContain("已自动");
   });
 });

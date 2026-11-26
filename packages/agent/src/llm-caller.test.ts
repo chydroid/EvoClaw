@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, describeAcceptedParameters, findUnknownToolArguments, listAcceptedParameterNames, flagUnknownToolArguments, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, describeAcceptedParameters, findUnknownToolArguments, listAcceptedParameterNames, flagUnknownToolArguments, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, formatToolResultSummary, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached, pruneUnpairedToolMessages } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -59,6 +59,22 @@ describe("llm-caller > isProviderSafetyRejection", () => {
     expect(isProviderSafetyRejection("content filter triggered")).toBe(true);
     expect(isProviderSafetyRejection("Your input was blocked by the filter")).toBe(true);
     expect(isProviderSafetyRejection("request was blocked")).toBe(true);
+  });
+
+  // TC-006: ★ v34 实证 —— DOTS3 网关把安全拒绝当正文返回（不是 4xx）
+  it("TC-006: 识别网关以正文形式返回的安全拒绝", () => {
+    expect(
+      isProviderSafetyRejection(
+        "DOTS3: Your request was rejected as a result of our safety system. " +
+          "Your prompt may contain text that is not allowed by our safety system.",
+      ),
+    ).toBe(true);
+  });
+
+  // TC-007: 误报预算——正文里的普通叙述不触发
+  it("TC-007: 正文中的技术性提及不算安全拒绝", () => {
+    expect(isProviderSafetyRejection("这段代码里的 content_filter 字段是配置项。")).toBe(false);
+    expect(isProviderSafetyRejection("我们讨论了 policy 引擎的设计。")).toBe(false);
   });
 
   // TC-004: 非拒绝文案不应误伤
@@ -655,6 +671,44 @@ describe("llm-caller > wrapped schema 顶层 required 数组保留", () => {
     expect(required).not.toContain("action");
     // 缺 tasks 应报错
     expect(validateToolParams("wrapped_req", { action: "list" }, def.definition)).toMatch(/Missing required parameter "tasks"/);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// formatToolResultSummary — 信息性退出码不得显示为「命令失败」
+// 事故（v34 同类）：shell_exec 已给 grep/diff/test 的 1 标 non_error_exit +
+// exit_code_meaning，但进度行仍按 success:false 渲染「❌ 命令失败」，
+// 在 UI 层把刚消掉的误判又加回来。
+// ═══════════════════════════════════════════════════════════
+describe("formatToolResultSummary — 信息性退出码", () => {
+  it("non_error_exit 显示完成 + 语义，不显示失败", () => {
+    const out = formatToolResultSummary(
+      "shell_exec",
+      { command: "grep -c foo f" },
+      JSON.stringify({ success: false, exitCode: 1, non_error_exit: true, exit_code_meaning: "没有匹配（不是错误）", output: "" }),
+    );
+    expect(out).toContain("✅");
+    expect(out).toContain("没有匹配");
+    expect(out).not.toContain("❌");
+  });
+
+  it("真失败仍然显示失败", () => {
+    const out = formatToolResultSummary(
+      "shell_exec",
+      { command: "python x.py" },
+      JSON.stringify({ success: false, exitCode: 127, error: "command not found" }),
+    );
+    expect(out).toContain("❌");
+  });
+
+  it("退出码 0 正常完成不带语义括号", () => {
+    const out = formatToolResultSummary(
+      "shell_exec",
+      { command: "node x.js" },
+      JSON.stringify({ success: true, exitCode: 0, output: "ok" }),
+    );
+    expect(out).toContain("✅ 命令完成");
+    expect(out).not.toContain("（");
   });
 });
 
@@ -3661,5 +3715,304 @@ describe("llm-caller > resolveLlmRequestTimeoutMs（v32 T1 压测：thinking 模
     expect(resolveLlmRequestTimeoutMs({ ...base, model: "openai/deepseek-r1" } as never)).toBe(600_000);
     // 显式配置低于 floor 时尊重显式（floor 语义：只抬默认值）
     expect(resolveLlmRequestTimeoutMs({ ...base, model: "openai/deepseek-r1", timeout: 90_000 } as never)).toBe(90_000);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// v34 T4 回归：中途 provider 失败必须换人继续（而不是交付中途文本）
+// 事故：magpie 在第 28/41 轮返回 403 [auth]，此前 27 轮已有中途文本；
+// 旧实现 shouldSkipProvider → break → 中途文本被当成最终答复，健康的
+// AgnesTokenPlan 从未被调用（probe: P1CALLS=2 P2CALLS=0）。hermes
+// 对 auth/billing/content_policy/model_not_found 一律 should_fallback=True。
+// ═══════════════════════════════════════════════════════════
+describe("v34 T4 — 中途 provider 失败换人继续", () => {
+  function providerConfig(port: number, name: string, id: string) {
+    return {
+      name, id, provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      enabled: true, order: 0, timeout: 5000,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  function baseDeps(providers: LLMCallerDeps["providers"], tools: Map<string, unknown>): LLMCallerDeps {
+    return {
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      conversationHistory: new Map(),
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      registeredTools: tools,
+      buildSkillsPromptForRun: async () => "",
+      recordProviderSuccess: () => {},
+      recordProviderFailure: () => {},
+      getEventLedger: () => null,
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      sessionManager: null,
+      pluginManager: null,
+      maxHistoryLength: 200,
+      sessionDataDir: "/tmp",
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      providers,
+    } as unknown as LLMCallerDeps;
+  }
+
+  function echoTools(): Map<string, unknown> {
+    return new Map([[
+      "echo_ping",
+      {
+        definition: { name: "echo_ping", description: "test echo tool", parameters: {} },
+        handler: async () => JSON.stringify({ results: [{ content: "pong" }], success: true }),
+      },
+    ]]);
+  }
+
+  it("中途文本 + 后续 401 → 必须调用 p2，且不把中途文本当最终答复", async () => {
+    isolateSkipList();
+    let p1Calls = 0;
+    let p2Calls = 0;
+
+    // p1：第 1 轮「中途文本 + 工具调用」→ 之后全部 401
+    // （与生产同形：assistant 消息同时带 content 与 tool_calls，finalReply 因此
+    //   在循环继续时被赋成中途文本，随后 401 触发 skip provider）
+    const p1 = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        p1Calls++;
+        if (p1Calls === 1) {
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant",
+                content: "我先把文件读一下，然后继续实现。",
+                tool_calls: [{
+                  id: "call_1", type: "function",
+                  function: { name: "echo_ping", arguments: "{}" },
+                }],
+              },
+              finish_reason: "tool_calls",
+            }],
+            usage: { total_tokens: 10, prompt_tokens: 5 },
+          }));
+          return;
+        }
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+      });
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2Bodies: Array<Array<{ role: string; tool_call_id?: string }>> = [];
+    const p2 = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        p2Calls++;
+        p2Bodies.push((JSON.parse(raw).messages ?? []) as Array<{ role: string; tool_call_id?: string }>);
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "REAL-ANSWER-FROM-P2" }, finish_reason: "stop" }],
+          usage: { total_tokens: 5, prompt_tokens: 3 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    const providers = [providerConfig(port1, "stale-p1", "stale-p1"), providerConfig(port2, "stale-p2", "stale-p2")];
+    const res = await tryCallLLM(baseDeps(providers, echoTools()), {
+      message: "do the task",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId: `v34-t4-stale-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    // 核心：p2 必须被调用，且最终答复来自 p2（不是 p1 的中途文本）
+    expect(p2Calls).toBeGreaterThan(0);
+    expect(res!.reply).toContain("REAL-ANSWER-FROM-P2");
+    expect(res!.reply).not.toContain("我先把文件读一下");
+  });
+
+  it("接力必须带上 p1 的工具进展（tool 消息），p2 不从头重做", async () => {
+    isolateSkipList();
+    let p1Calls = 0;
+    const p1 = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        p1Calls++;
+        if (p1Calls === 1) {
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant", content: "",
+                tool_calls: [{ id: "call_A", type: "function", function: { name: "echo_ping", arguments: "{}" } }],
+              },
+              finish_reason: "tool_calls",
+            }],
+            usage: { total_tokens: 10, prompt_tokens: 5 },
+          }));
+          return;
+        }
+        // 工具已执行完（tool 结果已在 p1 的消息里）→ 直接 401
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+      });
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    const p2Bodies: Array<Array<{ role: string; tool_call_id?: string; content?: unknown }>> = [];
+    const p2 = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        p2Bodies.push((JSON.parse(raw).messages ?? []) as Array<{ role: string; tool_call_id?: string; content?: unknown }>);
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+          choices: [{ message: { role: "assistant", content: "done-with-carry" }, finish_reason: "stop" }],
+          usage: { total_tokens: 5, prompt_tokens: 3 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    // ★ provider 名必须与上一用例不同：ProviderHealthTracker 是进程级单例且按
+    //   name 记账，上一个用例的 401 已把 "p1" 熔断 → 这里若同名，p1 直接被跳过，
+    //   p2 成为首个 provider，自然没有可接力的进展（假绿/假红都会发生）。
+    const providers = [providerConfig(port1, "carry-p1", "carry-p1"), providerConfig(port2, "carry-p2", "carry-p2")];
+    const res = await tryCallLLM(baseDeps(providers, echoTools()), {
+      message: "do the task",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId: `v34-t4-carry-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    p1.close();
+    p2.close();
+
+    expect(res!.reply).toContain("done-with-carry");
+    expect(p2Bodies.length).toBeGreaterThan(0);
+    const first = p2Bodies[0];
+    // p2 收到的消息里必须有 p1 的 assistant tool_calls 与其 tool 结果（完整配对）
+    const toolMsgs = first.filter((m) => m.role === "tool");
+    expect(toolMsgs.length).toBeGreaterThan(0);
+    expect(toolMsgs.some((m) => m.tool_call_id === "call_A")).toBe(true);
+    // 序列合法：assistant(tool_calls) 紧跟 tool 结果
+    const aiIdx = first.findIndex((m) => m.role === "assistant");
+    expect(aiIdx).toBeGreaterThan(0);
+    expect(first[aiIdx + 1].role).toBe("tool");
+  });
+
+  it("没有下一个 provider 时，中途文本也不得被当成最终答复", async () => {
+    isolateSkipList();
+    let calls = 0;
+    const p1 = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        calls++;
+        if (calls === 1) {
+          res.setHeader("Content-Type", "application/json");
+          res.end(JSON.stringify({
+            choices: [{
+              message: {
+                role: "assistant", content: "我先把文件读一下，然后继续实现。",
+                tool_calls: [{ id: "call_z", type: "function", function: { name: "echo_ping", arguments: "{}" } }],
+              },
+              finish_reason: "tool_calls",
+            }],
+            usage: { total_tokens: 10, prompt_tokens: 5 },
+          }));
+          return;
+        }
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+      });
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port = (p1.address() as { port: number }).port;
+
+    const providers = [providerConfig(port, "solo-p1", "solo-p1")];
+    const res = await tryCallLLM(baseDeps(providers, echoTools()), {
+      message: "do the task",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId: `v34-t4-solo-${RUN_TAG}`,
+      pendingPermissions: [],
+    });
+    p1.close();
+
+    // 中途文本是开工话，不是答复：必须走兜底文案（如实说明失败），
+    // 且兜底文案要带失败原因（盖码来自最后一次 ClassifiedError）。
+    expect(res!.reply).not.toContain("我先把文件读一下");
+    expect(res!.failureReason).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// v34 T4：接力段的配对裁剪（残缺序列会被网关 400 拒绝 → failover 白跑）
+// ═══════════════════════════════════════════════════════════
+describe("pruneUnpairedToolMessages — 接力段配对裁剪", () => {
+  const asst = (id: string) => ({
+    role: "assistant", content: null,
+    tool_calls: [{ id, type: "function", function: { name: "t", arguments: "{}" } }],
+  });
+  const tool = (id: string) => ({ role: "tool", tool_call_id: id, name: "t", content: "ok" });
+
+  it("完整配对原样保留", () => {
+    const msgs = [asst("a"), tool("a")];
+    expect(pruneUnpairedToolMessages(msgs)).toEqual(msgs);
+  });
+
+  it("assistant 有 tool_calls 但结果缺失 → 整段丢弃", () => {
+    expect(pruneUnpairedToolMessages([asst("a")])).toEqual([]);
+  });
+
+  it("孤立 tool 消息（无配对 assistant）→ 丢弃", () => {
+    expect(pruneUnpairedToolMessages([tool("a")])).toEqual([]);
+  });
+
+  it("多工具只回来一半 → 整段丢弃（不得送出半配序列）", () => {
+    const partial = {
+      role: "assistant", content: null,
+      tool_calls: [
+        { id: "a", type: "function", function: { name: "t", arguments: "{}" } },
+        { id: "b", type: "function", function: { name: "t", arguments: "{}" } },
+      ],
+    };
+    expect(pruneUnpairedToolMessages([partial, tool("a")])).toEqual([]);
+  });
+
+  it("纯文本 assistant 消息始终保留", () => {
+    const text = { role: "assistant", content: "进展说明" };
+    expect(pruneUnpairedToolMessages([text])).toEqual([text]);
+  });
+
+  it("配对段之后的残缺段被裁掉，前面完整段保留", () => {
+    const ok = [asst("a"), tool("a")];
+    const out = pruneUnpairedToolMessages([...ok, asst("b")]);
+    expect(out).toEqual(ok);
   });
 });

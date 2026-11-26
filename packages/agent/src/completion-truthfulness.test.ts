@@ -190,6 +190,21 @@ describe("extractToolFailure — 识别「执行了但失败」的工具返回�
     expect(extractToolFailure("t", { success: false, status: "pending", error: "x" })).toBeNull();
   });
 
+  it("★ 信息性非零退出码（grep/diff/test 的 1）不属于失败", () => {
+    // 对标 hermes：terminal 结果只有 exit_code + exit_code_meaning，没有
+    // success 概念；shell_exec 给信息性退出码打 non_error_exit 后，
+    // 失败分类器必须豁免，否则 grep 无匹配会触发无谓的自动续跑。
+    expect(
+      extractToolFailure("shell_exec", {
+        success: false,
+        exitCode: 1,
+        non_error_exit: true,
+        exit_code_meaning: "没有匹配（不是错误）",
+        output: "",
+      }),
+    ).toBeNull();
+  });
+
   it("null / 非对象 / 非法 JSON 安全返回 null", () => {
     expect(extractToolFailure("t", null)).toBeNull();
     expect(extractToolFailure("t", 42)).toBeNull();

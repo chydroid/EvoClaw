@@ -253,8 +253,20 @@ export function verifyDeliverables(dir, items, receipts) {
       }
       if (!fresh(probe)) { ok = false; parts.push(`✗${base(probe)} 陈旧`); continue; }
     }
-    if (it.minBytes && st(probe).size < it.minBytes) {
+    // ★ 2026-11-26（v34 T8 实证；v31 曾一次性踩中 4 次）：**JSON 交付物不设字节门槛**。
+    //   字节数不是「交付是否合格」的度量——正确的答案可以非常紧凑
+    //   （T8 的 report.json 恰好 60B，语义与参考实现逐键一致，却被 80B 门槛判失败）。
+    //   而且这类文件的语义已由核验器的 sameJson 对参考实现逐键比对覆盖，
+    //   字节门槛不增加任何信号，只会制造假回归。
+    //   改为「可解析」检查——它挡住的正是真实失败形态（截断/半写/垃圾），
+    //   且与体积无关。是否需要具体内容由任务级 sameJson 判定，这里不重复。
+    //   需要体积门槛的只有 README 这类没有语义校验的散文交付物。
+    if (it.minBytes && st(probe).size < it.minBytes && !/\.json$/i.test(probe)) {
       ok = false; parts.push(`✗${base(probe)} ${st(probe).size}B<${it.minBytes}`); continue;
+    }
+    if (/\.json$/i.test(probe)) {
+      try { JSON.parse(fs.readFileSync(probe, 'utf8')); }
+      catch { ok = false; parts.push(`✗${base(probe)} 不是可解析 JSON`); continue; }
     }
     if (it.minLines) {
       let n = 0;

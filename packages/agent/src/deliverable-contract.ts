@@ -289,6 +289,37 @@ export interface DeliverableSpec {
 }
 
 /**
+ * 绝对**文件** token 的目录中，严格包含 `firstDir` 的最深一层。
+ *
+ * ★ 2026-11-26（v34 T1 实证）：任务开头常先描述**输入**目录
+ *   （「`…/v34-t1/legacy/` 下有一个遗留模块 `report_gen.py`」），交付物
+ *   写在别处。若把「全文第一个绝对目录」当任务根，所有裸名交付物都会解析
+ *   进那个输入子目录——回合末谎报「`legacy/README.md` 缺失」，并把任务写明的
+ *   「≥8 个断言」门槛套到**冻结夹具** `legacy/test_report_gen.py` 上
+ *   （该文件本就是输入，永远 0 个模型断言 → 每轮误报 + 无谓续跑）。
+ *   治本：第一个绝对目录若落在某个绝对**文件** token 的目录之内，说明它只是
+ *   交付根下的子目录，上移到该文件所在目录。方向是单向的（只向上放宽），
+ *   输入文件绝不会把交付根收窄到别处。
+ */
+function nearestAncestorOfFirstAbsDir(text: string, firstDir: string): string | undefined {
+  const dirs = new Set<string>();
+  FILE_TOKEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = FILE_TOKEN_RE.exec(text)) !== null) {
+    const raw = m[1];
+    if (!raw || raw.includes("://") || /^\/\//.test(raw)) continue;
+    if (!path.isAbsolute(raw) || hasPlaceholderDir(raw)) continue;
+    dirs.add(path.resolve(path.dirname(raw)));
+  }
+  let best: string | undefined;
+  for (const d of dirs) {
+    if (d === firstDir || !isWithin(d, firstDir)) continue;
+    if (!best || d.length > best.length) best = d; // 取最近的祖先
+  }
+  return best;
+}
+
+/**
  * 从用户任务文本抽取必需交付物。
  *
  * @param userMessage 用户原始消息（不要传搜索/上下文增强后的消息）
@@ -328,7 +359,10 @@ export function extractRequiredDeliverables(
       const candidate = dirMatch[1];
       // 避免把 "/" 或过短根路径当成任务目录
       if (candidate.replace(/[\\/]/g, "").length >= 2) {
-        targetDir = path.resolve(candidate);
+        const resolved = path.resolve(candidate);
+        // ★ v34 T1：第一个绝对目录可能是**输入**子目录（legacy/），
+        //   交付根在它外面。见 nearestAncestorOfFirstAbsDir。
+        targetDir = nearestAncestorOfFirstAbsDir(text, resolved) ?? resolved;
       }
     }
   }
@@ -469,7 +503,8 @@ export type AcceptanceIssue =
  * 只数「断言样式的代码行」，跳过 import/require 行——任务给的「至少 N 个断言」
  * 是验收硬指标，自写测试里注释掉/挪进辅助函数的断言不算数。
  */
-const ASSERT_LINE_RE = /\bassert\b|\b(?:expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
+const ASSERT_LINE_RE =
+  /\bassert\b|\b(?:assert|expect|check|verify|should|ensure|confirm)\w*\s*\(|\bok\s*\(/;
 const ASSERT_SKIP_LINE_RE = /^\s*(?:import\b|(?:const|let|var)\b.*\brequire\s*\()/;
 
 export function countAssertionLines(content: string): number {
@@ -584,7 +619,12 @@ export function extractFrozenInputs(
     const dirMatch = ABS_DIR_RE.exec(text);
     if (dirMatch) {
       const candidate = dirMatch[1];
-      if (candidate.replace(/[\\/]/g, "").length >= 2) targetDir = path.resolve(candidate);
+      if (candidate.replace(/[\\/]/g, "").length >= 2) {
+        const resolved = path.resolve(candidate);
+        // 与 extractRequiredDeliverables 同口径：第一个绝对目录可能是输入
+        // 子目录，冻结输入按真正的交付根解析（v34 T1 同源）。
+        targetDir = nearestAncestorOfFirstAbsDir(text, resolved) ?? resolved;
+      }
     }
   }
   const withinScope = (p: string) => isWithin(workspaceRoot, p) || isWithin(targetDir, p);

@@ -1,5 +1,11 @@
 import { applyJitter } from "./retry-utils";
-import { resolveFailoverReason, isTransientReason, type FailoverReason } from "./failover-policy";
+import {
+  resolveFailoverReason,
+  isTransientReason,
+  CONTENT_POLICY_BLOCKED_PATTERNS,
+  MODEL_NOT_FOUND_PATTERNS as MODEL_NOT_FOUND_PATTERNS_TEXT,
+  type FailoverReason,
+} from "./failover-policy";
 
 export enum LLMErrorType {
   CONTEXT_OVERFLOW = "context_overflow",
@@ -132,27 +138,48 @@ const SSL_CERT_PATTERNS = [
   /UNABLE_TO_VERIFY_LEAF_SIGNATURE/i,
 ];
 
-/** Provider 安全过滤器拒绝模式（确定性，不可重试，应立即 fallback） */
-const CONTENT_POLICY_PATTERNS = [
+/**
+ * Provider 安全过滤器拒绝模式（确定性，不可重试，应立即 fallback）。
+ *
+ * ★ 2026-11-26（v34 治本）：措辞表**唯一真相**在
+ *   `failover-policy.ts:CONTENT_POLICY_BLOCKED_PATTERNS`（对标 hermes 的
+ *   `_CONTENT_POLICY_BLOCKED_PATTERNS`）。这里只保留 EvoClaw 历史上额外的
+ *   正则形态（更宽松的动词/名词搭配），由同一张字面表派生，避免两份清单
+ *   再次漂移——此前 failover-policy 用子串、本文件用正则，`our safety system`
+ *   只在后者缺席，403 安全拒绝被误判 AUTH（实测 13 次）。
+ *
+ * 纪律：绝不加入泛化词 "policy"——它会与 billing/auth 撞车（见下方回归测试）。
+ */
+const CONTENT_POLICY_PATTERNS: RegExp[] = [
   /content.*policy/i,
   /safety.filter/i,
-  /content_filter/i,
-  /responsibleaipolicyviolation/i,
-  /flagged.*safety/i,
-  /flagged.*cyber/i,
-  /violates.*usage.polic/i,
-  /violates.*content.polic/i,
-  /request.*flagged.by/i,
-  /prompt.*flagged.by/i,
-  /cannot.be.generated.*safety/i,
+  /safety.guardrail/i,
+  // 从字面表派生：把每个短语转成「词间可有任意非字母分隔」的正则
+  ...CONTENT_POLICY_BLOCKED_PATTERNS.map(
+    (p) => new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "[\\s._-]*"), "i"),
+  ),
+  /content_policy_violation/i,
   /inappropriate.content/i,
   /harmful.content/i,
   /refusing.to.generate/i,
-  /content_policy_violation/i,
 ];
 
-/** 模型不存在模式（non-transient，应跳过该 provider） */
-const MODEL_NOT_FOUND_PATTERNS = [
+/** 模型不存在模式（non-transient，应跳过该 provider）。
+ *
+ * ★ 2026-11-26（v34 治本）：字面表**唯一真相**在
+ *   `failover-policy.ts:MODEL_NOT_FOUND_PATTERNS`（对标 hermes 的
+ *   `_MODEL_NOT_FOUND_PATTERNS`）。此处派生为「词间可有任意非字母分隔」的正则，
+ *   并保留 EvoClaw 历史上额外的正则形态。
+ *
+ *   此前两份清单语义矛盾：resolveFailoverReason(404, 下线措辞) 说
+ *   model_not_found，本文件的 404 分支却因匹配不到而返回 retryable 的
+ *   PROVIDER_ERROR → 已下线的 slug 被过载阶梯反复重试。
+ */
+const MODEL_NOT_FOUND_PATTERNS: RegExp[] = [
+  ...MODEL_NOT_FOUND_PATTERNS_TEXT.map(
+    (p) => new RegExp(p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "[\\s._-]*"), "i"),
+  ),
+  // EvoClaw 额外形态（措辞表未覆盖的变体）
   /model.*not.found/i,
   /model.*does.not.exist/i,
   /model.*not.available/i,
@@ -163,9 +190,6 @@ const MODEL_NOT_FOUND_PATTERNS = [
   /model_not_found/i,
   /is.not.a.valid.model/i,
   /model.*deprecated/i,
-  // ★ 2026-10-26 修复：讯飞 MaaS API 返回 404 "no Route matched with those values"
-  //   表示该模型在 API 路由中不存在（永久错误），不应重试。之前未匹配此模式
-  //   导致过载阶梯每次重试该 provider 浪费 7s+11s+27s=45s。
   /no.route.matched/i,
   /route.*not.found/i,
 ];
@@ -287,6 +311,23 @@ export function classifyLLMError(
   }
 
   // Provider 安全过滤器拒绝：确定性，不可重试，应立即 fallback
+  // ★ 2026-11-26（v34 同类治本）：451 = Unavailable For Legal Reasons，
+  //   定义上就是内容/法律性拒绝。isContentPolicyError() 早已特判 451，
+  //   但主分类器此前没有对应分支 → 451 落到 unknown/transient，被反复重试
+  //   且换 provider 重发同一提示词（必然再被拒）。与措辞表同源处理。
+  if (statusCode === 451) {
+    return {
+      type: LLMErrorType.CONTENT_POLICY,
+      retryable: false,
+      shouldCompact: false,
+      shouldRotateAuth: false,
+      shouldSkipProvider: true,
+      backoffMs: 0,
+      message: "Content policy blocked (HTTP 451). Skipping provider (deterministic refusal).",
+      reason: "content_policy_blocked",
+      isTransient: false,
+    };
+  }
   for (const pattern of CONTENT_POLICY_PATTERNS) {
     if (pattern.test(lower)) {
       return {
@@ -427,17 +468,27 @@ export function classifyLLMError(
         };
       }
     }
-    // 404 但无 model_not_found 模式：保守归类为 PROVIDER_ERROR 重试
+    // 404 但措辞不匹配任何模式：**仍归 model_not_found**。
+    //
+    // ★ 2026-11-26（v34 实证，与 content-policy 同一类「双份清单漂移」）：
+    //   此前这里返回 `{ type: PROVIDER_ERROR, retryable: true, isTransient: true,
+    //   reason: "model_not_found" }` —— 对象自相矛盾（reason 是 non-transient，
+    //   却标可重试），且与 `resolveFailoverReason(404)` 的判定相反。实测
+    //   OpenRouter 下线 slug 的 404 措辞（"…is no longer available…no provider
+    //   serves this model anymore"）未命中模式 → 走此分支 → 过载阶梯重试
+    //   27 次 + 熔断，白烧 6s/11s/27s。
+    //   现在与 failover-policy 同判：404 = 该 provider 上没有这个模型/路由
+    //   （含 baseURL 拼错、网关路径不存在），重试无意义，跳过该 provider。
     return {
-      type: LLMErrorType.PROVIDER_ERROR,
-      retryable: true,
+      type: LLMErrorType.MODEL_NOT_FOUND,
+      retryable: false,
       shouldCompact: false,
       shouldRotateAuth: false,
-      shouldSkipProvider: false,
-      backoffMs: applyBackoffJitter(2000),
-      message: "Provider returned 404. Retrying.",
-      reason,
-      isTransient: true,
+      shouldSkipProvider: true,
+      backoffMs: 0,
+      message: "Provider returned 404 (no model/route at this path). Skipping provider.",
+      reason: "model_not_found",
+      isTransient: false,
     };
   }
 
@@ -872,13 +923,17 @@ export interface UserFriendlyError {
  *
  * @param error 已分类的错误
  * @param providerName provider 名称（用于消息中提及）
+ * @param hasNextProvider 是否还有下一个候选 provider（决定「已切换」措辞是否属实）
  * @returns 用户友好的错误消息
  */
 export function formatClassifiedErrorForUser(
   error: ClassifiedError,
   providerName?: string,
+  hasNextProvider: boolean = true,
 ): UserFriendlyError {
   const providerLabel = providerName ? `"${providerName}"` : "当前 provider";
+  // 没有下一个 provider 时「已自动切换」是假话——必须如实说已无可用入口。
+  const switched = hasNextProvider ? "已自动切换到下一个 provider。" : "没有其他可用的 provider 了。";
 
   switch (error.type) {
     case LLMErrorType.CONTEXT_OVERFLOW:
@@ -897,14 +952,14 @@ export function formatClassifiedErrorForUser(
 
     case LLMErrorType.AUTH:
       return {
-        userMessage: `${providerLabel} 认证失败，已自动切换到下一个 provider。`,
+        userMessage: `${providerLabel} 认证失败，${switched}`,
         actionableHint: "请检查 API key 配置（.env 文件或 /config 命令）。",
         shouldNotifyUser: true,
       };
 
     case LLMErrorType.BILLING:
       return {
-        userMessage: `${providerLabel} 账户余额不足，已自动切换到下一个 provider。`,
+        userMessage: `${providerLabel} 账户余额不足，${switched}`,
         actionableHint: "请充值或更换 provider。",
         shouldNotifyUser: true,
       };
@@ -939,7 +994,7 @@ export function formatClassifiedErrorForUser(
 
     case LLMErrorType.MODEL_NOT_FOUND:
       return {
-        userMessage: `模型不存在，已自动 fallback 到下一个 provider。`,
+        userMessage: `模型不存在，${hasNextProvider ? "已自动 fallback 到下一个 provider。" : "没有其他可用的 provider 了。"}`,
         actionableHint: "请检查模型名称配置（/config 或 .env）。",
         shouldNotifyUser: true,
       };

@@ -206,6 +206,11 @@ function pickError(o: Record<string, unknown>): string | null {
   if (!o || typeof o !== "object") return null;
   // 等待审批不是失败
   if (o.requiresPermission === true || o.status === "pending") return null;
+  // ★ 2026-11-26（对标 hermes：terminal 结果只有 exit_code，没有 success 概念）：
+  //   信息性非零退出码（grep/diff/test/find/git 的「非零但正常」）由 shell_exec
+  //   标注 non_error_exit。此前这类结果被计进 failedTools → 无谓的自动续跑
+  //   与「本轮失败工具」措辞（grep 无匹配 = 一次正常的事实查询）。
+  if (o.non_error_exit === true) return null;
 
   const failed = o.success === false;
   const hasErr = typeof o.error === "string" && o.error.trim().length > 0;

@@ -184,6 +184,34 @@ describe("extractRequiredDeliverables", () => {
     const bases = specs.map((s) => s.path.split("/").pop()!).sort();
     expect(bases).toEqual(["report.json", "scanner.js"]);
   });
+
+  // ★ v34 T1 实证：任务开头先描述**输入**目录，交付物写在它外面。
+  //   旧逻辑把「全文第一个绝对目录」当任务根 → 裸名交付物解析进输入子目录
+  //   → 回合末谎报「legacy/README.md 缺失」，并把「≥8 个断言」门槛套到
+  //   **冻结夹具** legacy/test_report_gen.py 上（永远 0 个模型断言 → 每轮误报）。
+  it("第一个绝对目录是输入子目录时，交付根上移到绝对文件所在目录", () => {
+    const msg = [
+      "你是维护工程师。`/w/v34-t1/legacy/` 下有一个遗留模块 `report_gen.py`。",
+      "请把它重构到 `/w/v34-t1/report_gen.py`（新文件，不要改 legacy/ 里的原件）。",
+      "交付 `test_report_gen.py`：至少 8 个断言。",
+      "交付 `README.md`（≥300 字节）。",
+    ].join("\n");
+    const specs = extractRequiredDeliverables(msg, "/fallback/ws");
+    expect(specs.map((s) => s.path)).toEqual([
+      "/w/v34-t1/report_gen.py",
+      "/w/v34-t1/test_report_gen.py",
+      "/w/v34-t1/README.md",
+    ]);
+    // 断言门槛必须落在模型交付的测试文件上，而不是冻结夹具
+    const test = specs.find((s) => s.path.endsWith("test_report_gen.py"))!;
+    expect(test.minAssertions).toBe(8);
+  });
+
+  it("第一个绝对目录已是交付根时保持不变（只向上放宽，绝不移到别处）", () => {
+    const msg = "在 /w/task/ 下交付 a.py。输入在 /w/task/in/ 里，禁止修改。";
+    const specs = extractRequiredDeliverables(msg, "/fallback/ws");
+    expect(specs.map((s) => s.path)).toEqual(["/w/task/a.py"]);
+  });
 });
 
 describe("findMissingDeliverables", () => {
@@ -267,6 +295,22 @@ describe("countAssertionLines", () => {
       "",
     ].join("\n");
     expect(countAssertionLines(src)).toBe(4);
+  });
+
+  it("★ Python unittest 的 self.assertEqual 系列计入（v34 T1 实证）", () => {
+    // 回归：旧正则 `\bassert\b` 匹配不到 `assertEqual`（词后紧跟字母），
+    // 于是每个 unittest 交付物都判 0 个断言 → 每轮谎报「断言不足」+ 无谓续跑。
+    const src = [
+      "import unittest",
+      "class T(unittest.TestCase):",
+      "    def test_a(self):",
+      "        self.assertEqual(f(1), 2)",
+      "        self.assertTrue(ok)",
+      "        self.assertRaises(ValueError, g)",
+      "        self.assertIn(1, [1, 2])",
+      "        self.assertIsNone(h())",
+    ].join("\n");
+    expect(countAssertionLines(src)).toBe(5);
   });
 
   it("空内容返回 0", () => {

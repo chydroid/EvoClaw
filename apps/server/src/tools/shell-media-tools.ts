@@ -9,6 +9,7 @@ import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownload
 import type { KernelCellResult, KernelExecuteOptions } from "@evoclaw/infrastructure";
 import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand, shellBlockGuidance } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
+import { shellResultAnnotations } from "./shell-result-hints";
 
 /**
  * 命令输出准确保留上限（字符）。
@@ -232,6 +233,64 @@ export function collapseWorkspaceRootAlias(command: string, cwd: string, wsDir: 
       return match;
     }
   );
+}
+
+/**
+ * 从命令中提取**真实写目标**（重定向 / tee / touch 的参数）。
+ *
+ * ★ 2026-11-26（v34 实证）：旧实现把命令里**所有**文件样 token 都当成写目标补父
+ *   目录，于是程序**参数**也中招——`python3 investigate.py … tests/test_calc.py`
+ *   在 workspace 下凭空造出 `tests/`，模型随后困惑于「这目录哪来的」。
+ *   对标 hermes：只有写目标才 `mkdir -p "$d"`（file_operations 在自己知道目标
+ *   路径时补），从不预扫任意命令。这里同样只认三种写目标。
+ *
+ * 纯函数（不碰磁盘），便于单测。
+ */
+export function extractWriteTargets(command: string): string[] {
+  // 裸 token 与「单/双引号包裹」两种形态（`> "out/a b.txt"` 很常见）。
+  // 裸 token 故意放宽到「任意非空白、非 shell 元字符」——这样 `logs/$NAME.txt`
+  // 整串被捕获（而不是截成 `logs/`），再由 add() 统一按变量特征拒绝。
+  const BARE = `[^\\s<>|&;"'\`]+`;
+  const QUOTED = `(?:"([^"]+)"|'([^']+)'|(${BARE}))`;
+  const out: string[] = [];
+  const add = (t: string | undefined) => {
+    if (!t) return;
+    // 设备文件（/dev/null 等）与 fd 复制（`>&2` → 已由正则排除）不是写目标
+    if (t.startsWith("-") || /^\/dev\//.test(t)) return;
+    // ★ 变量/命令替换（`> "$OUT"`、`> ${LOG}`、`> $(mktemp)`）不是**静态**路径：
+    //   运行时才求值，按字面量补目录会凭空造出 `$OUT/`、`$(mktemp)/` 这类目录，
+    //   正是本次要消灭的「凭程序文本建目录」同一类。交给 shell 自己处理。
+    if (/[$`]/.test(t)) return;
+    out.push(t);
+  };
+  // 重定向目标（跳过 /dev/null 等设备与 fd 复制 `>&2`）
+  for (const m of command.matchAll(
+    new RegExp(`(?:^|[^<&\\d])(?:\\d?>>?|&>)\\s*${QUOTED}`, "g"),
+  )) {
+    add(m[1] ?? m[2] ?? m[3]);
+  }
+  // tee [-a] <file>... / touch <file>...
+  // 引号内的空白不切分：先按引号感知切词，再过滤开关
+  for (const m of command.matchAll(
+    new RegExp(`\\b(?:tee|touch)\\b((?:\\s+(?:-[a-zA-Z]+|${QUOTED}))+)`, "g"),
+  )) {
+    const words = (m[1].match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((w) => w.replace(/^["']|["']$/g, ""));
+    for (const w of words) add(w);
+  }
+  return out;
+}
+
+/** 为命令中的真实写目标补齐父目录（无写目标时为 no-op）。 */
+export function ensureWriteTargetParents(command: string, cwd: string): void {
+  for (const relPath of extractWriteTargets(command)) {
+    if (path.isAbsolute(relPath)) continue;
+    const target = path.resolve(cwd, relPath.replace(/^\.?\//, ""));
+    const parent = path.dirname(target);
+    if (!fs.existsSync(parent)) {
+      fs.mkdirSync(parent, { recursive: true });
+      console.log(`[shell_exec] Auto-created missing parent dir: ${parent}`);
+    }
+  }
 }
 
 /** Recursively search for a file by name under a directory tree (max depth 4) */
@@ -565,16 +624,8 @@ export function registerShellMediaTools(
       // 失败 3 轮后才自行 mkdir）。
       const wsDir = getWorkspaceDir();
       effectiveCommand = collapseWorkspaceRootAlias(effectiveCommand, cwd, wsDir);
-      for (const m of effectiveCommand.matchAll(/\s([A-Za-z0-9_./-]+\.(?:py|js|mjs|ts|json|txt|csv|log|sh))\b/g)) {
-        const relPath = m[1];
-        if (path.isAbsolute(relPath)) continue;
-        const target = path.resolve(cwd, relPath.replace(/^\.?\//, ""));
-        const parent = path.dirname(target);
-        if (!fs.existsSync(parent)) {
-          fs.mkdirSync(parent, { recursive: true });
-          console.log(`[shell_exec] Auto-created missing parent dir: ${parent}`);
-        }
-      }
+      // 只为**真实写目标**（重定向 / tee / touch）补父目录——绝不因程序参数建目录。
+      ensureWriteTargetParents(effectiveCommand, cwd);
 
       // Strip outer double-quotes around Windows drive-letter paths. LLM often
       // wraps absolute paths in quotes ("D:\...") which, when passed through
@@ -738,6 +789,12 @@ export function registerShellMediaTools(
               sandboxed: true,
               backend: "process-manager",
               command,
+              // 沙箱路径同样要带退出码语义（grep=1 不是错误、137=OOM 等）
+              ...shellResultAnnotations(
+                command,
+                result.exitCode,
+                [result.stdout, result.stderr].filter(Boolean).join("\n"),
+              ),
             };
           } catch (err) {
             // manager 会话失败 → 回退旧旁路（LocalSandboxBackend 直连）
@@ -763,6 +820,11 @@ export function registerShellMediaTools(
             sandboxed: true,
             backend: managerRouted ? "process-manager" : "process-legacy",
             command,
+            ...shellResultAnnotations(
+              command,
+              result.exitCode,
+              [result.stdout, result.stderr].filter(Boolean).join("\n"),
+            ),
           };
         } catch (err) {
           await backend.dispose();
@@ -911,6 +973,24 @@ export function registerShellMediaTools(
             const output = displayStdout.trim();
             const errorOutput = stderr.trim();
             console.log(`[shell_exec] Exit code ${code}, output: ${output.length} chars${pipelineStatusCapture ? `, pipestatus: [${pipelineStatusCapture.join(",")}]` : ""}`);
+            // ★ 2026-11-26（对标 hermes terminal_tool_result.py / terminal_hints.py）：
+            //   grep/diff/test 的 1、git 的「常常正常」、137=OOM、command not found、
+            //   掩盖成功这类信号此前一律只给裸数字，模型要自己猜，常常白烧一轮。
+            //   这里追加 exit_code_meaning / hint 两个**可选**字段（绝不改退出码），
+            //   并把 bareCdHint 合并进去（原先 `hint` 键会与之互斥，二者都要给时
+            //   后者覆盖前者）。注意 exit_code_meaning 只是「给模型看的语义」，
+            //   不等于「不是错误」——只有 grep/diff/test 这类才打 non_error_exit。
+            //   close 回调的 code 可能为 null（被信号终止且无退出码）——按 -1 归因，
+            //   与下方 exitCode 字段的既有语义一致。
+            const annotations = shellResultAnnotations(
+              command,
+              code ?? -1,
+              [output, errorOutput].filter(Boolean).join("\n"),
+            );
+            const hints = {
+              ...annotations,
+              ...(bareCdHint ? { hint: bareCdHint } : {}),
+            };
             if (code === 0) {
               resolve({
                 success: true,
@@ -924,7 +1004,7 @@ export function registerShellMediaTools(
                 stderr: errorOutput.slice(0, 5000) || undefined,
                 command,
                 cwd,
-                ...(bareCdHint ? { hint: bareCdHint } : {}),
+                ...hints,
               });
             } else {
               resolve({
@@ -935,7 +1015,7 @@ export function registerShellMediaTools(
                 output: withEbusyHint(output.slice(0, MAX_CAPTURE_CHARS)),
                 command,
                 cwd,
-                ...(bareCdHint ? { hint: bareCdHint } : {}),
+                ...hints,
               });
             }
           }

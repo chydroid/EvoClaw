@@ -143,6 +143,10 @@ describe("failover-policy > resolveFailoverReason", () => {
     expect(resolveFailoverReason(400, "content_filter triggered")).toBe("content_policy_blocked");
     expect(resolveFailoverReason(undefined, "prompt was flagged by our safety system")).toBe("content_policy_blocked");
     expect(resolveFailoverReason(undefined, "violates our usage policies")).toBe("content_policy_blocked");
+    expect(resolveFailoverReason(403, "rejected as a result of our safety system")).toBe("content_policy_blocked");
+    // 反例：裸「our safety system」不得判为确定性拒绝——瞬时故障必须可重试，
+    // 否则 provider 被 skip 300s，与 v34 的漂移缺陷同族。
+    expect(resolveFailoverReason(503, "our safety system is temporarily unavailable, please retry")).toBe("overloaded");
   });
 
   it("TC-035d: provider_policy_blocked 从 OpenRouter 消息识别", () => {

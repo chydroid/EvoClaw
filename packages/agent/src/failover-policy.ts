@@ -218,6 +218,105 @@ export function shouldPreserveTransientCooldownProbeSlot(
 // ── Reason Resolution ─────────────────────────────────────
 
 /**
+ * Provider 安全过滤器拒绝的**唯一**措辞表（单一真相）。
+ *
+ * 对标 hermes-agent `agent/error_classifier.py:_CONTENT_POLICY_BLOCKED_PATTERNS`
+ * ——hermes 只维护一份，且在状态码分类**之前**判定（safety refusal beats
+ * status code），因此 400/403/无状态码的安全拒绝都不会被降级成
+ * format_error/auth。
+ *
+ * ★ 2026-11-26（v34 实证）：EvoClaw 此前在两个模块各维护一份（本文件用
+ *   子串、error-classifier.ts 用正则），已经漂移——`our safety system` 只在
+ *   前者缺席、后者是本次才补上，于是 HTTP 403 + "rejected as a result of our
+ *   safety system" 落到 403→AUTH：provider 被 skip 300s，换个 provider 重发
+ *   同一提示词，必然再被拒（实测 13 次）。现在由本表统一派生两处匹配。
+ *
+ * 纪律：每条都是**某个 provider 的逐字措辞**，绝不使用泛化词（如 "policy"），
+ * 否则会与 billing/auth 撞车。
+ */
+export const CONTENT_POLICY_BLOCKED_PATTERNS: readonly string[] = [
+  // Codex cyber flags / OpenAI moderation / Anthropic safety
+  "flagged for possible cybersecurity risk",
+  "trusted access for cyber",
+  "violates our usage policies",
+  "violates openai's usage policies",
+  "your request was flagged by",
+  "prompt was flagged by our safety",
+  "responses cannot be generated due to safety",
+  // ★ v34 实证：DOTS3 网关把安全拒绝表述成「our safety system」。
+  //   只收整句拒绝措辞——裸 `"our safety system"` 会把
+  //   「our safety system is temporarily unavailable, retry」这类**瞬时**
+  //   故障判成确定性拒绝（→ 跳过 provider 300s），与本次要修的漂移同类。
+  //   hermes 同样只用逐字整句，从不收泛化短语。
+  "rejected as a result of our safety system",
+  // Azure token / MiniMax / CommandCode gateway moderation
+  "content_filter",
+  "responsibleaipolicyviolation",
+  "new_sensitive",
+  // Alibaba Model Studio guardrail（输入/输出两侧）
+  "content exists risk",
+  "data may contain inappropriate content",
+  "data_inspection_failed",
+];
+
+/** 文本是否命中安全过滤器拒绝措辞（大小写不敏感）。 */
+export function isContentPolicyText(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return CONTENT_POLICY_BLOCKED_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
+ * 模型不存在 / 路由已死的**唯一**措辞表（单一真相）。
+ *
+ * 对标 hermes-agent `agent/error_classifier.py:_MODEL_NOT_FOUND_PATTERNS`
+ * （含 `"is no longer free"` 这类「provider 下线了该 slug」的措辞）。
+ *
+ * ★ 2026-11-26（v34 实证，与 content-policy 同一类漂移）：此前本文件与
+ *   `error-classifier.ts:MODEL_NOT_FOUND_PATTERNS` 各维护一份，且**语义还
+ *   互相矛盾**——`resolveFailoverReason(404, "…is no longer available on
+ *   OpenRouter: no provider serves this model anymore…")` 返回
+ *   `model_not_found`（non-transient），而 `classifyLLMError` 同一文本匹配不到
+ *   模式 → 返回 `PROVIDER_ERROR, retryable: true`。于是一个**已下线的模型 slug**
+ *   被过载阶梯反复重试（实测 27 次 404 + 熔断），白烧 6s/11s/27s 的等待。
+ *   现在两边由本表派生，且「下线/退役」措辞与「不存在」措辞同处一表。
+ *
+ * 纪律：每条都是**某个 provider 的逐字措辞**，不使用泛化词 "404"/"not found"。
+ */
+export const MODEL_NOT_FOUND_PATTERNS: readonly string[] = [
+  "is not a valid model",
+  "invalid model",
+  "model not found",
+  "model_not_found",
+  "does not exist",
+  "no such model",
+  "unknown model",
+  "unsupported model",
+  "is not a valid model id",
+  "model is deprecated",
+  "model has been deprecated",
+  "is not supported when using codex with a chatgpt account",
+  // OpenRouter：无 endpoint 支持 tool use（hermes #58446）—— 重试无用，换 provider
+  "no endpoints found that support tool use",
+  // ★ v34 实证：OpenRouter 下线 :free 路由 / 无 provider 再服务该 slug
+  //   （hermes #123180 的 "is no longer free" 同族，本网关措辞更长）
+  "is no longer free",
+  "is no longer available",
+  "no provider serves this model",
+  "no providers are currently available for this model",
+  // 讯飞 MaaS 404 "no Route matched with those values"（既有修复，勿删）
+  "no route matched",
+  "route not found",
+];
+
+/** 文本是否命中模型不存在/路由已死措辞（大小写不敏感）。 */
+export function isModelNotFoundText(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return MODEL_NOT_FOUND_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
  * 从 HTTP 状态码和错误文本解析 FailoverReason。
  *
  * 状态码优先，其次匹配错误文本模式。
@@ -258,22 +357,10 @@ export function resolveFailoverReason(
   }
 
   // Provider content-policy / safety-filter block（确定性拒绝，不可重试）
-  if (errorText) {
-    const lower = errorText.toLowerCase();
-    const CONTENT_POLICY_PATTERNS = [
-      "flagged for possible cybersecurity risk",
-      "trusted access for cyber",
-      "violates our usage policies",
-      "violates openai's usage policies",
-      "your request was flagged by",
-      "prompt was flagged by our safety",
-      "responses cannot be generated due to safety",
-      "content_filter",
-      "responsibleaipolicyviolation",
-    ];
-    if (CONTENT_POLICY_PATTERNS.some((p) => lower.includes(p))) {
-      return "content_policy_blocked";
-    }
+  // ★ 2026-11-26：451 = Unavailable For Legal Reasons，定义上就是内容/法律性
+  //   拒绝；与措辞表同源处理（此前缺席 → 落到 unknown/transient 反复重试）。
+  if (statusCode === 451 || (errorText && isContentPolicyText(errorText))) {
+    return "content_policy_blocked";
   }
 
   // OpenRouter provider-policy block（404 + "no endpoints available matching your"）
@@ -322,13 +409,10 @@ export function resolveFailoverReason(
   if (statusCode === 401 || statusCode === 403) return "auth";
   if (statusCode === 402) return "billing";
   if (statusCode === 404) {
-    // 404 可能是 model_not_found 或 provider_policy_blocked（已在上面处理）
-    if (errorText) {
-      const lower = errorText.toLowerCase();
-      if (/is not a valid model|invalid model|model not found|model_not_found|does not exist|no such model|unknown model|unsupported model/.test(lower)) {
-        return "model_not_found";
-      }
-    }
+    // 404 可能是 model_not_found 或 provider_policy_blocked（已在上面处理）。
+    // 措辞表与 error-classifier 同源（MODEL_NOT_FOUND_PATTERNS）；404 本身
+    // 即意味着该路由/模型在此 provider 上不存在，故无论措辞如何都归
+    // model_not_found——绝不能落成可重试的 provider_error。
     return "model_not_found";
   }
   if (statusCode === 408) return "timeout";
@@ -387,6 +471,13 @@ export function resolveFailoverReason(
   // 过载
   if (/overloaded|service.unavailable|internal.server.error/.test(lower)) {
     return "overloaded";
+  }
+
+  // 模型不存在 / 路由已死（★ v34：与 MODEL_NOT_FOUND_PATTERNS 同源）。
+  // 此前无状态码时这条缺席 → 同一文本 classifier 判 model_not_found（不可重试、
+  // 跳过 provider），本函数却判 unclassified（可重试）——两条路径互相矛盾。
+  if (isModelNotFoundText(lower)) {
+    return "model_not_found";
   }
 
   // 空响应

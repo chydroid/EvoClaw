@@ -739,6 +739,12 @@ const networkToolSemaphore = new Semaphore(3);
 // Some remote LLM providers (e.g. Mimo) return a plain-text refusal such as
 // "The request was rejected because it was considered high risk" instead of
 // using HTTP 4xx. Treat those as provider failures so we can fail over.
+//
+// ★ 与 failover-policy.ts:CONTENT_POLICY_BLOCKED_PATTERNS **故意不合并**：
+//   那张表匹配的是**错误体文本**（gateway 的 error.message），本表匹配的是
+//   **assistant 正文**。正文里正常叙述也可能出现 "content_filter"/"policy"
+//   这类词（例如模型在解释一段过滤代码），所以这里只收「只可能出现在拒绝
+//   声明里」的整句措辞——误报预算不同，合并会制造新的误判。
 
 const PROVIDER_SAFETY_REJECTION_PATTERNS = [
   "The request was rejected because it was considered high risk",
@@ -749,6 +755,8 @@ const PROVIDER_SAFETY_REJECTION_PATTERNS = [
   "content filter triggered",
   "input was blocked",
   "request was blocked",
+  // ★ v34：DOTS3 网关把安全拒绝作为正文返回（整句，误报风险低）
+  "rejected as a result of our safety system",
 ];
 
 export function isProviderSafetyRejection(content: string | null | undefined): boolean {
@@ -1485,7 +1493,7 @@ function formatToolSummary(toolName: string, args: Record<string, unknown>): str
 /**
  * 生成工具完成后的可读摘要（进度反馈用）。
  */
-function formatToolResultSummary(toolName: string, args: Record<string, unknown>, result: string): string {
+export function formatToolResultSummary(toolName: string, args: Record<string, unknown>, result: string): string {
   // 尝试解析结果
   let parsed: Record<string, unknown> | null = null;
   try { parsed = JSON.parse(result); } catch { /* not JSON */ }
@@ -1520,6 +1528,13 @@ function formatToolResultSummary(toolName: string, args: Record<string, unknown>
       // 尝试提取执行时间
       const duration = parsed?.duration as number | undefined;
       const timeStr = duration ? ` (${duration}ms)` : "";
+      // ★ 2026-11-26（同 shell-result-hints 一类）：grep/diff/test 的 1 是
+      //   「非零但正常」，shell_exec 已标 non_error_exit + exit_code_meaning。
+      //   进度行若仍显示「❌ 命令失败」，就等于在 UI 层把刚消掉的误判又加回来。
+      if (parsed?.non_error_exit === true) {
+        const meaning = typeof parsed.exit_code_meaning === "string" ? `（${parsed.exit_code_meaning}）` : "";
+        return `✅ 命令完成${meaning}${timeStr}: ${short}`;
+      }
       return success ? `✅ 命令完成${timeStr}: ${short}` : `❌ 命令失败: ${short}`;
     }
     case "web_search": {
@@ -1619,6 +1634,52 @@ function mergeVolatileSystemIntoUser(
       : { ...last, content: [{ type: "text", text: prefix }, ...(Array.isArray(last.content) ? last.content : [])] };
   } else {
     kept.push({ role: "user", content: prefix });
+  }
+  return kept;
+}
+
+/**
+ * v34 T4：裁剪接力消息，保证 OpenAI/Anthropic 消息序列合法。
+ *
+ * 跨 provider 接力时，接力段可能以一条 assistant tool_calls 结尾而对应的
+ * tool 结果尚未产生（provider 在工具执行前就失败），或反过来孤立的 tool 消息
+ * 找不到它的 assistant 调用。两种形态都会被网关 400 拒绝，让整个 failover
+ * 变成"换个人重犯同样的错"。这里只保留**完整配对**的尾部：
+ *   - assistant(tool_calls) 后必须紧跟全部 tool_call_id 对应的 tool 消息；
+ *   - 任何找不到配对 assistant 的 tool 消息丢弃。
+ * 纯文本 assistant 消息始终保留（它是进展的一部分）。
+ */
+export function pruneUnpairedToolMessages(messages: LLMMessage[]): LLMMessage[] {
+  const kept: LLMMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === "tool") {
+      // 孤立 tool 消息（上一个 kept 不是带 tool_calls 的 assistant）→ 丢弃
+      const prev = kept[kept.length - 1];
+      if (!prev || prev.role !== "assistant" || !prev.tool_calls?.length) continue;
+      kept.push(m);
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      // 收集紧随其后的 tool 结果，缺任何一个即整条 assistant 丢弃（其后的
+      // tool 消息会因失去配对而一并被丢弃）。
+      const pending = new Set(
+        m.tool_calls.map((c) => (c as { id?: string })?.id).filter((id): id is string => typeof id === "string"),
+      );
+      let j = i + 1;
+      const results: LLMMessage[] = [];
+      while (j < messages.length && messages[j].role === "tool" && pending.size > 0) {
+        const id = (messages[j] as { tool_call_id?: string }).tool_call_id;
+        if (id && pending.has(id)) pending.delete(id);
+        results.push(messages[j]);
+        j++;
+      }
+      if (pending.size > 0) continue; // 未配齐 → 跳过整段
+      kept.push(m, ...results);
+      i = j - 1;
+      continue;
+    }
+    kept.push(m);
   }
   return kept;
 }
@@ -5224,6 +5285,11 @@ export async function tryCallLLM(
   // 「发生了什么 + 下一步做什么」，而不是通用的"请检查 API Key/服务是否在线"。
   let lastFailureEvidence: TerminalFailureEvidence | null = null;
   let errorAttemptsByProvider = new Map<string, number>();
+  // ── 跨 provider 接力（v34 T4 实证）──
+  // provider 在回合**中途**失败时，本 provider 已累积的对话进展（assistant
+  // tool_calls + tool 结果）必须带到下一个 provider 继续；否则下一个 provider
+  // 只拿到回合起点的 history，前面的工具进展全部丢失、只能从头重做。
+  let failoverCarry: LLMMessage[] = [];
   // R11 GAP-1：本回合是否已捕获 usage anchor（只认第一通成功调用，
   // 防后续工具轮 prompt_tokens——含不进持久 history 的工具流量——双计）
   let turnAnchorCaptured = false;
@@ -5261,7 +5327,11 @@ export async function tryCallLLM(
   // 仍返回兜底文案。预算是会话级累计量，换 provider 不可能成功。
   let sessionBudgetExhausted = false;
 
-  for (const provider of expandedProviders) {
+  for (let providerIdx = 0; providerIdx < expandedProviders.length; providerIdx++) {
+    const provider = expandedProviders[providerIdx];
+    // 是否还有下一个候选 provider：决定「本 provider 中途失败」是换人继续还是收尾。
+    // 注意这只是**候选**——下一个也可能被熔断/skip list 跳过，那时仍会走兜底文案。
+    const hasNextProvider = providerIdx < expandedProviders.length - 1;
     // ── Provider circuit breaker: skip tripped providers ──
     if (isProviderTripped(provider.name)) {
       asyncLog(`[LLMCaller] Skipping tripped provider "${provider.name}" — circuit breaker active\n`);
@@ -5296,6 +5366,18 @@ export async function tryCallLLM(
     //   次数（防个别网关每轮都调工具烧掉迭代预算）。
     let toolCallsNoneRefusals = 0;
     const failedTools: Array<{ name: string; error: string }> = [];
+
+    // ── v34 T4：本 provider 中途失败时的进展接力 ──
+    // handoffProgress=true 表示「本 provider 在回合中途失败、中途文本不能算最终答复」。
+    // 还有下一个候选 → 换人继续；没有 → 走兜底文案（hermes 无 fallback 链时的终态）。
+    // 两种情形都必须作废中途文本，否则用户拿到的是「我先把文件读一下」这类开工话。
+    // liveMessages / carryBaseIdx 在 try 内维护（provider 抛异常时 catch 路径也要读，
+    // 故声明在 try 外）：只有 carryBaseIdx 之后的消息（本 provider 自己追加的
+    // assistant tool_calls 与 tool 结果）才是可接力的进展，前缀由下一个 provider
+    // 自行构建。
+    let handoffProgress = false;
+    let liveMessages: LLMMessage[] | null = null;
+    let carryBaseIdx = 0;
 
     try {
       const history = deps.conversationHistory.get(sessionId) || [];
@@ -5834,6 +5916,17 @@ if (deps.contextPruningManager && !prunerNoop) {
       const isAction = hasActionIntentFn(rawMessage);
 
       let conversationMessages = [...messages];
+      // ★ v34 T4：接上一个 provider 中途失败时留下的进展（tool_calls + tool 结果）。
+      //   history 只在回合末写回（见下方 conversationHistory.set），因此换 provider
+      //   时若只读 history，前面的工具进展会整段消失（probe：p2 只收到
+      //   [system, user]，无任何 tool 消息）。这里把接力段追加在 user 消息之后，
+      //   保持 OpenAI 消息序列合法（assistant.tool_calls 紧跟对应 tool 结果）。
+      if (failoverCarry.length > 0) {
+        conversationMessages.push(...failoverCarry);
+        asyncLog(
+          `[AgentModelExecutor] Carrying ${failoverCarry.length} mid-turn message(s) from previous provider into "${provider.name}"\n`,
+        );
+      }
       // ★ P0-8：transient 消息不持久化到 history。
       // nudge/warning/directive 等 mid-history 消息如果 push 到 conversationMessages，
       // 其内容变化（round count/file paths/trigger reasons）会击穿前缀缓存，
@@ -5880,6 +5973,12 @@ if (deps.contextPruningManager && !prunerNoop) {
       // 模型在 0 轮说了句「现在写产物」，之后 20+ 轮全是工具调用，预算耗尽
       // 后把 0 轮那句当成最终回复发给用户）。
       let finalReplyRound = -1;
+      // 本 provider 的「轮内进展」起点：从该下标之后的消息（assistant
+      // tool_calls + tool 结果）才是可以接力给下一个 provider 的成果。
+      // 压缩重建会整体替换 conversationMessages，重建处需同步重置。
+      // liveMessages 指向同一数组（catch 路径按它取接力段）。
+      carryBaseIdx = conversationMessages.length;
+      liveMessages = conversationMessages;
       let lastPromptTokens = 0;
       let skillFallbackResult: string | null = null;
       // 本回合**真正执行过**搜索类工具（区别于「尝试调用」）：
@@ -6373,10 +6472,12 @@ if (deps.contextPruningManager && !prunerNoop) {
           if (consecutiveDeterministicEmpty >= 2) {
             process.stderr.write(`[AgentModelExecutor] Provider "${provider.name}" (${provider.model}) returned ${consecutiveDeterministicEmpty} consecutive empty responses — deterministic, skipping remaining retries\n`);
             turnExitReason = "deterministic_empty";
+            handoffProgress = true;
             break;
           }
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             turnExitReason = "max_iterations_reached";
+            handoffProgress = true;
             break;
           }
           continue;
@@ -6459,6 +6560,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               `[LLMCaller] Output cap persists after clamp for "${provider.name}" — failing over\n`,
             );
             turnExitReason = "output_cap_exhausted";
+            handoffProgress = true;
             break;
           }
 
@@ -6481,7 +6583,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           }
 
           // ── R2-1: 错误消息友好化（借鉴 hermes-agent _content_policy_blocked_result） ──
-          const friendlyError = formatClassifiedErrorForUser(classified, provider.name);
+          const friendlyError = formatClassifiedErrorForUser(classified, provider.name, hasNextProvider);
           if (friendlyError.shouldNotifyUser) {
             const detail = friendlyError.actionableHint
               ? `${friendlyError.userMessage}\n💡 ${friendlyError.actionableHint}`
@@ -6536,6 +6638,8 @@ if (deps.contextPruningManager && !prunerNoop) {
             if (recoveryResult.recovered && recoveryResult.shouldRetry) {
               // 消息修改类恢复：应用修改后的消息，重试同 provider
               conversationMessages = recoveryResult.messages as unknown as typeof conversationMessages;
+              liveMessages = conversationMessages;
+              carryBaseIdx = Math.min(carryBaseIdx, conversationMessages.length);
               asyncLog(
                 `[AgentModelExecutor] Recovery action: ${recoveryResult.action} — retrying with modified messages\n`,
               );
@@ -6548,6 +6652,7 @@ if (deps.contextPruningManager && !prunerNoop) {
               process.stderr.write(
                 `[AgentModelExecutor] Message-modification recovery exhausted (${recoveryResult.action}) — failing over to next provider\n`,
               );
+              handoffProgress = true;
               break;
             }
           }
@@ -6585,6 +6690,9 @@ if (deps.contextPruningManager && !prunerNoop) {
                 deps.volatileSystemStartIdx,
               );
             }
+            // v34 T4：压缩重建了消息数组 → 接力起点随之重置（旧下标已失效）。
+            carryBaseIdx = conversationMessages.length;
+            liveMessages = conversationMessages;
           }
 
           // ── IterationBudget: 压缩重启退款 ──
@@ -6673,11 +6781,17 @@ if (deps.contextPruningManager && !prunerNoop) {
             turnExitReason = classified.type === LLMErrorType.CONTENT_POLICY
               ? "content_filter"
               : "guardrail_halt";
+            // ★ v34 T4：本 provider 已累积工具进展 → 换下一个 provider 继续
+            //   （hermes _ABORT_FALLBACK：should_fallback=True 一律走 fallback 链）。
+            //   旧实现无条件 break，若此前有过中途文本回复就把它当最终答复交出去，
+            //   下一个 provider 根本没被调用（probe: P1CALLS=2 P2CALLS=0）。
+            handoffProgress = true;
             break;
           }
 
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             turnExitReason = "max_iterations_reached";
+            handoffProgress = true;
             break;
           }
           continue;
@@ -6916,6 +7030,7 @@ if (deps.contextPruningManager && !prunerNoop) {
           consecutiveErrors++;
           if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
             turnExitReason = "content_filter";
+            handoffProgress = true;
             break;
           }
           continue;
@@ -9273,18 +9388,53 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
       }
 
+      // ── v34 T4：中途失败 → 中途文本不能算最终答复 ──
+      // 旧实现：shouldSkipProvider 直接 break，若此前有过中途文本就把它当最终
+      // 答复交出去，下一个 provider 根本没被调用（probe: P1CALLS=2 P2CALLS=0）。
+      // 现在：作废中途文本，把本 provider 自己追加的进展（assistant tool_calls +
+      // tool 结果）接力给下一个 provider 继续做（hermes _arm_fallback_restart 的
+      // restart_with_rebuilt_messages 语义）。
+      // 为什么无条件作废是安全的：无 tool_calls 的轮次必然在下方 `break` 收尾
+      // （让位给用户），所以走到「provider 级失败」时仍留着的 finalReply 必定
+      // 来自**带工具调用**的轮次——那是「我先读一下文件」式的开工话，不是答复。
+      // 中途文本一旦被作废，自动续跑兜底也不得再把它捡回来（lastReplyBackup /
+      // pendingVerificationReply 同样不是本 provider 的最终答复）。
+      if (handoffProgress) {
+        finalReply = "";
+        lastReplyBackup = "";
+        pendingVerificationReply = "";
+      }
+
+      // 本 provider 没有产出最终答复（中途失败 / 空响应 / 循环耗尽）且还有下一个
+      // 候选 → 把已完成的工具进展接力过去，避免下一个 provider 从零重做。
+      const continueToNextProvider = !finalReply && hasNextProvider;
+      if (continueToNextProvider) {
+        // 只接力**完整配对**的进展：provider 可能在发出 tool_calls 后、工具执行前
+        // 就失败（或反之），残缺序列会被网关 400 拒绝。
+        const carried = pruneUnpairedToolMessages(conversationMessages.slice(carryBaseIdx));
+        if (carried.length > 0) {
+          failoverCarry.push(...carried);
+          process.stderr.write(
+            `[AgentModelExecutor] Handing off provider "${provider.name}" mid-turn (${turnExitReason || "no_reply"}) — ` +
+            `carrying ${carried.length} message(s) to the next provider\n`,
+          );
+        }
+        // 退出原因只描述本 provider 的失败：接力后由下一个 provider 重新决定。
+        turnExitReason = "";
+      }
+
       // 自动续跑兜底：若续跑后模型产不出新回复，恢复续跑前的内容，
       // 以免返回空回复（其后的完成声明对账仍会追加更正说明）。
       // 优先级：pendingVerificationReply（验证门暂存）> lastReplyBackup（续跑备份）
-      if (!finalReply && pendingVerificationReply) {
+      if (!continueToNextProvider && !finalReply && pendingVerificationReply) {
         finalReply = pendingVerificationReply;
         asyncLog(`[AgentModelExecutor] No new reply after verification gate; using pending verification reply for session "${sessionId}"\n`);
-      } else if (!finalReply && lastReplyBackup) {
+      } else if (!continueToNextProvider && !finalReply && lastReplyBackup) {
         finalReply = lastReplyBackup;
         asyncLog(`[AgentModelExecutor] Auto-continue produced no new reply; restored previous reply for session "${sessionId}"\n`);
       }
 
-      if (finalReply) {
+      if (!continueToNextProvider && finalReply) {
         // ★ force=true：任务结束时必须下发完整轨迹 —— 这是"完成后还能展开看"的最后一道保障
         onProgress?.({ type: "done", phase: "done", detail: `任务完成（${successfulToolCalls} 次工具调用）`, progress: 100, thinkingSteps: traceSnapshot(trace, { force: true }) });
         // Append skill fallback result if available
@@ -9836,6 +9986,15 @@ if (deps.contextPruningManager && !prunerNoop) {
         process.stderr.write(`[AgentModelExecutor] Error stack: ${err.stack?.slice(0, 500)}\n`);
       } else {
         process.stderr.write(`[AgentModelExecutor] LLM provider "${provider.name}" (model: ${provider.model}) unknown error: ${String(err)}\n`);
+      }
+      // v34 T4：provider 中途抛异常（网络断开/超时/流式中断）同样是「换人继续」，
+      // 不是整回合结束——已完成的工具进展必须带到下一个 provider。
+      if (hasNextProvider && liveMessages && liveMessages.length > carryBaseIdx) {
+        const carried = pruneUnpairedToolMessages(liveMessages.slice(carryBaseIdx));
+        failoverCarry.push(...carried);
+        process.stderr.write(
+          `[AgentModelExecutor] Handing off provider "${provider.name}" after error — carrying ${carried.length} message(s) to the next provider\n`,
+        );
       }
     }
     // ── 跨 provider 累计：本轮执行了多少工具、失败了哪些 ──
