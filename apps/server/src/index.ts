@@ -1608,7 +1608,7 @@ export class EvoClawServer {
           data.agentResponse,
           { ...(data.context || {}), sessionId: data.sessionId },
         );
-        // ── 自动 commit：每次任务完成后提交所有变更 ──
+        // ── 自动 commit（默认关闭，EVOCLAW_AUTO_COMMIT=1 才启用）──
         await this.autoCommitAfterTask(data.userMessage, data.agentResponse);
       } catch (err) {
         process.stderr.write(`[agent_end] handler failed: ${err instanceof Error ? err.message : String(err)}\n`);
@@ -1968,12 +1968,14 @@ export class EvoClawServer {
   }
 
   /**
-   * 每次 agent 任务完成后自动 commit 所有变更。
+   * 每次 agent 任务完成后自动 commit（默认关闭，仅 EVOCLAW_AUTO_COMMIT=1 启用）。
    * 具体 git 调用在 auto-commit.ts（execFileSync 参数数组，不经 shell），
    * 失败时仅记录日志不中断主流程。
    */
   private async autoCommitAfterTask(userMessage: string, agentResponse: string): Promise<void> {
-    const { autoCommit } = await import("./auto-commit.js");
+    const { autoCommit, isAutoCommitEnabled } = await import("./auto-commit.js");
+    // 默认关闭，显式 EVOCLAW_AUTO_COMMIT=1 才提交（见 auto-commit.ts 注释）
+    if (!isAutoCommitEnabled()) return;
     const res = autoCommit(process.cwd(), userMessage, agentResponse);
     if (res.committed) {
       this.logger.info("server", `auto-commit: ${(res.message ?? "").slice(0, 60)}...`);

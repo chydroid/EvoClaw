@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { autoCommit, buildAutoCommitMessage } from "../src/auto-commit";
+import { autoCommit, buildAutoCommitMessage, isAutoCommitEnabled } from "../src/auto-commit";
 
 /**
  * 自动提交回归（v25 Task 2 实证，2026-11-22）。
@@ -84,6 +84,21 @@ describe("auto-commit shell 转义回归", () => {
       expect(r.error).toBeTruthy();
     } finally {
       fs.rmSync(plain, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("isAutoCommitEnabled 开关（默认关闭，hermes 对齐）", () => {
+  it("未设置 / 空串 / 关闭值 → false", () => {
+    for (const v of [undefined, "", " ", "0", "false", "no", "off", "disabled", "2"]) {
+      const env = v === undefined ? {} : { EVOCLAW_AUTO_COMMIT: v };
+      expect(isAutoCommitEnabled(env), `value=${JSON.stringify(v)}`).toBe(false);
+    }
+  });
+
+  it("1/true/yes/on（大小写与空白不敏感）→ true", () => {
+    for (const v of ["1", "true", "TRUE", "yes", "YES", "on", "  On  "]) {
+      expect(isAutoCommitEnabled({ EVOCLAW_AUTO_COMMIT: v }), `value=${JSON.stringify(v)}`).toBe(true);
     }
   });
 });

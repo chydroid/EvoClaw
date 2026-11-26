@@ -8,6 +8,24 @@ export interface AutoCommitResult {
 }
 
 /**
+ * 自动提交开关。默认**关闭**（hermes 对齐）。
+ *
+ * ★ 2026-11-26 实证：旧实现每次 agent_end 无条件 `git add -A` 并以任务回复
+ * 作提交信息。共享仓库/并发会话场景下，这会把「回合期间任何人（人类或另一个
+ * Claude 会话）正在编辑的工作区文件、临时脚本」全部静默卷进「任务回复」垃圾
+ * 提交（当日产生 923d82b / d85644c 两条，且全部无可读信息）。回合开始快照
+ * 基线也挡不住——基线干净时回合**内**的并发编辑同样被吞。
+ *
+ * 对照 hermes：hermes 从不在 agent_end 自动提交，只用带自排除的 checkpoint
+ * 快照（永不进入 main 历史）。故此处改为显式 opt-in：
+ *   开启：EVOCLAW_AUTO_COMMIT=1（true/yes/on 均可）
+ */
+export function isAutoCommitEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = String(env.EVOCLAW_AUTO_COMMIT ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
  * 构建自动提交信息。回复预览会剥掉 Markdown 装饰字符，避免 commit 标题
  * 被代码块/标题符号占据；用户原始消息只截断、不做清洗。
  */
