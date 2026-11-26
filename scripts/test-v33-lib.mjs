@@ -27,6 +27,45 @@ export const canon = canonShared;
 export const sameJson = (a, b) => JSON.stringify(canon(a)) === JSON.stringify(canon(b));
 
 /**
+ * 路径级 JSON 差异（诊断用）：返回最多 max 条 `$.path: 期望→实际`。
+ * 比对口径与 sameJson 一致（对象键序无关、数组按下标逐项），但只报差异点，
+ * 便于一眼看出「差在哪一个字段」，而不是从整段 JSON 里人肉找。
+ */
+export function jsonDiff(expected, actual, max = 5) {
+  const out = [];
+  const brief = (v) => {
+    const s = JSON.stringify(v);
+    return s === undefined ? 'undefined' : s.length > 72 ? s.slice(0, 72) + '…' : s;
+  };
+  const walk = (e, a, p) => {
+    if (out.length >= max) return;
+    const arrE = Array.isArray(e), arrA = Array.isArray(a);
+    if (arrE || arrA) {
+      if (!arrE || !arrA) { out.push(`${p}: 类型不符 ${brief(e)}→${brief(a)}`); return; }
+      if (e.length !== a.length) out.push(`${p}.length: ${e.length}→${a.length}`);
+      for (let i = 0; i < Math.max(e.length, a.length) && out.length < max; i++) walk(e[i], a[i], `${p}[${i}]`);
+      return;
+    }
+    const objE = e && typeof e === 'object', objA = a && typeof a === 'object';
+    if (objE || objA) {
+      if (!objE || !objA) { out.push(`${p}: 类型不符 ${brief(e)}→${brief(a)}`); return; }
+      for (const k of [...new Set([...Object.keys(e), ...Object.keys(a)])].sort()) {
+        if (out.length >= max) return;
+        if (!(k in e)) out.push(`${p}.${k}: 多余字段 = ${brief(a[k])}`);
+        else if (!(k in a)) out.push(`${p}.${k}: 缺失字段（期望 ${brief(e[k])}）`);
+        else walk(e[k], a[k], `${p}.${k}`);
+      }
+      return;
+    }
+    if (e !== a) out.push(`${p}: ${brief(e)}→${brief(a)}`);
+  };
+  walk(expected, actual, '$');
+  return out;
+}
+/** 差异摘要（失败文案用）：无差异返回空串。 */
+export const diffNote = (actual, expected, max = 5) => jsonDiff(expected, actual, max).join(' | ');
+
+/**
  * Python 模块装载片段（v32 T9 教训）：`sys.path.insert + import x` 遇到内置/frozen
  * 模块（如 select）会被无条件遮蔽。所有 Python 探针统一用 importlib 按**文件路径**装载。
  */

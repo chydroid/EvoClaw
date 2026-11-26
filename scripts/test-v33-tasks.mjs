@@ -9,7 +9,7 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 import { runPy, runProbe, readFileSafe } from './v14/lib.mjs';
 import {
-  D, sameJson, pyReadTextLiteral, pyLoadModule,
+  D, sameJson, diffNote, pyReadTextLiteral, pyLoadModule,
   t1Ref, t2Ref, t3Ref, t4Ref, T4_FIXTURE, t5Ref, t6Ref, t7Ref, t8Ref, t9Ref, t10Ref,
 } from './test-v33-lib.mjs';
 
@@ -113,10 +113,10 @@ README.md（≥300 字节）：判定优先级与 fnv1a32 分桶口径。
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R1)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
+      else if (!sameJson(rep, R1)) bad.push('report 与参考不符: ' + diffNote(rep, R1));
       const probe = pyProbe(dir, 'flagd.py', 'flags.json', 'm.evaluate(spec)');
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R1)) bad.push('模块 evaluate 与参考不符');
+      else if (!sameJson(probe.value, R1)) bad.push('模块 evaluate 与参考不符: ' + diffNote(probe.value, R1));
       const ac = assertCount(dir, 'test_flagd.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_flagd.py']);
@@ -142,7 +142,8 @@ webhook.js 用 \`module.exports = { deliver }\` 导出：deliver(spec) -> \`{del
 - 每次尝试生成签名：\`HMAC-SHA256(secret, ts + "." + body)\` 的**小写 hex 全串**，
   其中 \`ts = baseTs + timeline[k]\`，\`body\` = event 的规范 JSON
   （对象键在每层按字典序、无空白、分隔符 \`,\` 与 \`:\`、UTF-8、非 ASCII 不转义）；
-- 尝试耗尽仍失败 → \`status: "dead"\`、\`deadLettered: true\`，并把 id 按出现顺序追加进 \`dlq\`；
+- 尝试耗尽仍失败 → \`status: "dead"\`、\`deadLettered: true\`，并把**该投递的 \`id\`**（即 \`deliveries[].id\`，
+  **不是** \`event.id\`）按出现顺序追加进 \`dlq\`；
 - \`summary\` = \`{delivered, dead, duplicates}\` 三个计数（duplicate 不计入 dead）。
 CLI：\`node webhook.js run hooks.json\` 写当前目录 \`report.json\` = deliver 结果，退出码 0，打印摘要。
 webhook.test.js：\`node --test webhook.test.js\` 通过，至少 8 个断言（node:assert），覆盖：
@@ -162,7 +163,7 @@ README.md（≥300 字节）：签名串构造、重试与死信语义。
       if (!/rc=0\b/.test(c1)) bad.push(`CLI ${c1.slice(-180)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R2)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R2)) bad.push('report 与参考不符: ' + diffNote(rep, R2));
       const probe = runProbe(dir, 'webhook.js', `
 const fs = require('fs');
 const path = require('path');
@@ -170,7 +171,7 @@ const doc = JSON.parse(fs.readFileSync(path.join(${JSON.stringify(dir)}, 'hooks.
 return { out: m.deliver(doc) };
 `);
       if (!probe.ok) bad.push('模块探测失败: ' + String(probe.out).slice(-220));
-      else if (!sameJson(probe.value.out, R2)) bad.push('模块 deliver 与参考不符');
+      else if (!sameJson(probe.value.out, R2)) bad.push('模块 deliver 与参考不符: ' + diffNote(probe.value.out, R2));
       const ac = assertCount(dir, 'webhook.test.js', 8);
       if (ac) bad.push(ac);
       const t = runNodeTestIn(dir, 'webhook.test.js');
@@ -212,10 +213,10 @@ README.md（≥300 字节）：nearest-rank 分位口径与 rollup 加权规则�
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R3)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R3)) bad.push('report 与参考不符: ' + diffNote(rep, R3));
       const probe = pyProbe(dir, 'metrics.py', 'metrics.json', 'm.downsample(spec)');
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R3)) bad.push('模块 downsample 与参考不符');
+      else if (!sameJson(probe.value, R3)) bad.push('模块 downsample 与参考不符: ' + diffNote(probe.value, R3));
       const ac = assertCount(dir, 'test_metrics.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_metrics.py']);
@@ -260,7 +261,7 @@ README.md（≥300 字节）：游标载荷结构、HMAC 校验与排序签名�
       if (!/rc=0\b/.test(c1)) bad.push(`CLI ${c1.slice(-180)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R4)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R4)) bad.push('report 与参考不符: ' + diffNote(rep, R4));
       const probe = runProbe(dir, 'paginate.js', `
 const fs = require('fs');
 const path = require('path');
@@ -268,7 +269,7 @@ const doc = JSON.parse(fs.readFileSync(path.join(${JSON.stringify(dir)}, 'page.j
 return { out: m.paginate(doc) };
 `);
       if (!probe.ok) bad.push('模块探测失败: ' + String(probe.out).slice(-220));
-      else if (!sameJson(probe.value.out, R4)) bad.push('模块 paginate 与参考不符');
+      else if (!sameJson(probe.value.out, R4)) bad.push('模块 paginate 与参考不符: ' + diffNote(probe.value.out, R4));
       const ac = assertCount(dir, 'paginate.test.js', 8);
       if (ac) bad.push(ac);
       const t = runNodeTestIn(dir, 'paginate.test.js');
@@ -311,10 +312,10 @@ README.md（≥300 字节）：Kahn + 最小堆的确定性、校验和幂等与
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R5)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R5)) bad.push('report 与参考不符: ' + diffNote(rep, R5));
       const probe = pyProbe(dir, 'migrate.py', 'migrations.json', 'm.plan_and_run(spec)');
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R5)) bad.push('模块 plan_and_run 与参考不符');
+      else if (!sameJson(probe.value, R5)) bad.push('模块 plan_and_run 与参考不符: ' + diffNote(probe.value, R5));
       const ac = assertCount(dir, 'test_migrate.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_migrate.py']);
@@ -357,7 +358,7 @@ README.md（≥300 字节）：虚拟节点与顺时针查找口径、再平衡�
       if (!/rc=0\b/.test(c1)) bad.push(`CLI ${c1.slice(-180)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R6)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R6)) bad.push('report 与参考不符: ' + diffNote(rep, R6));
       const probe = runProbe(dir, 'ring.js', `
 const fs = require('fs');
 const path = require('path');
@@ -365,7 +366,7 @@ const doc = JSON.parse(fs.readFileSync(path.join(${JSON.stringify(dir)}, 'ring.j
 return { out: m.assign(doc) };
 `);
       if (!probe.ok) bad.push('模块探测失败: ' + String(probe.out).slice(-220));
-      else if (!sameJson(probe.value.out, R6)) bad.push('模块 assign 与参考不符');
+      else if (!sameJson(probe.value.out, R6)) bad.push('模块 assign 与参考不符: ' + diffNote(probe.value.out, R6));
       const ac = assertCount(dir, 'ring.test.js', 8);
       if (ac) bad.push(ac);
       const t = runNodeTestIn(dir, 'ring.test.js');
@@ -406,10 +407,10 @@ README.md（≥300 字节）：EWMA 均值/方差递推式与「先算 z 后更�
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R7)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 240));
+      else if (!sameJson(rep, R7)) bad.push('report 与参考不符: ' + diffNote(rep, R7));
       const probe = pyProbe(dir, 'anomaly.py', 'anomaly.json', 'm.detect(spec)');
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R7)) bad.push('模块 detect 与参考不符');
+      else if (!sameJson(probe.value, R7)) bad.push('模块 detect 与参考不符: ' + diffNote(probe.value, R7));
       const ac = assertCount(dir, 'test_anomaly.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_anomaly.py']);
@@ -452,7 +453,7 @@ README.md（≥300 字节）：链式构造、规范 JSON 的必要性与断链�
       if (!/rc=0\b/.test(c1)) bad.push(`CLI ${c1.slice(-180)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R8)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R8)) bad.push('report 与参考不符: ' + diffNote(rep, R8));
       const probe = runProbe(dir, 'audit.js', `
 const fs = require('fs');
 const path = require('path');
@@ -462,7 +463,7 @@ const tampered = doc.events.map((e, i) => (i === 2 ? { ...e, action: 'login' } :
 return { records: built.records, head: built.head, verified: m.verifyChain(doc.events, built.records), tamperCheck: m.verifyChain(tampered, built.records) };
 `);
       if (!probe.ok) bad.push('模块探测失败: ' + String(probe.out).slice(-220));
-      else if (!sameJson(probe.value, R8)) bad.push('模块 buildChain/verifyChain 与参考不符');
+      else if (!sameJson(probe.value, R8)) bad.push('模块 buildChain/verifyChain 与参考不符: ' + diffNote(probe.value, R8));
       const ac = assertCount(dir, 'audit.test.js', 8);
       if (ac) bad.push(ac);
       const t = runNodeTestIn(dir, 'audit.test.js');
@@ -508,10 +509,10 @@ README.md（≥300 字节）：回退链、CLDR 复数规则表、模板扫描�
       if (c1.code !== 0) bad.push(`CLI rc=${c1.code} ${c1.out.slice(-160)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R9)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R9)) bad.push('report 与参考不符: ' + diffNote(rep, R9));
       const probe = pyProbe(dir, 'i18n.py', 'i18n.json', 'm.render(spec)');
       if (!probe.ok) bad.push('模块探测失败: ' + probe.out.slice(-220));
-      else if (!sameJson(probe.value, R9)) bad.push('模块 render 与参考不符');
+      else if (!sameJson(probe.value, R9)) bad.push('模块 render 与参考不符: ' + diffNote(probe.value, R9));
       const ac = assertCount(dir, 'test_i18n.py', 8);
       if (ac) bad.push(ac);
       const t = pyRun(dir, ['test_i18n.py']);
@@ -555,7 +556,7 @@ README.md（≥300 字节）：位布局与各字段位宽、序列溢出与两�
       if (!/rc=0\b/.test(c1)) bad.push(`CLI ${c1.slice(-180)}`);
       const rep = fileJson(dir, 'report.json');
       if (!rep) bad.push('report.json 缺失/非 JSON');
-      else if (!sameJson(rep, R10)) bad.push('report 与参考不符: ' + JSON.stringify(rep).slice(0, 260));
+      else if (!sameJson(rep, R10)) bad.push('report 与参考不符: ' + diffNote(rep, R10));
       const probe = runProbe(dir, 'snowflake.js', `
 const fs = require('fs');
 const path = require('path');
@@ -563,7 +564,7 @@ const doc = JSON.parse(fs.readFileSync(path.join(${JSON.stringify(dir)}, 'snowfl
 return { out: m.generate(doc) };
 `);
       if (!probe.ok) bad.push('模块探测失败: ' + String(probe.out).slice(-220));
-      else if (!sameJson(probe.value.out, R10)) bad.push('模块 generate 与参考不符');
+      else if (!sameJson(probe.value.out, R10)) bad.push('模块 generate 与参考不符: ' + diffNote(probe.value.out, R10));
       const ac = assertCount(dir, 'snowflake.test.js', 8);
       if (ac) bad.push(ac);
       const t = runNodeTestIn(dir, 'snowflake.test.js');
