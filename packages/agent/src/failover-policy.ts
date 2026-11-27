@@ -422,70 +422,96 @@ export function resolveFailoverReason(
   if (statusCode === 503 || statusCode === 529) return "overloaded";
   if (statusCode === 504) return "timeout";
 
-  // ── 3. Message pattern matching（无状态码时） ──
+  // ── 3. Message pattern matching ──
 
-  if (!errorText) return "unknown";
+  // ★ 2026-11-27（v35 同类治本，对标 hermes `_classify_400`）：
+  //   hermes 的 400 处理先跑 `_IMAGE_TOOL_RULES` / `_400_TAIL_RULES`
+  //   （overflow-as-5xx、policy、model_not_found、rate_limit、billing…），
+  //   **最后**才 `return _V_FORMAT_ERROR`。此前本函数把通用 4xx 兜底放在
+  //   措辞匹配之前 → `400 + "image exceeds 5 MB"` 被抹成 format_error，
+  //   丢掉更精确的恢复路径（TC-035g 回归）。
+  //   未单列的 4xx（400/405/415/431…）仍兜底 format_error：4xx 语义上就是
+  //   「客户端请求形态有问题」，重发同一份请求体无意义。
+  //
+  //   精化只允许 hermes `_400_TAIL_RULES` + `_IMAGE_TOOL_RULES` 里那几种
+  //   reason：`timeout` / `network` / `auth` / `overloaded` 的措辞出现在 4xx
+  //   里多半是网关复述的噪声（例如 "upstream timeout, invalid request"），
+  //   照单全收会把「必然再被拒的请求体」变成可重试 → 熔断风暴。
+  if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+    return firstMessageRule(errorText, CLIENT_ERROR_REFINEMENT_REASONS) ?? "format_error";
+  }
 
-  const lower = errorText.toLowerCase();
+  // ── 4. 无状态码：措辞优先，未命中则 unclassified（transient，保守重试） ──
+  const messageReason = firstMessageRule(errorText);
+  if (!messageReason) return errorText ? "unclassified" : "unknown";
+  return messageReason;
+}
 
+/**
+ * 4xx 允许用措辞精化的 reason（hermes `_400_TAIL_RULES` + `_IMAGE_TOOL_RULES`）。
+ * 其余 reason 一律落回 `format_error`。
+ */
+const CLIENT_ERROR_REFINEMENT_REASONS: ReadonlySet<FailoverReason> = new Set<FailoverReason>([
+  "context_overflow",
+  "image_too_large",
+  "payload_too_large",
+  "rate_limit",
+  "billing",
+  "model_not_found",
+]);
+
+/** 措辞规则：`[匹配器, reason]`；顺序即优先级（对齐 hermes `_MESSAGE_*_RULES`）。 */
+type MessageRule = readonly [RegExp | ((lower: string) => boolean), FailoverReason];
+
+/**
+ * 措辞表（hermes `_MESSAGE_HEAD_RULES` + `_MESSAGE_TAIL_RULES` + `_400_TAIL_RULES`）。
+ *
+ * 顺序即语义：上下文溢出 → 图片/请求体过大 → 限流 → 认证 → 计费 → 超时 →
+ * 网络 → 过载 → 模型不存在 → 空响应。
+ * `payload_too_large` 必须在 `rate_limit` 之前（hermes `_MESSAGE_HEAD_RULES` 同序）。
+ */
+const MESSAGE_RULES: readonly MessageRule[] = [
   // 上下文溢出
-  if (/context.length.exceeded|request_too_large|input.is.too.long|too.many.tokens|token.limit|context.window|prompt.is.too.long|prompt.exceeds.max.length|max_model_len|context.length.exceeded/.test(lower)) {
-    return "context_overflow";
-  }
-
-  // 图片过大
-  if (/image.exceeds|image.too.large|image_too_large|image.size.exceeds|image.dimensions.exceed/.test(lower)) {
-    return "image_too_large";
-  }
-
+  [/context.length.exceeded|request_too_large|input.is.too.long|too.many.tokens|token.limit|context.window|prompt.is.too.long|prompt.exceeds.max.length|max_model_len/, "context_overflow"],
+  // 图片过大（hermes `_IMAGE_TOO_LARGE_PATTERNS`）
+  [/image.exceeds|image.too.large|image_too_large|image.size.exceeds|image.dimensions.exceed/, "image_too_large"],
   // 请求体过大
-  if (/request.entity.too.large|payload.too.large|error.code:.?413/.test(lower)) {
-    return "payload_too_large";
-  }
-
+  [/request.entity.too.large|payload.too.large|error.code:.?413/, "payload_too_large"],
   // 限流
-  if (/rate.limit|too.many.requests|throttl|requests.too.frequent|resource.exhausted|try.again.in|please.retry.after/.test(lower)) {
-    return "rate_limit";
-  }
-
+  [/rate.limit|too.many.requests|throttl|requests.too.frequent|resource.exhausted|try.again.in|please.retry.after/, "rate_limit"],
   // 认证
-  if (/invalid.api.key|unauthorized|auth.failed|incorrect.api.key|not.authorized|access.denied|permission.denied|token.expired|token.revoked/.test(lower)) {
-    return "auth";
-  }
-
+  [/invalid.api.key|unauthorized|auth.failed|incorrect.api.key|not.authorized|access.denied|permission.denied|token.expired|token.revoked/, "auth"],
   // 计费
-  if (/billing|insufficient.quota|insufficient_quota|account.*balance|payment|credit|usage.limit|subscription|insufficient.credits|credits.exhausted|out.of.funds|balance.depleted/.test(lower)) {
-    return "billing";
-  }
-
+  [/billing|insufficient.quota|insufficient_quota|account.*balance|payment|credit|usage.limit|subscription|insufficient.credits|credits.exhausted|out.of.funds|balance.depleted/, "billing"],
   // 超时
-  if (/timeout|timed.out|etimedout|socket.hang.up|deadline.exceeded/.test(lower)) {
-    return "timeout";
-  }
-
+  [/timeout|timed.out|etimedout|socket.hang.up|deadline.exceeded/, "timeout"],
   // 网络
-  if (/econnreset|enetunreach|ehostunreach|enotfound|server.disconnected|peer.closed.connection|connection.reset.by.peer/.test(lower)) {
-    return "network";
-  }
-
+  [/econnreset|enetunreach|ehostunreach|enotfound|server.disconnected|peer.closed.connection|connection.reset.by.peer/, "network"],
   // 过载
-  if (/overloaded|service.unavailable|internal.server.error/.test(lower)) {
-    return "overloaded";
-  }
-
+  [/overloaded|service.unavailable|internal.server.error/, "overloaded"],
   // 模型不存在 / 路由已死（★ v34：与 MODEL_NOT_FOUND_PATTERNS 同源）。
   // 此前无状态码时这条缺席 → 同一文本 classifier 判 model_not_found（不可重试、
   // 跳过 provider），本函数却判 unclassified（可重试）——两条路径互相矛盾。
-  if (isModelNotFoundText(lower)) {
-    return "model_not_found";
-  }
-
+  [isModelNotFoundText, "model_not_found"],
   // 空响应
-  if (/empty.response|no.content|empty.body/.test(lower)) {
-    return "empty_response";
-  }
+  [/empty.response|no.content|empty.body/, "empty_response"],
+];
 
-  return "unclassified";
+/**
+ * 按 `MESSAGE_RULES` 顺序返回首个命中；`allowed` 给出时跳过集合外的 reason
+ * 继续往下找（hermes `_first_match` 语义）。
+ */
+function firstMessageRule(
+  errorText: string | undefined | null,
+  allowed?: ReadonlySet<FailoverReason>,
+): FailoverReason | null {
+  if (!errorText) return null;
+  const lower = errorText.toLowerCase();
+  for (const [test, reason] of MESSAGE_RULES) {
+    if (allowed && !allowed.has(reason)) continue;
+    if (typeof test === "function" ? test(lower) : test.test(lower)) return reason;
+  }
+  return null;
 }
 
 // ── Cooldown Probe State ──────────────────────────────────

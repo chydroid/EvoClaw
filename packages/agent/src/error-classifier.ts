@@ -653,6 +653,68 @@ export function classifyLLMError(
     }
   }
 
+  // 408 Request Timeout 是 4xx 里唯一语义上"重发可能成功"的（上游排队超时），
+  // 必须在下面的通用 4xx 兜底之前拦下，否则会被当成 format_error 跳过 provider。
+  if (statusCode === 408) {
+    return {
+      type: LLMErrorType.TIMEOUT,
+      retryable: true,
+      shouldCompact: false,
+      shouldRotateAuth: false,
+      shouldSkipProvider: false,
+      backoffMs: applyBackoffJitter(2000),
+      message: "Request timeout (HTTP 408). Retrying after backoff.",
+      reason: "timeout",
+      isTransient: true,
+    };
+  }
+
+  // ── ★ 2026-11-27（v35 同类治本，对标 hermes `_by_status` 默认值）──
+  // hermes: `default = _V_FORMAT_ERROR if 400 <= status < 500 else ...`。
+  // 此前这里没有 4xx 兜底：未单列的 4xx（400/405/415/431…）落到 UNKNOWN
+  // （retryable:false 但 caller 仍 recordProviderSuccess → 空响应空转），
+  // 或落进措辞匹配被当成 `unclassified`（transient）→ 过载阶梯 + 熔断
+  // 反复重发**同一份必然再被拒的请求体**。实测（v35）一次 400 会白烧
+  // 3 次重试 + 一次 failover 才收敛。
+  // 4xx 语义即「客户端请求形态有问题」：不可重试，跳过该 provider。
+  if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 500) {
+    // hermes `_classify_400` 尾部启发式：错误体泛泛（短/空/仅 "error"）且
+    // session 很大时，大概率是「上下文太长」被网关笼统拒绝——压缩才有救，
+    // 按 format_error 跳过 provider 反而会丢掉唯一可行的恢复路径。
+    const bodyMsg = combinedText.trim().toLowerCase();
+    const isGenericBody = bodyMsg.length < 30 || bodyMsg === "error" || bodyMsg === "";
+    const large4xxThreshold = options?.largeSessionThreshold ?? 100_000;
+    if (isGenericBody && (options?.sessionTokens ?? 0) >= large4xxThreshold) {
+      return {
+        type: LLMErrorType.CONTEXT_OVERFLOW,
+        retryable: true,
+        shouldCompact: true,
+        shouldRotateAuth: false,
+        shouldSkipProvider: false,
+        backoffMs: applyBackoffJitter(1000),
+        message: `Generic ${statusCode} on large session. Heuristically treating as context overflow.`,
+        reason: "context_overflow",
+        isTransient: true,
+      };
+    }
+    // 注意：用上面已解析的 `reason`，不要写死 "format_error"。provider 专属
+    // 规则（thinking_signature / multimodal_tool_content_unsupported /
+    // image_too_large / provider_policy_blocked …）在 resolveFailoverReason
+    // 里先于状态码默认值命中，与 hermes `_classify_400` 的判定顺序一致；
+    // 写死会覆盖掉这些更精确的恢复路径。
+    return {
+      type: LLMErrorType.PROVIDER_ERROR,
+      retryable: false,
+      shouldCompact: false,
+      shouldRotateAuth: false,
+      shouldSkipProvider: true,
+      backoffMs: 0,
+      message: `Request rejected by provider (HTTP ${statusCode}, ${reason}). Skipping provider.`,
+      reason,
+      isTransient: false,
+    };
+  }
+
   // 5xx 服务端错误：provider 内部错误，可重试。
   // 此前 5xx 落入 UNKNOWN 分支，被 llm-caller 当作成功空响应处理，
   // 导致 recordProviderSuccess 被错误调用、循环空转消耗 budget。
@@ -740,13 +802,21 @@ export function classifyLLMError(
     }
   }
 
+  // ── ★ 2026-11-27（v35，对标 hermes `_V_UNKNOWN`）──
+  // hermes: `_V_UNKNOWN = _v(_R.unknown)` —— retryable 默认 True
+  // （"Unclassifiable — retry with backoff"），should_fallback 不设。
+  // 此前这里 retryable:false + backoffMs:0，而 llm-caller 又把 UNKNOWN
+  // 排除在错误分支之外 → 落进**成功路径**（recordProviderSuccess +
+  // consecutiveErrors=0）→ 空回复空转，永不 failover（v35 线上 400 的
+  // 放大器）。语义上「无法归类」恰恰意味着「不能断定重发无意义」，
+  // 正确处置是退避后重试同 provider，耗尽再交给 fallback 链。
   return {
     type: LLMErrorType.UNKNOWN,
-    retryable: false,
+    retryable: true,
     shouldCompact: false,
     shouldRotateAuth: false,
     shouldSkipProvider: false,
-    backoffMs: 0,
+    backoffMs: applyBackoffJitter(2000),
     message: `Unknown error: ${combinedText.slice(0, 200)}`,
     reason,
     isTransient,
@@ -1014,10 +1084,20 @@ export function formatClassifiedErrorForUser(
       };
 
     case LLMErrorType.PROVIDER_ERROR:
+      // ★ 2026-11-27（v35）：PROVIDER_ERROR 现在同时承载 5xx（可重试）与
+      // 通用 4xx（format_error，不可重试）。统一说「5xx，正在重试」是假话——
+      // 用户会以为系统还在自动恢复，实际已经跳到下一个 provider 了。
+      if (error.retryable) {
+        return {
+          userMessage: `${providerLabel} 返回了服务器错误，正在重试...`,
+          actionableHint: "如持续出现，provider 可能暂时不可用，建议切换到其他 provider。",
+          shouldNotifyUser: false, // 5xx 重试不打扰
+        };
+      }
       return {
-        userMessage: `${providerLabel} 返回了服务器错误（5xx），正在重试...`,
-        actionableHint: "如持续出现，provider 可能暂时不可用，建议切换到其他 provider。",
-        shouldNotifyUser: false, // 5xx 重试不打扰
+        userMessage: `${providerLabel} 拒绝了本次请求（请求格式错误），${switched}`,
+        actionableHint: "如所有 provider 都拒绝，请检查模型配置（/model）或换用其他模型。",
+        shouldNotifyUser: true,
       };
 
     case LLMErrorType.ABORT:

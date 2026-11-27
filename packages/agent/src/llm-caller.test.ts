@@ -4016,3 +4016,214 @@ describe("pruneUnpairedToolMessages — 接力段配对裁剪", () => {
     expect(out).toEqual(ok);
   });
 });
+
+// ═══════════════════════════════════════════════════════════
+// ★ v35：出站消息净化 + 4xx 终态处置（对标 hermes
+//   sanitize_api_messages / _classify_400 / dump_api_request_debug）
+// ═══════════════════════════════════════════════════════════
+describe("llm-caller > 出站净化与 4xx 终态处置", () => {
+  function server(
+    responder: (req: http.IncomingMessage, res: http.ServerResponse) => void,
+  ): { captured: Array<Record<string, unknown>>; port: number; close: () => void } {
+    const captured: Array<Record<string, unknown>> = [];
+    const s = http.createServer((req, res) => {
+      let raw = "";
+      req.on("data", (d) => (raw += d));
+      req.on("end", () => {
+        captured.push(JSON.parse(raw || "{}"));
+        responder(req, res);
+      });
+    });
+    s.listen(0);
+    return { captured, port: (s.address() as { port: number }).port, close: () => s.close() };
+  }
+
+  function provider(port: number, id: string) {
+    return {
+      id, name: id, provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: "sk-test", enabled: true, order: 0, timeout: 5000, maxTokens: 4096, temperature: 0.3,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  function deps(overrides: Partial<LLMCallerDeps> = {}): LLMCallerDeps {
+    return {
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      providers: [],
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      registeredTools: new Map(),
+      conversationHistory: new Map(),
+      maxHistoryLength: 200,
+      providerStats: new Map(),
+      pluginManager: null,
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      sessionManager: null,
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      sessionDataDir: os.tmpdir(),
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      recordProviderSuccess: vi.fn(),
+      recordProviderFailure: vi.fn(),
+      getEventLedger: () => null,
+      ...overrides,
+    } as unknown as LLMCallerDeps;
+  }
+
+  const okBody = JSON.stringify({
+    choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { total_tokens: 5, prompt_tokens: 4 },
+  });
+
+  it("出站前修复污染历史（content: null / tool_calls: [] / 悬空 tool 结果）", async () => {
+    const { captured, port, close } = server((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(okBody);
+    });
+    await callLLMOnce(
+      provider(port, "sanitize-1"),
+      [
+        { role: "user", content: "hi" },
+        { role: "assistant", content: null, tool_calls: [] },
+        { role: "tool", tool_call_id: "ghost", content: "orphan" },
+        { role: "user", content: "next" },
+      ] as unknown as Parameters<typeof callLLMOnce>[1],
+      [],
+      "auto",
+      undefined,
+      deps(),
+    );
+    close();
+
+    const msgs = captured[0]!.messages as Array<Record<string, unknown>>;
+    // null content 被补占位符；空 tool_calls 数组被删；悬空 tool 结果被丢
+    expect(msgs.every((m) => m.content !== null && m.content !== undefined)).toBe(true);
+    expect(msgs.some((m) => Array.isArray(m.tool_calls) && m.tool_calls.length === 0)).toBe(false);
+    expect(msgs.some((m) => m.role === "tool")).toBe(false);
+  });
+
+  it("未污染历史不被改写（缓存字节稳定）", async () => {
+    const { captured, port, close } = server((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end(okBody);
+    });
+    const input = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+    ];
+    await callLLMOnce(
+      provider(port, "sanitize-2"),
+      input as unknown as Parameters<typeof callLLMOnce>[1],
+      [],
+      "auto",
+      undefined,
+      deps(),
+    );
+    close();
+    const msgs = captured[0]!.messages as Array<Record<string, unknown>>;
+    expect(msgs.map((m) => m.content)).toEqual(["hi", "hello"]);
+    expect(msgs[0]!.cache_control).toBeDefined(); // 断点仍在（未被净化路径破坏）
+  });
+
+  it("非可重试 4xx 落盘请求快照（EVOCLAW_REQUEST_DUMP_DIR 隔离）", async () => {
+    const dumpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-reqdump-"));
+    const prev = process.env.EVOCLAW_REQUEST_DUMP_DIR;
+    process.env.EVOCLAW_REQUEST_DUMP_DIR = dumpDir;
+    try {
+      const { port, close } = server((_req, res) => {
+        res.statusCode = 400;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid request body: malformed json" } }));
+      });
+      const result = await callLLMOnce(
+        provider(port, "dump-1"),
+        [{ role: "user", content: "hi" }] as unknown as Parameters<typeof callLLMOnce>[1],
+        [],
+        "auto",
+        undefined,
+        deps(),
+      );
+      close();
+
+      expect(result!.classifiedError?.reason).toBe("format_error");
+      const files = fs.readdirSync(dumpDir).filter((f) => f.startsWith("request_dump_"));
+      expect(files.length).toBe(1);
+      const payload = JSON.parse(fs.readFileSync(path.join(dumpDir, files[0]!), "utf-8"));
+      expect(payload.reason).toBe("non_retryable_client_error");
+      expect(payload.request.body.messages[0].content).toBe("hi");
+      expect(payload.error.status).toBe(400);
+    } finally {
+      if (prev === undefined) delete process.env.EVOCLAW_REQUEST_DUMP_DIR;
+      else process.env.EVOCLAW_REQUEST_DUMP_DIR = prev;
+      fs.rmSync(dumpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("auth / model_not_found 不落盘（与请求形态无关）", async () => {
+    const dumpDir = fs.mkdtempSync(path.join(os.tmpdir(), "evoclaw-reqdump-"));
+    const prev = process.env.EVOCLAW_REQUEST_DUMP_DIR;
+    process.env.EVOCLAW_REQUEST_DUMP_DIR = dumpDir;
+    try {
+      const { port, close } = server((_req, res) => {
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ error: { message: "invalid api key" } }));
+      });
+      await callLLMOnce(
+        provider(port, "dump-2"),
+        [{ role: "user", content: "hi" }] as unknown as Parameters<typeof callLLMOnce>[1],
+        [],
+        "auto",
+        undefined,
+        deps(),
+      );
+      close();
+      expect(fs.readdirSync(dumpDir).filter((f) => f.startsWith("request_dump_"))).toEqual([]);
+    } finally {
+      if (prev === undefined) delete process.env.EVOCLAW_REQUEST_DUMP_DIR;
+      else process.env.EVOCLAW_REQUEST_DUMP_DIR = prev;
+      fs.rmSync(dumpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("无状态码的不可识别错误不再被记为 provider 成功", async () => {
+    const recordSuccess = vi.fn();
+    const recordFailure = vi.fn();
+    // 200 + 非 JSON 体：响应成功但无法解析 → 无 status code、无措辞可归类
+    // （hermes `_V_UNKNOWN`）。旧实现把它排除在错误分支外，直接落进成功
+    // 路径（recordProviderSuccess + 空回复），整轮空转不 failover。
+    const s = http.createServer((_req, res) => {
+      res.setHeader("Content-Type", "application/json");
+      res.end("not json at all");
+    });
+    await new Promise<void>((r) => s.listen(0, r));
+    const port = (s.address() as { port: number }).port;
+
+    const p = provider(port, "unknown-err-1");
+    const res = await tryCallLLM(
+      deps({
+        providers: [p],
+        recordProviderSuccess: recordSuccess,
+        recordProviderFailure: recordFailure,
+      }),
+      {
+        message: "hi",
+        systemPrompt: "SYS",
+        installedSkills: [],
+        providers: [p],
+        startTime: Date.now(),
+        sessionId: `unknown-err-test-${RUN_TAG}`,
+        pendingPermissions: [],
+      },
+    );
+    s.close();
+
+    expect(res).not.toBeNull();
+    expect(recordSuccess).not.toHaveBeenCalled();
+    expect(recordFailure).toHaveBeenCalled();
+  }, 60_000);
+});

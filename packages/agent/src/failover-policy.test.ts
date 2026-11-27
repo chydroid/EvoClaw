@@ -178,6 +178,33 @@ describe("failover-policy > resolveFailoverReason", () => {
     expect(resolveFailoverReason(500)).toBe("server_error");
     expect(resolveFailoverReason(502)).toBe("server_error");
   });
+
+  // ★ v35（对标 hermes `_classify_400`）：具体措辞优先于通用 format_error，
+  //   但只放行 `_400_TAIL_RULES` / `_IMAGE_TOOL_RULES` 那几种 reason。
+  it("TC-035j: 未单列的 4xx 措辞 → format_error（不可重试）", () => {
+    expect(resolveFailoverReason(400, "invalid request body")).toBe("format_error");
+    expect(resolveFailoverReason(400, "malformed json")).toBe("format_error");
+    expect(resolveFailoverReason(405, "method not allowed")).toBe("format_error");
+    expect(resolveFailoverReason(415, "unsupported media type")).toBe("format_error");
+    expect(resolveFailoverReason(431, "request header fields too large")).toBe("format_error");
+  });
+
+  it("TC-035k: 4xx 里出现的传输层措辞不精化（防熔断风暴）", () => {
+    // "upstream timeout" 是网关复述的噪声：请求体必然再被拒，不能变成可重试
+    expect(resolveFailoverReason(400, "upstream timeout, invalid request")).toBe("format_error");
+    expect(resolveFailoverReason(400, "upstream connect error or disconnect/reset before headers")).toBe("format_error");
+    expect(resolveFailoverReason(400, "service unavailable, bad request")).toBe("format_error");
+    expect(resolveFailoverReason(400, "unauthorized field in request")).toBe("format_error");
+  });
+
+  it("TC-035l: 4xx 允许的精化 reason 生效", () => {
+    expect(resolveFailoverReason(400, "context length exceeded")).toBe("context_overflow");
+    expect(resolveFailoverReason(400, "image too large for this endpoint")).toBe("image_too_large");
+    expect(resolveFailoverReason(400, "payload too large")).toBe("payload_too_large");
+    expect(resolveFailoverReason(400, "rate limit exceeded")).toBe("rate_limit");
+    expect(resolveFailoverReason(400, "insufficient_quota")).toBe("billing");
+    expect(resolveFailoverReason(400, "model not found")).toBe("model_not_found");
+  });
 });
 
 describe("failover-policy > 新增 hermes-agent 原因的 transient/non-transient 分类", () => {

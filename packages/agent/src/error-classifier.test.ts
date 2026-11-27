@@ -158,7 +158,11 @@ describe("classifyLLMError", () => {
       // 使用无 status code 的不可识别错误测试 UNKNOWN 分支
       const result = classifyLLMError(undefined, "something went wrong");
       expect(result.type).toBe(LLMErrorType.UNKNOWN);
-      expect(result.retryable).toBe(false);
+      // ★ v35：对标 hermes `_V_UNKNOWN = _v(_R.unknown)` —— 默认 retryable=True
+      //   （"Unclassifiable — retry with backoff"）。此前标 false，caller 却把
+      //   UNKNOWN 当成功路径处理（recordProviderSuccess + 空回复），既没退避
+      //   也没 failover，整轮空转。
+      expect(result.retryable).toBe(true);
     });
 
     it("should classify 5xx errors as provider_error (retryable)", () => {
@@ -538,6 +542,50 @@ describe("fix-1: 5xx validation error detection", () => {
   });
 });
 
+describe("★ 2026-11-27: 4xx 兜底（对标 hermes `_by_status` 默认 format_error）", () => {
+  it("未单列的 4xx → 不可重试 + 跳过 provider", () => {
+    for (const status of [400, 405, 415, 431]) {
+      const result = classifyLLMError(status, "invalid request body");
+      expect(result.type).toBe(LLMErrorType.PROVIDER_ERROR);
+      expect(result.retryable).toBe(false);
+      expect(result.shouldSkipProvider).toBe(true);
+      expect(result.reason).toBe("format_error");
+    }
+  });
+
+  it("4xx 的 reason 透传更精确的恢复路径（不写死 format_error）", () => {
+    const image = classifyLLMError(400, "image exceeds 5 MB maximum");
+    expect(image.reason).toBe("image_too_large");
+    expect(image.shouldSkipProvider).toBe(true);
+
+    const policy = classifyLLMError(403, "rejected as a result of our safety system");
+    expect(policy.reason).toBe("content_policy_blocked");
+    expect(policy.retryable).toBe(false);
+  });
+
+  it("泛泛 4xx + 大 session → CONTEXT_OVERFLOW（压缩才有救）", () => {
+    const result = classifyLLMError(400, "error", undefined, { sessionTokens: 150_000 });
+    expect(result.type).toBe(LLMErrorType.CONTEXT_OVERFLOW);
+    expect(result.retryable).toBe(true);
+    expect(result.shouldCompact).toBe(true);
+    expect(result.reason).toBe("context_overflow");
+  });
+
+  it("泛泛 4xx + 小 session → format_error（不误判溢出）", () => {
+    const result = classifyLLMError(400, "error", undefined, { sessionTokens: 5_000 });
+    expect(result.reason).toBe("format_error");
+    expect(result.retryable).toBe(false);
+  });
+
+  it("具体措辞 4xx + 大 session 不被溢出启发式吞掉", () => {
+    const result = classifyLLMError(400, "invalid request body: malformed json", undefined, {
+      sessionTokens: 150_000,
+    });
+    expect(result.reason).toBe("format_error");
+    expect(result.retryable).toBe(false);
+  });
+});
+
 describe("fix-1: Server disconnect + large session heuristic", () => {
   it("should heuristically treat disconnect on large session as context overflow", () => {
     const result = classifyLLMError(undefined, "server disconnected", undefined, {
@@ -613,7 +661,10 @@ describe("★ 跨模块同判门禁：classifyLLMError.reason === resolveFailove
     // [status, errorText, 期望 reason]
     [400, "thinking block signature cannot be modified", "thinking_signature"],
     [400, "text is not set", "multimodal_tool_content_unsupported"],
-    [400, "invalid request body: malformed json", "unclassified"],
+    [400, "invalid request body: malformed json", "format_error"],
+    [405, "method not allowed", "format_error"],
+    [415, "unsupported media type", "format_error"],
+    [431, "request header fields too large", "format_error"],
     [401, "invalid api key", "auth"],
     [402, "insufficient quota", "billing"],
     [403, "forbidden", "auth"],
@@ -647,7 +698,7 @@ describe("★ 跨模块同判门禁：classifyLLMError.reason === resolveFailove
       expect(c.reason).toBe(r);
       expect(c.reason).toBe(expected);
       // 不可重试的 reason 不得同时标 retryable（反之亦然）
-      const nonRetryable = ["model_not_found", "auth", "billing", "content_policy_blocked", "provider_policy_blocked"];
+      const nonRetryable = ["model_not_found", "auth", "billing", "content_policy_blocked", "provider_policy_blocked", "format_error", "format"];
       if (nonRetryable.includes(expected)) expect(c.retryable, `${text} 不可重试`).toBe(false);
     });
   }

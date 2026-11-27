@@ -81,6 +81,11 @@ test-*.mjs
 !scripts/test-v34-lib.mjs
 !scripts/test-v34-tasks.mjs
 !scripts/test-v34-golden.mjs
+# v35 参考实现（随 runner 一并入库，2026-11-27）
+!scripts/test-sim-tasks-v35.mjs
+!scripts/test-v35-lib.mjs
+!scripts/test-v35-tasks.mjs
+!scripts/test-v35-golden.mjs
 test-*.json
 *-report.json
 *-report.html

@@ -13,7 +13,7 @@ import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { reconcileCompletionTruthfulness, extractToolFailure, extractEmptyResult, buildUserFacingCorrection } from "./completion-truthfulness";
-import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths } from "./verification-stop";
+import { shouldTriggerVerificationGate, buildVerifyOnStopNudge, buildVerifyOnStopNudgeWithHooks, extractChangedPaths, filterVerifiablePaths } from "./verification-stop";
 // R11 GAP-8：延迟语法裁决（此前完整实现仅 barrel 导出零调用死码）。挂点 = 停止门：
 // syntaxBroken 只探回执/声称的交付物；lsp-verdicts 探本回合全部被编辑文件
 //（含 sed/apply_patch 半途截断留下的破损），两者互补。
@@ -157,6 +157,9 @@ import { maybePrepareCompaction } from "./prepared-compaction";
 import { captureUsageAnchor } from "./usage-anchor";
 import { ReadTracker } from "./read-tracker";
 import { applyAnthropicCacheControl } from "./prompt-cache";
+import { sanitizeApiMessages, type SanitizableMessage } from "./api-message-sanitizer";
+import { getCurrentLlmCallScope, runWithLlmCallScope } from "./llm-call-scope";
+import { dumpFailedApiRequest } from "./request-dump";
 import { normalizeUsage } from "./usage-pricing";
 import { applyReasoningToggle } from "./reasoning-toggle";
 import { getReasoningStaleTimeoutFloor } from "./reasoning-timeouts";
@@ -4572,6 +4575,17 @@ export async function callLLMOnce(
 
     const useStreaming = !!onProgress;
 
+    // ★ v35：出站消息净化——全仓最后一个收口点（对标 hermes sanitize_api_messages）。
+    //   严格 OpenAI 兼容网关对 `content: null` / `tool_calls: []` / 悬空 tool 结果 /
+    //   重复 tool_call_id / 非法 function.name / 畸形 arguments 任意一项都回 400，
+    //   而历史一旦被污染，此后**每轮**请求都会失败（会话等于废掉）。此处覆盖全部
+    //   调用方（主循环 / grace call / 摘要 / task-analyzer / server 辅助调用）。
+    //   只修本次调用的副本，不回写 history——前缀缓存字节稳定。
+    const sanitized = sanitizeApiMessages(messages as unknown as SanitizableMessage[]);
+    const outboundMessages = (sanitized === (messages as unknown as SanitizableMessage[])
+      ? messages
+      : (sanitized as unknown as Array<LLMMessage>));
+
     // ── Prompt cache: apply cache_control breakpoints ──
     // 灵感来自 hermes-agent 的 system_and_3 策略：在 system prompt + volatile
     // 区域之前的最后 3 条非 system 消息上注入 cache_control: {type: "ephemeral"}，
@@ -4583,7 +4597,7 @@ export async function callLLMOnce(
     // 可关闭（个别严格校验未知字段的 OpenAI 兼容端点可按需 opt-out）。
     // ★ P0-5：volatile system 消息（skills 段/动态尾）的合并已在 tryCallLLM 层
     // 完成（一次性，见该处注释），此处只负责断点。
-    let messagesToSend = messages;
+    let messagesToSend = outboundMessages;
     const breakpointsEnabled =
       provider.provider === "anthropic" || process.env.EVOCLAW_PROMPT_CACHE_BREAKPOINTS !== "0";
     if (breakpointsEnabled) {
@@ -4592,11 +4606,11 @@ export async function callLLMOnce(
       // 非 CE 路径（stableLength undefined）保持旧行为：整条 system 一个断点。
       const ceResult = deps.contextEngineResult;
       const stableLength =
-        ceResult && messages[0]?.role === "system"
+        ceResult && outboundMessages[0]?.role === "system"
           ? (ceResult.frozenContent?.length ?? 0) || undefined
           : undefined;
       messagesToSend = applyAnthropicCacheControl(
-        messages as unknown as Array<Record<string, unknown>>,
+        outboundMessages as unknown as Array<Record<string, unknown>>,
         stableLength,
       ) as unknown as Array<LLMMessage>;
     }
@@ -4754,16 +4768,39 @@ const response = await nativeFetch(apiURL, {
       // 未见面的恶意/异常 provider 可返回 GB 级 error body，无界 text() 会把
       // 内存打爆（DoS）。读流并在上限处截断，已读部分照常进分类/记账/日志。
       const errorText = await readBoundedBodyText(response, 64 * 1024).catch(() => "");
-      // fix-1: 传递 sessionTokens 用于 server-disconnect + 大 session 启发式
-      // 注意：callLLMOnce 内部无法访问 lastPromptTokens，因此不传 sessionTokens。
-      // server-disconnect 启发式在 chat() 函数的其他位置仍可生效。
-      const classified = classifyLLMError(response.status, errorText);
+      // ★ v35：把本次请求的**估算上下文规模**传进分类器（对标 hermes
+      //   `_classify_400` 的 large-session 启发式）。此前这里恒不传 →
+      //   「泛泛 400 + 大 session」永远走不到 CONTEXT_OVERFLOW，只能按
+      //   format_error 跳过 provider，而压缩才是唯一可行的恢复路径。
+      //   估算用与上下文占用显示同一口径（CJK 感知 + LRU），成本可忽略。
+      const requestTokensEstimate = estimateMessagesTokensCached(
+        messagesToSend.map((m) => ({ role: String(m.role), content: m.content == null ? null : (typeof m.content === "string" ? m.content : JSON.stringify(m.content)) })),
+      );
+      const classified = classifyLLMError(response.status, errorText, undefined, {
+        sessionTokens: requestTokensEstimate,
+      });
       process.stderr.write(
         `[AgentModelExecutor] ❌ LLM API FAILED for "${provider.name}": HTTP ${response.status} [${classified.type}]\n` +
         `  URL: ${apiURL}\n` +
         `  Model: ${provider.model}\n` +
         `  Error: ${errorText.slice(0, 500)}\n`
       );
+
+      // ★ v35（对标 hermes `dump_api_request_debug`）：非可重试 4xx = 请求形态
+      //   问题，快照即根因证据；只在有诊断价值时落盘，避免每次瞬时故障刷盘。
+      if (classified.reason === "format_error" || classified.reason === "format") {
+        const dumpPath = dumpFailedApiRequest({
+          sessionId: getCurrentLlmCallScope()?.sessionId,
+          reason: "non_retryable_client_error",
+          url: apiURL,
+          headers,
+          body,
+          error: { status: response.status, text: errorText.slice(0, 8 * 1024) },
+        });
+        if (dumpPath) {
+          process.stderr.write(`[AgentModelExecutor] Request dump written: ${dumpPath}\n`);
+        }
+      }
 
       deps.recordProviderFailure(provider.id, `HTTP ${response.status}: ${errorText}`, classified.type);
 
@@ -6491,7 +6528,12 @@ if (deps.contextPruningManager && !prunerNoop) {
         }
 
         const classified = result.classifiedError;
-        if (classified && classified.type !== LLMErrorType.UNKNOWN) {
+        // ★ v35：任何 classifiedError 都进错误分支。此前把 UNKNOWN 排除在外，
+        //   未识别的 4xx/传输故障会**掉进成功路径**（recordProviderSuccess +
+        //   consecutiveErrors=0 + 空回复）——既不退避也不 failover，整轮空转
+        //   （v35 线上 400 的放大器）。UNKNOWN 现在由分类器标记为可重试
+        //   （hermes `_V_UNKNOWN` 语义），此处统一按错误处置。
+        if (classified) {
           consecutiveErrors++;
           // 混合证据 fail-open（hermes empty_response_guard）：provider 有真响应
           // （即使报错）说明并非「确定性无输出」——重置确定性空响应计数。
@@ -7555,10 +7597,15 @@ if (deps.contextPruningManager && !prunerNoop) {
               }
 
               if (verificationGateTriggered) {
-                verificationNudgeCount++;
-                // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径
-                const nudgePaths = stalePaths && stalePaths.length > 0 ? stalePaths : changedPathsForGate;
-                const baseNudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount - 1);
+                // 定向复验：失效路径优先（stalePaths 非空），否则用全部变更路径。
+                // ★ v35：stalePaths 可能**全部**是非代码文件（.json/.md/.csv——压测任务
+                //   正是只写这类交付物），而 buildVerifyOnStopNudge 会过滤掉它们返回 null。
+                //   旧实现把 null 直接 `nudge!` 推入 pendingTransient → 一条 content:null
+                //   的 user 消息 → 网关 400 → 分类器 UNKNOWN → 空回复死循环。
+                //   这里按「可验证路径」口径取集合，stale 集不可验证时回落到全量变更路径。
+                const staleVerifiable = stalePaths ? filterVerifiablePaths(stalePaths) : [];
+                const nudgePaths = staleVerifiable.length > 0 ? stalePaths! : changedPathsForGate;
+                const baseNudge = await buildVerifyOnStopNudgeWithHooks(nudgePaths, verificationNudgeCount);
                 // 管道掩盖退出码的命令不能算证据：明确告诉模型直跑检查命令。
                 const unattributed = evidenceStore.getLastUnattributedRun();
                 // ★ 2026-11-19（hermes _UNATTRIBUTED_RUN_WARNING 文案对齐）：
@@ -7573,29 +7620,34 @@ if (deps.contextPruningManager && !prunerNoop) {
                     `如果必须接管道（如 \`...\ | tail -20\` 截断输出），让**检查命令保持管道的第一段**` +
                     `（退出码会从管道首段读取）。终端输出过长时无需自行截断——输出溢出已自动落盘到文件。`
                   : baseNudge;
-                trace.addSystem(
-                  `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
-                  `变更文件：${nudgePaths.join("、")}`,
-                );
-                asyncLog(
-                  `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
-                  `— file mutations detected without verification evidence; nudging agent to verify\n`,
-                );
-                onProgress?.({
-                  type: "auto_continue",
-                  phase: "thinking",
-                  detail: `验证门触发（第 ${verificationNudgeCount} 次）：请先验证工作成果再结束`,
-                  progress: Math.min(30 + round * 3, 90),
-                  thinkingSteps: trace.toJSON(),
-                });
-                conversationMessages.push(assistantMsg);
-                pendingTransient.push({ role: "user", content: nudge! });
-                if (finalReply) {
-                  lastReplyBackup = finalReply;
-                  pendingVerificationReply = finalReply;
+                // ★ v35：nudge 为空时按「门未触发」处理——不推消息、不计数、不注入
+                //   trace。绝不能把 null content 推成 user 消息（网关直接 400）。
+                if (nudge) {
+                  verificationNudgeCount++;
+                  trace.addSystem(
+                    `验证门 #${verificationNudgeCount}（变更文件后未验证即声称完成）`,
+                    `变更文件：${nudgePaths.join("、")}`,
+                  );
+                  asyncLog(
+                    `[AgentModelExecutor] Verification gate #${verificationNudgeCount} ` +
+                    `— file mutations detected without verification evidence; nudging agent to verify\n`,
+                  );
+                  onProgress?.({
+                    type: "auto_continue",
+                    phase: "thinking",
+                    detail: `验证门触发（第 ${verificationNudgeCount} 次）：请先验证工作成果再结束`,
+                    progress: Math.min(30 + round * 3, 90),
+                    thinkingSteps: trace.toJSON(),
+                  });
+                  conversationMessages.push(assistantMsg);
+                  pendingTransient.push({ role: "user", content: nudge });
+                  if (finalReply) {
+                    lastReplyBackup = finalReply;
+                    pendingVerificationReply = finalReply;
+                  }
+                  finalReply = "";
+                  continue;
                 }
-                finalReply = "";
-                continue;
               }
 
               if (testRedGateTriggered && !verificationGateTriggered && !kanbanStopTriggered) {
@@ -10017,15 +10069,19 @@ if (deps.contextPruningManager && !prunerNoop) {
   // ── Turn 结束统一记录活动时间（空闲压缩的测量基准）──
   // 无论正常返回还是异常，都把「上一轮结束时间」写入追踪器；下一 turn 起点据此计算空闲。
   try {
+    // ★ v35：会话作用域（ALS）。callLLMOnce 是共享收口点且拿不到 sessionId
+    //   （deps 是缓存复用的，存 sessionId 会串味），失败请求转储的文件名需要
+    //   它。作用域只覆盖本次 turn 的调用链，嵌套调用自动继承。
+    const scoped = () => runWithLlmCallScope({ sessionId: options.sessionId }, () => doTryCall());
     if (tracing?.isEnabled()) {
       return await tracing.withSpan("llm.try_call", async (span: Span) => {
         span.setAttribute("session.id", options.sessionId);
         span.setAttribute("providers.count", options.providers.length);
         span.setAttribute("message.length", options.message.length);
-        return await doTryCall();
+        return await scoped();
       });
     } else {
-      return await doTryCall();
+      return await scoped();
     }
   } finally {
     deps.idleCompactionTracker?.touch(options.sessionId ?? "");
