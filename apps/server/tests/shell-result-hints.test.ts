@@ -13,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   interpretSignalExit,
+  interpretSignalName,
   interpretExitCode,
   annotateFailure,
   annotateMaskedSuccess,
@@ -44,6 +45,47 @@ describe("interpretSignalExit", () => {
     expect(interpretSignalExit(-1)).toBeNull();
     expect(interpretExitCode("whatever", -1)).toBeNull();
     expect(shellResultAnnotations("whatever", -1, "boom")).toEqual({});
+  });
+});
+
+describe("interpretSignalName — Node close 回调的 signal 名", () => {
+  // v34 T4 实证：`child.on("close", (code) => …)` 只取 code 时，被信号杀死的
+  // 子进程 code 是 null，模型只收到 {success:false, exitCode:null}，
+  // 信号这条唯一事实完全丢失。signal 名必须独立接线。
+
+  it("SIGKILL 给出 OOM/显式 kill 的解释", () => {
+    expect(interpretSignalName("SIGKILL")).toContain("SIGKILL");
+    expect(interpretSignalName("SIGKILL")).toContain("OOM");
+  });
+
+  it("SIGTERM / SIGSEGV 有各自说明", () => {
+    expect(interpretSignalName("SIGTERM")).toContain("SIGTERM");
+    expect(interpretSignalName("SIGSEGV")).toContain("段错误");
+  });
+
+  it("SIGINT 返回 null（中断标记路径负责）", () => {
+    expect(interpretSignalName("SIGINT")).toBeNull();
+  });
+
+  it("null / undefined 返回 null（正常退出）", () => {
+    expect(interpretSignalName(null)).toBeNull();
+    expect(interpretSignalName(undefined)).toBeNull();
+  });
+
+  it("未知信号名仍如实报出，不编造解释", () => {
+    const note = interpretSignalName("SIGSYS");
+    expect(note).toContain("SIGSYS");
+    expect(note).not.toContain("OOM");
+  });
+
+  it("shellResultAnnotations 优先用 signal 名（exitCode 是 -1 哨兵）", () => {
+    const a = shellResultAnnotations("bash -c 'sleep 30'", -1, "", "SIGTERM");
+    expect(a.exit_code_meaning).toContain("SIGTERM");
+  });
+
+  it("没有 signal 时退回退出码语义", () => {
+    const a = shellResultAnnotations("grep foo .", 1, "", null);
+    expect(a.exit_code_meaning).toContain("没有匹配");
   });
 });
 

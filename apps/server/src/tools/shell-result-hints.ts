@@ -52,6 +52,45 @@ const SIGNAL_EXIT_NOTES: Record<number, string> = {
   25: "SIGXFSZ（文件大小上限超限）",
 };
 
+/**
+ * Node 信号名 → signum。只收 `SIGNAL_EXIT_NOTES` 覆盖的那些，
+ * 未知信号仍给一句不带解释的「被信号 X 终止」。
+ */
+const SIGNAL_NAME_TO_SIGNUM: Record<string, number> = {
+  SIGQUIT: 3,
+  SIGILL: 4,
+  SIGABRT: 6,
+  SIGBUS: 7,
+  SIGFPE: 8,
+  SIGKILL: 9,
+  SIGSEGV: 11,
+  SIGPIPE: 13,
+  SIGTERM: 15,
+  SIGXCPU: 24,
+  SIGXFSZ: 25,
+};
+
+/**
+ * 由 Node 的 `close(code, signal)` 里的 signal 名生成终止说明。
+ *
+ * ★ 2026-11-27（v34 复盘）：`child.on("close", (code) => …)` 只取 code 时，
+ *   被信号杀死的子进程 code 是 **null**，整条信号事实被丢掉——模型只看到
+ *   `{success:false, exitCode:null}` 加一段无关 stdout（T4 里模型 `pkill -f`
+ *   误杀自己的 shell，收到 `exitCode: null` 后只能靠猜）。hermes 的
+ *   `_interpret_signal_exit` 只在 subprocess 的负退出码上生效，同样拿不到
+ *   Node 的 signal 名，所以这里必须自己把 signal 名接进结果。
+ *
+ * SIGINT 与 `interpretSignalExit` 一致返回 null：中断标记路径自己处理。
+ */
+export function interpretSignalName(signal: string | null | undefined): string | null {
+  if (!signal) return null;
+  if (signal === "SIGINT") return null;
+  const signum = SIGNAL_NAME_TO_SIGNUM[signal];
+  if (signum === undefined) return `命令被信号 ${signal} 终止`;
+  const note = SIGNAL_EXIT_NOTES[signum];
+  return note ? `命令被信号 ${signum} 终止：${note}` : `命令被信号 ${signum} 终止`;
+}
+
 /** 信号终止说明；非信号退出返回 null。 */
 export function interpretSignalExit(exitCode: number): string | null {
   if (!Number.isFinite(exitCode)) return null;
@@ -324,9 +363,13 @@ export function shellResultAnnotations(
   command: string,
   exitCode: number,
   output: string,
+  signal?: string | null,
 ): { exit_code_meaning?: string; hint?: string; non_error_exit?: true } {
   const out: { exit_code_meaning?: string; hint?: string; non_error_exit?: true } = {};
-  const meaning = interpretExitCode(command, exitCode);
+  // ★ 信号名优先于退出码：被信号杀死时 code 为 null（本函数收到 -1 哨兵），
+  //   `interpretSignalExit` 对 -1 一律返回 null（那是「退出码不可得」），
+  //   只有 signal 名能给出真事实。
+  const meaning = interpretSignalName(signal) ?? interpretExitCode(command, exitCode);
   if (meaning) out.exit_code_meaning = meaning;
   // ★ 信息性退出码（grep/diff/test 的 1）打上 non_error_exit 标记，
   //   失败分类器据此不把它计进 failedTools。此前 grep 无匹配会让

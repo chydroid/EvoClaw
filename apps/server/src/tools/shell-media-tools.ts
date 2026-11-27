@@ -9,7 +9,7 @@ import { LocalSandboxBackend, generateVideoDownloadScript, generateMusicDownload
 import type { KernelCellResult, KernelExecuteOptions } from "@evoclaw/infrastructure";
 import { assessShellCommand, getActiveSecurityPolicy, decideShellCommand, shellBlockGuidance } from "@evoclaw/security";
 import type { SandboxPolicy } from "@evoclaw/core";
-import { shellResultAnnotations } from "./shell-result-hints";
+import { interpretSignalName, shellResultAnnotations } from "./shell-result-hints";
 
 /**
  * 命令输出准确保留上限（字符）。
@@ -455,17 +455,23 @@ export function runPythonScriptAsync(
       process.stderr.write(`[shell-media-tools] stderr error: ${err.message}\n`);
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
         if (code === 0) {
           resolve(stdout);
         } else {
-          const err = new Error(`Python script exited with code ${code}`) as Error & { stderr: string; stdout: string; code: number };
+          // 被信号杀死时 code 为 null——只说 "exited with code null" 等于把
+          // 唯一的真事实（哪个信号）丢掉。与 shell_exec 主路径同口径补信号名。
+          const signalNote = interpretSignalName(signal);
+          const err = new Error(
+            signalNote ?? `Python script exited with code ${code}`,
+          ) as Error & { stderr: string; stdout: string; code: number; signal?: string | null };
           err.stderr = stderr;
           err.stdout = stdout;
           err.code = code as number;
+          err.signal = signal;
           reject(err);
         }
       }
@@ -952,7 +958,7 @@ export function registerShellMediaTools(
           }
         }, timeoutSec * 1000);
 
-        child.on("close", (code) => {
+        child.on("close", (code, signal) => {
           if (!resolved) {
             resolved = true;
             clearTimeout(timer);
@@ -981,11 +987,14 @@ export function registerShellMediaTools(
             //   后者覆盖前者）。注意 exit_code_meaning 只是「给模型看的语义」，
             //   不等于「不是错误」——只有 grep/diff/test 这类才打 non_error_exit。
             //   close 回调的 code 可能为 null（被信号终止且无退出码）——按 -1 归因，
-            //   与下方 exitCode 字段的既有语义一致。
+            //   与下方 exitCode 字段的既有语义一致；但信号名本身必须透传，
+            //   否则「被 SIGKILL 杀死」这条唯一事实会丢（v34 T4 实证：模型
+            //   `pkill -f` 误杀自己的 shell，只收到 exitCode:null 无从判断）。
             const annotations = shellResultAnnotations(
               command,
               code ?? -1,
               [output, errorOutput].filter(Boolean).join("\n"),
+              signal,
             );
             const hints = {
               ...annotations,

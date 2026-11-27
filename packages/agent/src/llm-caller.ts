@@ -220,6 +220,7 @@ import { getProviderSkipList } from "./provider-skip-list";
 import { ToolCallLoopDetector } from "./guardrails";
 import { validateToolResult } from "./tool-types";
 import { PromptRegistry } from "./prompt-registry";
+import { parseXmlToolCalls } from "./xml-tool-calls";
 import * as https from "https";
 import * as http from "http";
 import * as crypto from "crypto";
@@ -5290,6 +5291,12 @@ export async function tryCallLLM(
   // tool_calls + tool 结果）必须带到下一个 provider 继续；否则下一个 provider
   // 只拿到回合起点的 history，前面的工具进展全部丢失、只能从头重做。
   let failoverCarry: LLMMessage[] = [];
+  // ── XML 工具调用 id 的回合内唯一化（v34 复盘）──
+  // 从 content 里解析出的 `<invoke>` / `<minimax:tool_call>` 若每轮都从 0 编号，
+  // 同一回合内会产出重复的 `parsed_invoke_0`。OpenAI 协议要求 tool_call_id
+  // 全局唯一；重复 id 会让「按 id 配对」的逻辑（含 failover 接力的
+  // pruneUnpairedToolMessages）把前一轮的 tool 结果配给后一轮的调用。
+  let parsedCallSeq = 0;
   // R11 GAP-1：本回合是否已捕获 usage anchor（只认第一通成功调用，
   // 防后续工具轮 prompt_tokens——含不进持久 history 的工具流量——双计）
   let turnAnchorCaptured = false;
@@ -6952,60 +6959,13 @@ if (deps.contextPruningManager && !prunerNoop) {
         // Some providers (Mimo/MiniMax, etc.) embed tool calls as XML in the
         // content field instead of using the standard tool_calls field. We need
         // to parse these into proper tool_calls BEFORE stripping them.
+        // id 由回合级单调计数器发放（parsedCallSeq），保证跨轮唯一——见
+        // xml-tool-calls.ts 的说明（v34 T3/T10 重复 id 实证）。
         if (assistantMsg.content && (!assistantMsg.tool_calls || assistantMsg.tool_calls.length === 0)) {
-          const parsedCalls: Array<{ id: string; type: "function"; function: { name: string; arguments: string } }> = [];
-          let callIdx = 0;
-
-          // Parse <invoke name="tool_name"><parameter name="p">value</parameter>...</invoke>
-          const invokeRegex = /<invoke\s+name="([^"]+)">([\s\S]*?)<\/invoke>/g;
-          let invokeMatch: RegExpExecArray | null;
-          while ((invokeMatch = invokeRegex.exec(assistantMsg.content)) !== null) {
-            const fnName = invokeMatch[1];
-            const paramBlock = invokeMatch[2];
-            const params: Record<string, unknown> = {};
-            const paramRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
-            let paramMatch: RegExpExecArray | null;
-            while ((paramMatch = paramRegex.exec(paramBlock)) !== null) {
-              let val: unknown = paramMatch[2].trim();
-              // Try to parse JSON values (numbers, booleans, objects, arrays)
-              try { val = JSON.parse(val as string); } catch { /* keep as string */ }
-              params[paramMatch[1]] = val;
-            }
-            parsedCalls.push({
-              id: `parsed_invoke_${callIdx++}`,
-              type: "function",
-              function: { name: fnName, arguments: JSON.stringify(params) },
-            });
-          }
-
-          // Parse <minimax:tool_call> blocks with nested <function_calls>
-          const minimaxRegex = /<minimax:tool_call>([\s\S]*?)<\/minimax:tool_call>/g;
-          let minimaxMatch: RegExpExecArray | null;
-          while ((minimaxMatch = minimaxRegex.exec(assistantMsg.content)) !== null) {
-            const block = minimaxMatch[1];
-            const fnRegex = /<function_name>([^<]+)<\/function_name>\s*<parameters>([\s\S]*?)<\/parameters>/g;
-            let fnMatch: RegExpExecArray | null;
-            while ((fnMatch = fnRegex.exec(block)) !== null) {
-              const fnName = fnMatch[1].trim();
-              const paramStr = fnMatch[2].trim();
-              let params: Record<string, unknown> = {};
-              try { params = JSON.parse(paramStr); } catch {
-                // Fallback: try XML-style params
-                const pRegex = /<parameter\s+name="([^"]+)">([\s\S]*?)<\/parameter>/g;
-                let pMatch: RegExpExecArray | null;
-                while ((pMatch = pRegex.exec(paramStr)) !== null) {
-                  let val: unknown = pMatch[2].trim();
-                  try { val = JSON.parse(val as string); } catch { /* keep as string */ }
-                  params[pMatch[1]] = val;
-                }
-              }
-              parsedCalls.push({
-                id: `parsed_minimax_${callIdx++}`,
-                type: "function",
-                function: { name: fnName, arguments: JSON.stringify(params) },
-              });
-            }
-          }
+          const parsedCalls = parseXmlToolCalls(
+            assistantMsg.content,
+            (kind) => `parsed_${kind}_${parsedCallSeq++}`,
+          );
 
           if (parsedCalls.length > 0) {
             assistantMsg.tool_calls = parsedCalls;
