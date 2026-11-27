@@ -46,4 +46,21 @@ describe("ErrorRecoveryExecutor 终态 notice（turn_failure_copy 收口）", ()
     const terminal = ex.executeRecovery(ctx("model_not_found"));
     expect(terminal.notice).toContain("换一个模型");
   });
+
+  // ★ v36：upstream_blocked 是 non-transient（isNonTransientReason 早就算），
+  //   但本 switch 曾漏这一支 → 落到 default 保守重试一次同一个被 WAF 拦截的
+  //   provider（hermes `_V_UPSTREAM_BLOCKED` = _ABORT_FALLBACK：不重试直接换人）。
+  it("upstream_blocked → 直接换人，不重试；文案不指控 API Key", () => {
+    const ex = new ErrorRecoveryExecutor(3);
+    const r = ex.executeRecovery(
+      ctx("upstream_blocked", { errorText: "<html>Attention Required! | Cloudflare</html>" }),
+    );
+    expect(r.recovered).toBe(false);
+    expect(r.shouldRetry).toBe(false);
+    expect(r.shouldFailover).toBe(true);
+    expect(r.action).toBe("failover_upstream_blocked");
+    expect(r.notice).toContain("防火墙/CDN");
+    expect(r.notice).toContain("API Key 很可能没问题");
+    expect(r.notice).not.toContain("拒绝了 API Key");
+  });
 });

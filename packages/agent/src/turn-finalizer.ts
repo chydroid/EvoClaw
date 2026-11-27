@@ -642,6 +642,8 @@ const EXIT_REASON_EXPLANATIONS: Record<string, string> = {
     "⚠️ 会话持久化失败——对话记录可能未完全保存。请检查服务状态后重试。",
   "guardrail_halt":
     "⚠️ 工具护栏拦截——某个工具调用被安全策略阻止。请调整请求后重试。",
+  "provider_rejected":
+    "⚠️ 模型服务拒绝了本次请求（非凭证问题，未指明原因），已切换到下一个模型入口。若所有入口都这样拒绝，请检查请求内容或网络出口。",
   "content_filter":
     "⚠️ 内容过滤触发——响应可能被安全策略截断。请调整请求后重试。",
   "deterministic_empty":

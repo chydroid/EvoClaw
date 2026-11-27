@@ -22,6 +22,7 @@
 //      API Key / context_overflow → 开新会话 / truncated → 拆小步）
 
 import { COMPRESSION_EXHAUSTED_NOTICE } from "./turn-overflow";
+import type { FailoverReason } from "./failover-policy";
 
 // ── 站内失败码 ───────────────────────────────────────────────────────────────
 
@@ -104,12 +105,18 @@ export function failedTurnNotice(
 
 /**
  * reason → 一句人话（无 HTTP 码、无 provider 术语）。
- * 覆盖 failover-policy 的 25 个 FailoverReason 值 + SITE_FAILURE_CODES
- * 站内码（其中 context_overflow / empty_response 两边共用同一句）。
- * 表中缺失的 reason 不翻译——调用方退回原始错误文本（hermes 口径：
+ *
+ * 类型是 `Record<string, string> & Record<FailoverReason, string>`：前者允许
+ * SITE_FAILURE_CODES 站内码（其中 context_overflow / empty_response 两边共用
+ * 同一句），后者让**每一个 FailoverReason 都必须有 gloss** 在编译期被强制——
+ * 新增 reason 忘了补文案会直接 typecheck 失败，而不是等到用户看到
+ * "未知错误"。此前手抄的覆盖清单已漂移 3 项（output_cap / aborted /
+ * upstream_blocked），这正是要根除的整类缺陷。
+ *
+ * 表中缺失的**站内码**不翻译——调用方退回原始错误文本（hermes 口径：
  * "Reasons absent here are NOT provider-shaped"）。
  */
-export const FAILURE_CAUSE_GLOSS: Record<string, string> = {
+export const FAILURE_CAUSE_GLOSS: Record<string, string> & Record<FailoverReason, string> = {
   // ── 瞬时（transient） ──
   rate_limit: "模型服务被限流（请求过于频繁）",
   overloaded: "模型服务当前过载",
@@ -126,13 +133,16 @@ export const FAILURE_CAUSE_GLOSS: Record<string, string> = {
   multimodal_tool_content_unsupported: "模型服务不支持工具消息中的多模态内容",
   thinking_signature: "模型思考块的签名失效",
   long_context_tier: "模型服务要求开通长上下文档位",
+  output_cap: "请求的输出长度超过了模型服务的单次上限",
   // ── 非瞬时（non-transient） ──
+  aborted: "本次请求已被主动取消（不是模型服务故障）",
   billing: "模型服务侧账户用量或额度已达上限",
   model_not_found: "使用的模型在模型服务上不存在",
   format: "请求格式被模型服务拒绝",
   format_error: "请求格式被模型服务拒绝",
   auth: "模型服务拒绝了登录凭证（API Key 问题）",
   auth_permanent: "模型服务永久拒绝了登录凭证（API Key 已失效）",
+  upstream_blocked: "模型服务前方的防火墙/CDN 拦截了请求（凭证可能没问题）",
   session_expired: "会话凭证已过期，需要重新登录或刷新",
   context_overflow: "对话上下文已增长到模型无法读取的大小",
   provider_policy_blocked: "模型服务因账户策略拒绝了本次请求",
@@ -215,6 +225,11 @@ const NONRETRYABLE_COPY: Record<string, string> = {
   format_error: "{label} 认为请求格式有误，模型未能应答。开一个新会话或换一个模型通常可以解决；若反复出现，请到 Ops 诊断页查看详情。",
   auth: "{label} 拒绝了 API Key，模型无法访问。请检查该提供商配置的 API Key 是否正确、是否过期、是否有额度。",
   auth_permanent: "{label} 永久拒绝了 API Key，重试无意义。请更换或更新该提供商的 API Key 后重试。",
+  // ★ v36（hermes `_NONRETRYABLE_COPY[upstream_blocked]`）：WAF/CDN 在请求到达模型前
+  //   就拦下了它——**凭证根本没被送到 provider**，所以绝不能说"API Key 失效"
+  //   （hermes #53099 #70566 的原始误报）。指引指向出口/UA/WAF，而非换 key。
+  upstream_blocked:
+    "{label} 前方的防火墙/CDN 在请求到达模型之前就拦下了它，所以 API Key 很可能没问题。可检查代理/WAF 规则或请求的 User-Agent，或切换到其他模型提供商。",
   session_expired: "会话凭证已过期，模型无法访问。请重新登录或刷新会话后重试。",
   billing: "账户用量或额度已达上限（{label} 侧）。请充值或检查配额后继续，或切换到其他有额度的模型。",
   provider_policy_blocked:

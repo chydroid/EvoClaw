@@ -15,16 +15,11 @@ import {
   shortDetail,
   formatResetWindow,
 } from "./turn-failure-copy";
+import { FAILOVER_REASONS } from "./failover-policy";
 
-// 所有合法 failure_reason 取值域 = FailoverReason（25）+ SITE_FAILURE_CODES。
-const FAILOVER_REASONS = [
-  "rate_limit", "overloaded", "billing", "unknown", "empty_response",
-  "no_error_details", "unclassified", "timeout", "model_not_found", "format",
-  "format_error", "auth", "auth_permanent", "session_expired", "context_overflow",
-  "network", "server_error", "payload_too_large", "image_too_large",
-  "provider_policy_blocked", "content_policy_blocked", "invalid_encrypted_content",
-  "multimodal_tool_content_unsupported", "thinking_signature", "long_context_tier",
-];
+// 所有合法 failure_reason 取值域 = FailoverReason（运行时唯一真相）
+// + SITE_FAILURE_CODES。★ v36：不再手抄清单——手抄版已漂移 3 项
+// （output_cap / aborted / upstream_blocked 无 gloss 却无人察觉）。
 
 // ═══════════════════════════════════════════════════════════
 // ① 盖码不变式（stampFailure）
@@ -106,14 +101,22 @@ describe("failedTurnNotice（二分文案）", () => {
 });
 
 // ═══════════════════════════════════════════════════════════
-// ③ gloss 表全覆盖（25 reason + 站内码 无 undefined）
+// ③ gloss 表全覆盖（全部 FailoverReason + 站内码 无 undefined）
 // ═══════════════════════════════════════════════════════════
 describe("FAILURE_CAUSE_GLOSS（全覆盖）", () => {
-  it("25 个 FailoverReason 全部有 gloss", () => {
+  it("每个 FailoverReason 全部有 gloss", () => {
     for (const r of FAILOVER_REASONS) {
       expect(FAILURE_CAUSE_GLOSS[r], `missing gloss for ${r}`).toBeTruthy();
       expect(failureCauseGloss(r)).toBeTruthy();
     }
+  });
+
+  it("★ 曾漂移的三项必须补上（output_cap / aborted / upstream_blocked）", () => {
+    // 这三项在 failover-policy 里存在但手抄清单漏了，长期无 gloss →
+    // 终态说明退回通用文案。断言其 gloss 语义（而非仅"非空"）。
+    expect(failureCauseGloss("output_cap")).toContain("输出长度");
+    expect(failureCauseGloss("aborted")).toContain("取消");
+    expect(failureCauseGloss("upstream_blocked")).toContain("防火墙");
   });
 
   it("SITE_FAILURE_CODES 全部有 gloss", () => {
@@ -135,6 +138,41 @@ describe("FAILURE_CAUSE_GLOSS（全覆盖）", () => {
     expect(failureCauseGloss(null)).toBeNull();
     expect(failureCauseGloss(undefined)).toBeNull();
     expect(failureCauseGloss(42)).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// ③b upstream_blocked：凭证无辜（hermes #53099 #70566）
+// ═══════════════════════════════════════════════════════════
+describe("upstream_blocked 文案（不得指控 API Key）", () => {
+  it("nonretryableCopy 说清 WAF 拦截 + key 很可能没问题", () => {
+    const copy = nonretryableCopy("upstream_blocked", "Magpie（magpie/dots3）", {
+      detail: "<html>Attention Required! | Cloudflare</html>",
+    });
+    expect(copy).toContain("防火墙/CDN");
+    expect(copy).toContain("API Key 很可能没问题");
+    expect(copy).toContain("服务方描述：");
+    // 绝不能说凭证失效——凭证根本没被送到 provider。
+    expect(copy).not.toContain("拒绝了 API Key");
+  });
+
+  it("terminalFailureCopy 端到端：原因行 + 指引行都指向出口而非换 key", () => {
+    const copy = terminalFailureCopy({
+      reason: "upstream_blocked",
+      label: "Magpie（magpie/dots3）",
+      attempts: 1,
+      retryable: false,
+      detail: "HTTP 403 Attention Required! | Cloudflare",
+    });
+    expect(copy).toContain("原因：");
+    expect(copy).toContain("防火墙/CDN");
+    expect(copy).not.toContain("请检查 API Key 配置");
+  });
+
+  it("auth 仍保留换 key 指引（两类不混淆）", () => {
+    const copy = nonretryableCopy("auth", "Magpie（magpie/dots3）");
+    expect(copy).toContain("API Key");
+    expect(copy).not.toContain("防火墙");
   });
 });
 

@@ -737,7 +737,15 @@ export class ErrorRecoveryExecutor {
       case "format":
       case "format_error":
       case "provider_policy_blocked":
-      case "content_policy_blocked": {
+      case "content_policy_blocked":
+      // ★ v36：403 来自 provider 前方的 WAF/CDN（凭证健康）。
+      //   `isNonTransientReason` 早已把它算作 non-transient（冷却期探测、probe 预算
+      //   都按此派生），但本 switch 此前漏了这一支 → 落到 `default:` 做一次
+      //   **保守重试**，而重试同一个被 WAF 拦截的 provider 必然同样被拦
+      //   （hermes 对 `_V_UPSTREAM_BLOCKED` 是 `_ABORT_FALLBACK`：不重试、直接换人）。
+      //   当前 403 路径在 llm-caller 的换人分支就已 break，走不到这里；补上是为了
+      //   让"reason → 恢复动作"这张表与 non-transient 判定同源，不留第二份手抄清单。
+      case "upstream_blocked": {
         return {
           ...baseResult,
           shouldFailover: allowFailover,

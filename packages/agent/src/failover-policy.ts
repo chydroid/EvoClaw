@@ -33,35 +33,47 @@
  *   - server_error              500/502 内部服务器错误
  *   - format_error              400 请求格式错误（重命名为 format_error 对齐 hermes-agent）
  */
-export type FailoverReason =
-  | "rate_limit"        // 429 限流（transient）
-  | "overloaded"        // 529 过载（transient）
-  | "billing"           // 402 计费问题（non-transient）
-  | "unknown"           // 未知错误（transient，保守重试）
-  | "empty_response"    // 空响应（transient）
-  | "no_error_details"  // 无错误详情（transient）
-  | "unclassified"      // 未分类（transient）
-  | "timeout"           // 超时（transient）
-  | "model_not_found"   // 模型不存在（non-transient）
-  | "format"            // 格式错误（non-transient，旧名，保留向后兼容）
-  | "format_error"      // 格式错误（non-transient，对齐 hermes-agent 命名）
-  | "auth"              // 认证失败（non-transient）
-  | "auth_permanent"    // 永久认证失败（non-transient）
-  | "session_expired"   // 会话过期（non-transient）
-  | "context_overflow"  // 上下文溢出（需压缩后重试）
-  | "network"           // 网络错误（transient）
+/**
+ * 失败原因的**唯一取值域**（运行时常量 + 类型同源）。
+ *
+ * 单一真相：类型 `FailoverReason` 由本数组派生，任何「必须覆盖全部 reason」
+ * 的表/测试都直接迭代本数组，不再手抄一份清单。此前手抄清单已漂移 3 项
+ * （output_cap / aborted / upstream_blocked 均无 gloss、无覆盖断言），
+ * 新增 reason 时静默漏表——这正是本数组要根除的整类缺陷。
+ */
+export const FAILOVER_REASONS = [
+  "rate_limit",        // 429 限流（transient）
+  "overloaded",        // 529 过载（transient）
+  "billing",           // 402 计费问题（non-transient）
+  "unknown",           // 未知错误（transient，保守重试）
+  "empty_response",    // 空响应（transient）
+  "no_error_details",  // 无错误详情（transient）
+  "unclassified",      // 未分类（transient）
+  "timeout",           // 超时（transient）
+  "model_not_found",   // 模型不存在（non-transient）
+  "format",            // 格式错误（non-transient，旧名，保留向后兼容）
+  "format_error",      // 格式错误（non-transient，对齐 hermes-agent 命名）
+  "auth",              // 认证失败（non-transient）
+  "auth_permanent",    // 永久认证失败（non-transient）
+  "session_expired",   // 会话过期（non-transient）
+  "context_overflow",  // 上下文溢出（需压缩后重试）
+  "network",           // 网络错误（transient）
   // ── 以下为对齐 hermes-agent 新增的原因 ──
-  | "server_error"      // 500/502 内部服务器错误（transient）
-  | "payload_too_large" // 413 请求体过大（transient，需压缩）
-  | "image_too_large"   // 图片超过 provider 单图限制（transient，需缩小）
-  | "provider_policy_blocked"   // 聚合器账户策略阻止（non-transient）
-  | "content_policy_blocked"    // Provider 安全过滤拒绝（non-transient，需 fallback）
-  | "invalid_encrypted_content" // Responses API replay blob 无效（transient，剥离后重试）
-  | "multimodal_tool_content_unsupported" // Provider 拒绝 tool 消息列表内容（transient，降级为文本）
-  | "thinking_signature"        // Anthropic thinking 块签名无效（transient，剥离后重试）
-  | "long_context_tier"         // Anthropic 长上下文层级门控（transient，需压缩）
-  | "output_cap"                // ★ hermes 对齐 R10：max_tokens 超过 provider 输出上限（transient，clamp 后原地重试；误分类为 context_overflow 会导致压缩死循环——压缩改不了 max_tokens）
-  | "aborted";                   // ★ 2026-10-30：用户/系统主动取消（非 provider 错误，non-transient）
+  "server_error",      // 500/502 内部服务器错误（transient）
+  "payload_too_large", // 413 请求体过大（transient，需压缩）
+  "image_too_large",   // 图片超过 provider 单图限制（transient，需缩小）
+  "provider_policy_blocked",   // 聚合器账户策略阻止（non-transient）
+  "content_policy_blocked",    // Provider 安全过滤拒绝（non-transient，需 fallback）
+  "invalid_encrypted_content", // Responses API replay blob 无效（transient，剥离后重试）
+  "multimodal_tool_content_unsupported", // Provider 拒绝 tool 消息列表内容（transient，降级为文本）
+  "thinking_signature",        // Anthropic thinking 块签名无效（transient，剥离后重试）
+  "long_context_tier",         // Anthropic 长上下文层级门控（transient，需压缩）
+  "output_cap",                // ★ hermes 对齐 R10：max_tokens 超过 provider 输出上限（transient，clamp 后原地重试；误分类为 context_overflow 会导致压缩死循环——压缩改不了 max_tokens）
+  "aborted",                   // ★ 2026-10-30：用户/系统主动取消（非 provider 错误，non-transient）
+  "upstream_blocked",          // ★ v36：403 来自 provider 前方的 WAF/CDN/代理（key 健康，换人但不熔断）
+] as const;
+
+export type FailoverReason = (typeof FAILOVER_REASONS)[number];
 
 // ── Transient Classification ──────────────────────────────
 
@@ -121,7 +133,8 @@ export function isNonTransientReason(reason: FailoverReason | null | undefined):
     reason === "session_expired" ||
     reason === "billing" ||
     reason === "provider_policy_blocked" ||
-    reason === "content_policy_blocked"
+    reason === "content_policy_blocked" ||
+    reason === "upstream_blocked"
   );
 }
 
@@ -134,31 +147,20 @@ export function isNonTransientReason(reason: FailoverReason | null | undefined):
  * non-transient 失败（如认证错误）不会因为等待而恢复，探测无意义。
  *
  * 注意：billing 虽为 non-transient，但 hermes-agent 允许其探测
- * （可能是用户在等待期间充值了）。
+ * （可能是用户在等待期间充值了）——这是唯一例外。
+ *
+ * ★ v36：本函数与 `shouldUseTransientCooldownProbeSlot` 此前各自手抄一份
+ *   reason 清单（与 transient 判定三份并行维护），新增 reason 时必漂移
+ *   （upstream_blocked 就漏了两份）。现在两者都由 `isTransientReason`
+ *   派生，只剩 billing 这一条显式例外。
  *
  * 参考：openclaw shouldAllowCooldownProbeForReason
  */
 export function shouldAllowCooldownProbeForReason(
   reason: FailoverReason | null | undefined,
 ): boolean {
-  return (
-    reason === "rate_limit" ||
-    reason === "overloaded" ||
-    reason === "billing" ||
-    reason === "unknown" ||
-    reason === "empty_response" ||
-    reason === "no_error_details" ||
-    reason === "unclassified" ||
-    reason === "timeout" ||
-    reason === "server_error" ||
-    reason === "payload_too_large" ||
-    reason === "image_too_large" ||
-    reason === "invalid_encrypted_content" ||
-    reason === "multimodal_tool_content_unsupported" ||
-    reason === "thinking_signature" ||
-    reason === "long_context_tier" ||
-    reason === "output_cap"
-  );
+  if (reason === "billing") return true;
+  return isTransientReason(reason);
 }
 
 /**
@@ -171,23 +173,7 @@ export function shouldAllowCooldownProbeForReason(
 export function shouldUseTransientCooldownProbeSlot(
   reason: FailoverReason | null | undefined,
 ): boolean {
-  return (
-    reason === "rate_limit" ||
-    reason === "overloaded" ||
-    reason === "unknown" ||
-    reason === "empty_response" ||
-    reason === "no_error_details" ||
-    reason === "unclassified" ||
-    reason === "timeout" ||
-    reason === "server_error" ||
-    reason === "payload_too_large" ||
-    reason === "image_too_large" ||
-    reason === "invalid_encrypted_content" ||
-    reason === "multimodal_tool_content_unsupported" ||
-    reason === "thinking_signature" ||
-    reason === "long_context_tier" ||
-    reason === "output_cap"
-  );
+  return isTransientReason(reason);
 }
 
 /**
@@ -198,21 +184,17 @@ export function shouldUseTransientCooldownProbeSlot(
  * 传统熔断器只有开/关两态，而这里区分了"为什么开"，
  * 避免因为配置错误（non-transient）耗尽了为临时故障（transient）预留的恢复预算。
  *
+ * billing 除外：它是唯一允许探测的 non-transient 原因，探测本身就要花预算。
+ *
+ * ★ v36：与上两个谓词同源派生（此前手抄清单漏了 upstream_blocked）。
+ *
  * 参考：openclaw shouldPreserveTransientCooldownProbeSlot
  */
 export function shouldPreserveTransientCooldownProbeSlot(
   reason: FailoverReason | null | undefined,
 ): boolean {
-  return (
-    reason === "model_not_found" ||
-    reason === "format" ||
-    reason === "format_error" ||
-    reason === "auth" ||
-    reason === "auth_permanent" ||
-    reason === "session_expired" ||
-    reason === "provider_policy_blocked" ||
-    reason === "content_policy_blocked"
-  );
+  if (reason === "billing") return false;
+  return isNonTransientReason(reason);
 }
 
 // ── Reason Resolution ─────────────────────────────────────
@@ -264,6 +246,104 @@ export function isContentPolicyText(text: string | undefined | null): boolean {
   if (!text) return false;
   const lower = text.toLowerCase();
   return CONTENT_POLICY_BLOCKED_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
+ * 403 来自 provider **前方**的 WAF/CDN/代理的措辞表（单一真相）。
+ *
+ * 对标 hermes-agent `agent/error_classifier.py:_UPSTREAM_BLOCKED_PATTERNS` 与
+ * `_status_403`：这类 403 是 Cloudflare/网关挑战页直接答的，**凭证根本没到达
+ * provider**，所以「key 失效」的判断和凭证轮换都是错的，更不该把健康 provider
+ * 熔断（hermes 注释 #53099/#70566）。
+ *
+ * 纪律（与 hermes 同）：只收逐字挑战页措辞。裸 `"access denied"` / `"forbidden"`
+ * 一律**不**收——provider 描述真实权限错误时也用这两个词。
+ */
+export const UPSTREAM_BLOCKED_PATTERNS: readonly string[] = [
+  "your request was blocked",
+  "request blocked",
+  "sorry, you have been blocked",
+  "enable javascript and cookies to continue",
+  "cdn-cgi/challenge-platform",
+  "cf-browser-verification",
+  "challenge-error-text",
+  "__cf_chl",
+  "cf-error-details",
+  "attention required! | cloudflare",
+];
+
+/** 文本是否命中「请求被 provider 前方网关拦截」措辞（大小写不敏感）。 */
+export function isUpstreamBlockedText(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return UPSTREAM_BLOCKED_PATTERNS.some((p) => lower.includes(p));
+}
+
+/**
+ * 「账户/额度墙」措辞表（403 上的额度耗尽，**不是**凭证问题）。
+ *
+ * 对标 hermes-agent `_ACCOUNT_WALL_PATTERNS` / `_QUOTA_WINDOW_PATTERNS` /
+ * `_RESOURCE_EXHAUSTED_PATTERNS`（合称 `_403_404_WALL_PATTERNS`）：OpenRouter
+ * 把组织月度上限表述成 403 `"Budget limit exceeded (monthly limit)"`，xAI 的
+ * 额度耗尽也是 403。这类 403 的下一步是充值/换额度，而不是「检查 API Key」。
+ *
+ * 纪律（与 hermes 同）：裸 `"billing"` / `"quota"` **不**入表——它们会与
+ * 「限流窗口未到」这类瞬时故障撞车。
+ */
+export const ACCOUNT_WALL_PATTERNS: readonly string[] = [
+  // 额度/余额耗尽
+  "insufficient credits",
+  "insufficient_quota",
+  "insufficient balance",
+  "credit balance",
+  "credits exhausted",
+  "credits have been exhausted",
+  "requires available credits",
+  "account balance is too low",
+  "no usable credits",
+  "top up your credits",
+  "payment required",
+  "exceeded your current quota",
+  "account is deactivated",
+  "out of funds",
+  "run out of funds",
+  "balance_depleted",
+  "insufficient funds",
+  // 计划/上限（OpenRouter 403 月度上限、LiteLLM hard limit）
+  "budget limit exceeded",
+  "budget limit",
+  "spending limit",
+  "key limit exceeded",
+  "billing hard limit",
+  "requires a subscription",
+  "upgrade for access",
+  "upgrade for higher limits",
+  "plan does not include",
+  // 配额窗口
+  "quota exceeded",
+  "quota_exceeded",
+  "tokens per day",
+  "daily limit",
+  "daily quota",
+  "weekly usage limit",
+  "weekly limit",
+  "reached your session usage limit",
+  // 资源耗尽（Google 系）
+  "resource exhausted",
+  "resource_exhausted",
+  "resource-exhausted",
+  "resourceexhausted",
+  // 免费层拒绝
+  "model_not_supported_on_free_tier",
+  "not available on the free tier",
+  "isn't available on the free tier",
+];
+
+/** 文本是否命中账户/额度墙措辞（大小写不敏感）。 */
+export function isAccountWallText(text: string | undefined | null): boolean {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  return ACCOUNT_WALL_PATTERNS.some((p) => lower.includes(p));
 }
 
 /**
@@ -406,7 +486,19 @@ export function resolveFailoverReason(
   // ── 2. HTTP status code classification ──
 
   if (statusCode === 429) return "rate_limit";
-  if (statusCode === 401 || statusCode === 403) return "auth";
+  if (statusCode === 401) return "auth";
+  if (statusCode === 403) {
+    // ── ★ v36 同类治本，对标 hermes `_status_403` ──
+    // 403 有三种语义，此前一律判 auth（→ skip provider 300s + 「检查 API Key」）：
+    //   ① 额度/账户墙（OpenRouter 月度上限、xAI 额度耗尽）→ billing；
+    //   ② provider 前方的 WAF/CDN 挑战页 → upstream_blocked（凭证没到 provider，
+    //      key 健康，应换人但不熔断、不给 key 指引）；
+    //   ③ 其余（含裸 "forbidden"）→ auth。
+    // 顺序与 hermes 一致：先墙、再 WAF、最后 auth。
+    if (isAccountWallText(errorText)) return "billing";
+    if (isUpstreamBlockedText(errorText)) return "upstream_blocked";
+    return "auth";
+  }
   if (statusCode === 402) return "billing";
   if (statusCode === 404) {
     // 404 可能是 model_not_found 或 provider_policy_blocked（已在上面处理）。

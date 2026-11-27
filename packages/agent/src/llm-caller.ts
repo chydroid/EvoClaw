@@ -4802,7 +4802,15 @@ const response = await nativeFetch(apiURL, {
         }
       }
 
-      deps.recordProviderFailure(provider.id, `HTTP ${response.status}: ${errorText}`, classified.type);
+      // ★ v36：`shouldFallbackWithoutBench`（裸 403 / WAF 拦截）**不计 provider 失败**。
+      //   这里是 deps 记账的**唯一出口**——它同时喂 `providerStats`（getProviders 展示）
+      //   和 `ModelFailoverManager.recordFailure`（failureThreshold=5 会开熔断，并直接
+      //   出现在 /api/system/failover 状态里）。只在 llm-caller 自己的
+      //   ProviderHealthTracker 上豁免是不够的：同一类 403 仍会从这两层把健康 provider
+      //   拉黑（hermes 对 `_ABORT_FALLBACK` 判定一律不 bench）。改在一处，两层同免。
+      if (!classified.shouldFallbackWithoutBench) {
+        deps.recordProviderFailure(provider.id, `HTTP ${response.status}: ${errorText}`, classified.type);
+      }
 
       return {
         message: { role: "assistant", content: null },
@@ -6538,7 +6546,13 @@ if (deps.contextPruningManager && !prunerNoop) {
           // 混合证据 fail-open（hermes empty_response_guard）：provider 有真响应
           // （即使报错）说明并非「确定性无输出」——重置确定性空响应计数。
           consecutiveDeterministicEmpty = 0;
-          recordProviderFailure(provider.name);
+          // ★ v36（hermes `_ABORT_FALLBACK`）：`shouldFallbackWithoutBench` 的 403
+          //   家族（裸 403 / WAF 拦截）**不计入 provider 健康度**——hermes 从不因
+          //   这类 403 熔断 provider（凭证根本没被判失效）。计入会让 2 次即熔断
+          //   30s，正是本类缺陷要根除的「健康 provider 被拉黑」。
+          if (!classified.shouldFallbackWithoutBench) {
+            recordProviderFailure(provider.name);
+          }
           // 终态失败证据：记录最后一次 ClassifiedError（turn_failure_copy 盖码用）。
           // Retry-After 契约已在 error-classifier 解析进 backoffMs（含 jitter），
           // 这里取秒数供限流文案点名重置窗口。
@@ -6821,15 +6835,33 @@ if (deps.contextPruningManager && !prunerNoop) {
             });
           }
 
+          // ── v36: 换人但不熔断（hermes `_ABORT_FALLBACK` 等价） ──
+          // 裸 403 / WAF 拦截：provider 拒绝了本次请求，但**没有**指明凭证失效。
+          // 这类错误确定性发生（同请求重试无意义），所以必须换下一个 provider；
+          // 但 key 可能完全健康，因此不进 skip list、不计 provider 健康度
+          // （hermes `_V_AUTH_FALLBACK` 从不 bench provider）。
+          if (classified.shouldFallbackWithoutBench) {
+            process.stderr.write(
+              `[AgentModelExecutor] Falling back from provider "${provider.name}" (${classified.type}) without benching it\n`,
+            );
+            turnExitReason = "provider_rejected";
+            handoffProgress = true;
+            break;
+          }
+
           // ── fix-1: 基于 shouldSkipProvider 统一处理 provider 跳过 ──
           // 覆盖 AUTH/BILLING/CONTENT_POLICY/SSL_CERT/MODEL_NOT_FOUND/PROVIDER_POLICY 等 non-transient 错误
           if (classified.shouldSkipProvider) {
             process.stderr.write(`[AgentModelExecutor] Skipping provider "${provider.name}" due to ${classified.type} (non-transient)\n`);
             // R1-2: 持久化到 skip list，同 session 内不再重复尝试
             getProviderSkipList().add(sessionId, provider.id, classified.type);
+            // ★ v36：退出原因如实描述**本次**失败。此前所有 non-transient 跳过
+            //   都记 "guardrail_halt"，终末说明会谎称「某个工具调用被安全策略阻止」
+            //   （实际是 provider 拒了请求，根本没跑工具）。工具循环护栏仍然用
+            //   guardrail_halt（见下方 toolLoopHalt 分支）。
             turnExitReason = classified.type === LLMErrorType.CONTENT_POLICY
               ? "content_filter"
-              : "guardrail_halt";
+              : "provider_rejected";
             // ★ v34 T4：本 provider 已累积工具进展 → 换下一个 provider 继续
             //   （hermes _ABORT_FALLBACK：should_fallback=True 一律走 fallback 链）。
             //   旧实现无条件 break，若此前有过中途文本回复就把它当最终答复交出去，

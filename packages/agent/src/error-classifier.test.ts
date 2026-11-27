@@ -40,6 +40,48 @@ describe("classifyLLMError", () => {
       expect(result.type).toBe(LLMErrorType.AUTH);
     });
 
+    // ★ v36（对标 hermes `_status_403` / `_V_AUTH_FALLBACK`）：403 三种语义
+    //   必须分开处理。此前一律 AUTH + shouldSkipProvider → 健康 provider
+    //   被拉黑 300s，且给用户「请检查 API Key」的错误指引。
+    describe("403 三分解", () => {
+      it("额度墙 → BILLING + 跳过该 provider", () => {
+        const r = classifyLLMError(403, "Budget limit exceeded (monthly limit)");
+        expect(r.type).toBe(LLMErrorType.BILLING);
+        expect(r.reason).toBe("billing");
+        expect(r.shouldSkipProvider).toBe(true);
+        expect(r.retryable).toBe(false);
+      });
+
+      it("WAF/CDN 挑战页 → UPSTREAM_BLOCKED + 换人不熔断", () => {
+        const r = classifyLLMError(403, "<html><title>Attention Required! | Cloudflare</title></html>");
+        expect(r.type).toBe(LLMErrorType.UPSTREAM_BLOCKED);
+        expect(r.reason).toBe("upstream_blocked");
+        expect(r.shouldSkipProvider).toBe(false);
+        expect(r.shouldFallbackWithoutBench).toBe(true);
+        expect(r.shouldRotateAuth).toBe(false);
+        expect(r.retryable).toBe(false);
+      });
+
+      it("裸 403（含空响应体）→ AUTH 但换人不熔断、不轮换 key", () => {
+        const r = classifyLLMError(403);
+        expect(r.type).toBe(LLMErrorType.AUTH);
+        expect(r.shouldSkipProvider).toBe(false);
+        expect(r.shouldFallbackWithoutBench).toBe(true);
+        expect(r.shouldRotateAuth).toBe(false);
+        expect(r.retryable).toBe(false);
+        // 措辞不得谎称凭证问题
+        expect(r.message).not.toContain("Authentication failed");
+      });
+
+      it("401 仍是确定的凭证失败 → 跳过 + 轮换", () => {
+        const r = classifyLLMError(401);
+        expect(r.type).toBe(LLMErrorType.AUTH);
+        expect(r.shouldSkipProvider).toBe(true);
+        expect(r.shouldRotateAuth).toBe(true);
+        expect(r.shouldFallbackWithoutBench).toBeUndefined();
+      });
+    });
+
     it("should classify 402 as billing error", () => {
       const result = classifyLLMError(402);
       expect(result.type).toBe(LLMErrorType.BILLING);
@@ -668,6 +710,8 @@ describe("★ 跨模块同判门禁：classifyLLMError.reason === resolveFailove
     [401, "invalid api key", "auth"],
     [402, "insufficient quota", "billing"],
     [403, "forbidden", "auth"],
+    [403, "Budget limit exceeded (monthly limit)", "billing"],
+    [403, "<html>Attention Required! | Cloudflare</html>", "upstream_blocked"],
     [403, "DOTS3: rejected as a result of our safety system", "content_policy_blocked"],
     [404, "model not found", "model_not_found"],
     [404, "no provider serves this model anymore", "model_not_found"],
@@ -698,7 +742,7 @@ describe("★ 跨模块同判门禁：classifyLLMError.reason === resolveFailove
       expect(c.reason).toBe(r);
       expect(c.reason).toBe(expected);
       // 不可重试的 reason 不得同时标 retryable（反之亦然）
-      const nonRetryable = ["model_not_found", "auth", "billing", "content_policy_blocked", "provider_policy_blocked", "format_error", "format"];
+      const nonRetryable = ["model_not_found", "auth", "billing", "content_policy_blocked", "provider_policy_blocked", "format_error", "format", "upstream_blocked"];
       if (nonRetryable.includes(expected)) expect(c.retryable, `${text} 不可重试`).toBe(false);
     });
   }
@@ -729,5 +773,46 @@ describe("formatClassifiedErrorForUser — 切换措辞属实性", () => {
     const mnf = classifyLLMError(404, "model does not exist");
     expect(formatClassifiedErrorForUser(mnf, "x", false).userMessage).not.toContain("已自动");
     expect(formatClassifiedErrorForUser(mnf, "x", true).userMessage).toContain("已自动");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+// ★ v36：403 三分解的用户文案——凭证指控必须与事实一致
+// 事故：空响应体 403 被判成 AUTH，用户被要求「检查 API key」，而 key 完全健康，
+// 真正的原因是 provider 前方 WAF/CDN 或聚合器策略（hermes #53099 #70566）。
+// ═══════════════════════════════════════════════════════════
+describe("formatClassifiedErrorForUser — 403 三分解文案", () => {
+  it("裸 403：不谎称认证失败、不叫用户改 key", () => {
+    const bare = classifyLLMError(403);
+    const msg = formatClassifiedErrorForUser(bare, "magpie", true);
+    expect(msg.userMessage).toContain("拒绝了本次请求");
+    expect(msg.userMessage).not.toContain("认证失败");
+    expect(msg.actionableHint).not.toContain("API key");
+    expect(msg.actionableHint).not.toContain("API Key");
+    // 切换措辞仍属实
+    expect(msg.userMessage).toContain("已自动切换");
+  });
+
+  it("WAF/CDN 403：点名防火墙、明说凭证大概率没问题", () => {
+    const waf = classifyLLMError(403, "<html>Attention Required! | Cloudflare</html>");
+    const msg = formatClassifiedErrorForUser(waf, "magpie", false);
+    expect(msg.userMessage).toContain("防火墙/CDN");
+    expect(msg.actionableHint).toContain("凭证通常没问题");
+    expect(msg.userMessage).not.toContain("已自动切换");
+    expect(msg.userMessage).toContain("没有其他可用");
+  });
+
+  it("额度墙 403 仍走 billing 文案（换人不适用）", () => {
+    const wall = classifyLLMError(403, "insufficient credits");
+    const msg = formatClassifiedErrorForUser(wall, "magpie", false);
+    expect(msg.userMessage).toContain("余额不足");
+    expect(msg.userMessage).not.toContain("防火墙");
+  });
+
+  it("401 仍如实指控凭证（两类不混淆）", () => {
+    const auth = classifyLLMError(401);
+    const msg = formatClassifiedErrorForUser(auth, "magpie", true);
+    expect(msg.userMessage).toContain("认证失败");
+    expect(msg.actionableHint).toContain("API key");
   });
 });

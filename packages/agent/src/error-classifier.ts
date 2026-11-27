@@ -2,6 +2,8 @@ import { applyJitter } from "./retry-utils";
 import {
   resolveFailoverReason,
   isTransientReason,
+  isAccountWallText,
+  isUpstreamBlockedText,
   CONTENT_POLICY_BLOCKED_PATTERNS,
   MODEL_NOT_FOUND_PATTERNS as MODEL_NOT_FOUND_PATTERNS_TEXT,
   type FailoverReason,
@@ -34,6 +36,9 @@ export enum LLMErrorType {
   PROVIDER_POLICY = "provider_policy",
   /** ★ hermes 对齐 R10：max_tokens 超过 provider 输出上限（transient，clamp 后原地重试） */
   OUTPUT_CAP = "output_cap",
+  /** ★ v36 对齐 hermes `upstream_blocked`：403 来自 provider 前方的 WAF/CDN/代理
+   *  （凭证根本没到达 provider，key 健康；换人但不熔断、不给 key 指引） */
+  UPSTREAM_BLOCKED = "upstream_blocked",
 }
 
 export interface ClassifiedError {
@@ -52,6 +57,11 @@ export interface ClassifiedError {
   /** 是否应跳过当前 provider 并 fallback 到下一个（fix-1）
    *  适用于 non-transient 错误（auth/billing/content_policy/ssl_cert/model_not_found/provider_policy） */
   shouldSkipProvider?: boolean;
+  /** ★ v36（hermes `_ABORT_FALLBACK` 等价）：确定性地换下一个 provider，但
+   *  **不熔断、不写 skip list**。用于「本 provider 拒绝了这一份请求，但凭证/服务
+   *  本身未必有问题」的 403 家族（裸 403、WAF 拦截）。与 `shouldSkipProvider`
+   *  互斥——后者会把 provider 拉黑 300s。 */
+  shouldFallbackWithoutBench?: boolean;
   /** 是否应剥离 thinking 块后重试（fix-1，对应 thinking_signature reason） */
   shouldStripThinking?: boolean;
   /** 是否应将 tool 消息列表内容降级为纯文本后重试（fix-1） */
@@ -409,6 +419,58 @@ export function classifyLLMError(
   }
 
   if (statusCode === 401 || statusCode === 403) {
+    // ── ★ v36 同类治本，对标 hermes `_status_403` / `_V_AUTH_FALLBACK` ──
+    // 403 有三种语义（此前一律 auth + skip 300s）：
+    //   ① 额度/账户墙 → billing（充值/换额度才有救）；
+    //   ② provider 前方的 WAF/CDN 挑战页 → upstream_blocked（凭证没到 provider）；
+    //   ③ 其余 403 → auth，但 hermes 明确**不熔断**（`_V_AUTH_FALLBACK`：
+    //      retryable=False, should_fallback=True, should_rotate=False）——
+    //      403 常常是「本次请求形态/网关策略」而非「这个 provider 挂了」。
+    // 401 仍是确定的凭证失败，保持跳过。
+    // v35 实测：magpie 一次**空响应体**的 403 被判 auth → skip list 300s，
+    // 同 session 后续 6 次请求全部跳过健康 provider。
+    if (statusCode === 403) {
+      if (isAccountWallText(combinedText)) {
+        return {
+          type: LLMErrorType.BILLING,
+          retryable: false,
+          shouldCompact: false,
+          shouldRotateAuth: true,
+          shouldSkipProvider: true,
+          backoffMs: 0,
+          message: "Account/quota wall on HTTP 403. Rotating to next provider.",
+          reason: "billing",
+          isTransient: false,
+        };
+      }
+      if (isUpstreamBlockedText(combinedText)) {
+        return {
+          type: LLMErrorType.UPSTREAM_BLOCKED,
+          retryable: false,
+          shouldCompact: false,
+          shouldRotateAuth: false,
+          shouldSkipProvider: false,
+          shouldFallbackWithoutBench: true,
+          backoffMs: 0,
+          message: "Blocked by a WAF/CDN in front of the provider (HTTP 403). Key is likely fine; falling back.",
+          reason: "upstream_blocked",
+          isTransient: false,
+        };
+      }
+      // 裸 403（含空响应体）：换人继续，但不计入 provider 健康度、不进 skip list。
+      return {
+        type: LLMErrorType.AUTH,
+        retryable: false,
+        shouldCompact: false,
+        shouldRotateAuth: false,
+        shouldSkipProvider: false,
+        shouldFallbackWithoutBench: true,
+        backoffMs: 0,
+        message: "Provider declined this request (HTTP 403) without naming a credential problem. Falling back without benching.",
+        reason,
+        isTransient: false,
+      };
+    }
     return {
       type: LLMErrorType.AUTH,
       retryable: false,
@@ -1021,9 +1083,26 @@ export function formatClassifiedErrorForUser(
       };
 
     case LLMErrorType.AUTH:
+      // ★ v36：裸 403（未指明凭证问题）不再谎称「认证失败 / 请检查 API key」——
+      //   凭证可能完全健康，只是这个 provider 拒绝了这个请求（hermes 对无措辞
+      //   的 403 从不给 key 指引：`_V_AUTH_FALLBACK` 不 rotate、不 bench）。
+      if (error.shouldFallbackWithoutBench) {
+        return {
+          userMessage: `${providerLabel} 拒绝了本次请求（HTTP 403，未说明凭证问题），${switched}`,
+          actionableHint: "若所有 provider 都这样拒绝，请检查请求内容/网络出口是否被拦截；凭证本身通常无需修改。",
+          shouldNotifyUser: true,
+        };
+      }
       return {
         userMessage: `${providerLabel} 认证失败，${switched}`,
         actionableHint: "请检查 API key 配置（.env 文件或 /config 命令）。",
+        shouldNotifyUser: true,
+      };
+
+    case LLMErrorType.UPSTREAM_BLOCKED:
+      return {
+        userMessage: `${providerLabel} 前方的防火墙/CDN 拦截了请求（HTTP 403），${switched}`,
+        actionableHint: "凭证通常没问题：多为代理/WAF 拦截。可检查网络出口或直接切换到其他 provider。",
         shouldNotifyUser: true,
       };
 

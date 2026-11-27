@@ -8,6 +8,7 @@ import {
   resolveFailoverReason,
   shouldProbeCooldown,
   consumeProbeBudget,
+  FAILOVER_REASONS,
   type FailoverReason,
   type CooldownProbeState,
 } from "./failover-policy";
@@ -205,6 +206,32 @@ describe("failover-policy > resolveFailoverReason", () => {
     expect(resolveFailoverReason(400, "insufficient_quota")).toBe("billing");
     expect(resolveFailoverReason(400, "model not found")).toBe("model_not_found");
   });
+
+  // ★ v36（对标 hermes `_status_403`）：403 的三种语义必须分开——
+  //   此前一律判 auth → skip provider 300s + 谎称「检查 API Key」，
+  //   而实际可能是额度墙或 provider 前方的 WAF（凭证根本没送到）。
+  it("TC-035m: 403 三分解——额度墙 / WAF 拦截 / 裸 403", () => {
+    // ① 账户/额度墙 → billing（下一步是充值，不是换 key）
+    expect(resolveFailoverReason(403, "Budget limit exceeded (monthly limit)")).toBe("billing");
+    expect(resolveFailoverReason(403, "insufficient credits")).toBe("billing");
+    // ② WAF/CDN 挑战页 → upstream_blocked（key 健康，换人但不熔断）
+    expect(resolveFailoverReason(403, "Attention Required! | Cloudflare")).toBe("upstream_blocked");
+    expect(resolveFailoverReason(403, "Sorry, you have been blocked")).toBe("upstream_blocked");
+    expect(resolveFailoverReason(403, "Please enable JavaScript and cookies to continue")).toBe("upstream_blocked");
+    // ③ 裸 403 / 无措辞 → 仍是 auth（保守；由 caller 决定不熔断）
+    expect(resolveFailoverReason(403)).toBe("auth");
+    expect(resolveFailoverReason(403, "Forbidden")).toBe("auth");
+    // 反例纪律：泛化词不得被当成 WAF 证据（provider 描述真实权限错误时也用它们）
+    expect(resolveFailoverReason(403, "access denied: this key lacks the model scope")).toBe("auth");
+  });
+
+  it("TC-035n: 403 判定的优先级——额度墙先于 WAF 措辞", () => {
+    // 某些网关的 403 页同时含 Cloudflare 标记和额度措辞；hermes 顺序是
+    // 先 billing 再 upstream_blocked（额度是可操作结论，WAF 只是表象）。
+    expect(
+      resolveFailoverReason(403, "insufficient credits — Cloudflare"),
+    ).toBe("billing");
+  });
 });
 
 describe("failover-policy > 新增 hermes-agent 原因的 transient/non-transient 分类", () => {
@@ -243,6 +270,49 @@ describe("failover-policy > 新增 hermes-agent 原因的 transient/non-transien
   it("新增 transient 原因消耗 probe 预算", () => {
     expect(shouldUseTransientCooldownProbeSlot("server_error")).toBe(true);
     expect(shouldUseTransientCooldownProbeSlot("thinking_signature")).toBe(true);
+  });
+
+  // ★ v36：三个 probe 谓词现在由 transient/non-transient 判定派生，
+  //   不再各自手抄 reason 清单（此前清单漏了 upstream_blocked）。
+  it("upstream_blocked：non-transient / 不探测 / 保留预算", () => {
+    expect(isNonTransientReason("upstream_blocked")).toBe(true);
+    expect(isTransientReason("upstream_blocked")).toBe(false);
+    expect(shouldAllowCooldownProbeForReason("upstream_blocked")).toBe(false);
+    expect(shouldUseTransientCooldownProbeSlot("upstream_blocked")).toBe(false);
+    expect(shouldPreserveTransientCooldownProbeSlot("upstream_blocked")).toBe(true);
+  });
+
+  it("★ 全取值域不变式：三个 probe 谓词与 transient 判定不得漂移", () => {
+    // 明确列出「既非 transient 也非 non-transient」的 reason：
+    //   - context_overflow：需压缩后重试，走独立的压缩路径
+    //   - aborted：用户/系统主动取消，不是 provider 裁定（caller 直接返回）
+    // 其余每个 reason 必须恰好属于一侧；新增 reason 若未归位，本测试失败。
+    const NEITHER = new Set<string>(["context_overflow", "aborted"]);
+    for (const r of FAILOVER_REASONS) {
+      const transient = isTransientReason(r);
+      const nonTransient = isNonTransientReason(r);
+      if (NEITHER.has(r)) {
+        expect(transient || nonTransient, `${r} 不应被归入 transient/non-transient`).toBe(false);
+        continue;
+      }
+      expect(transient !== nonTransient, `${r} 必须且只能属于 transient 或 non-transient`).toBe(true);
+      // 允许探测 ⇔ transient 或 billing（唯一例外）
+      expect(shouldAllowCooldownProbeForReason(r), `probe-allow drift for ${r}`).toBe(transient || r === "billing");
+      // 消耗预算 ⇔ transient
+      expect(shouldUseTransientCooldownProbeSlot(r), `probe-slot drift for ${r}`).toBe(transient);
+      // 保留预算 ⇔ non-transient 且非 billing
+      expect(shouldPreserveTransientCooldownProbeSlot(r), `probe-preserve drift for ${r}`).toBe(
+        nonTransient && r !== "billing",
+      );
+    }
+  });
+
+  it("aborted / output_cap 的归属（曾漏出三份清单）", () => {
+    expect(isTransientReason("aborted")).toBe(false);
+    expect(isNonTransientReason("aborted")).toBe(false); // 不是 provider 裁定
+    expect(isTransientReason("output_cap")).toBe(true);
+    expect(shouldAllowCooldownProbeForReason("output_cap")).toBe(true);
+    expect(shouldUseTransientCooldownProbeSlot("output_cap")).toBe(true);
   });
 });
 

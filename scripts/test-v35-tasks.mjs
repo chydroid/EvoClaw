@@ -210,6 +210,7 @@ report.json（**恰好这些键**）：
 - \`link-name\`(error)：\`<a>\` 无可见文本且无 aria-label；
 - \`input-label\`(error)：\`<input>\` 无 aria-label 且无 \`<label for="该id">\` 关联；
 - \`heading-skip\`(warning)：标题层级跳跃（如 h1 后直接 h3，即当前级别 > 上一级别+1）；
+  **首个标题没有上一级别可比，一律不判跳跃**（页面直接以 h2 开头不算违规）；
 - \`duplicate-id\`(error)：同一页面 id 重复（在**第二次**出现处记一条）；
 - \`html-lang\`(warning)：\`<html>\` 缺 lang 属性。
 行号从 1 起。totals.errors/warnings 为全部页面之和。

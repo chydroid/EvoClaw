@@ -1186,6 +1186,10 @@ export function selfCheck() {
   const r3 = t3Ref();
   if (r3.totals.errors !== 5 || r3.totals.warnings !== 2) bad.push('T3 计数漂移: ' + JSON.stringify(r3.totals));
   if (r3.pages['index.html'].violations.filter((v) => v.ruleId === 'img-alt').length !== 1) bad.push('T3 img-alt 应仅 1 处（带 alt 的不算）');
+  // 泛化夹具（T3 exec 内联的同一份 HTML）：首个标题是 h2，没有上一级别 → 不得判 heading-skip
+  const t3Gen = t3Ref({ 'page.html': `<html>\n<body>\n<h2>no h1</h2>\n<img src="x.png">\n<button></button>\n<a href="/x"></a>\n<input type="text">\n</body>\n</html>\n` });
+  if (t3Gen.pages['page.html'].violations.some((v) => v.ruleId === 'heading-skip')) bad.push('T3 泛化夹具首个标题(h2)不应判 heading-skip');
+  if (t3Gen.totals.errors !== 4 || t3Gen.totals.warnings !== 1) bad.push('T3 泛化夹具计数漂移: ' + JSON.stringify(t3Gen.totals));
 
   // T4 锚点
   const r4 = t4Ref();

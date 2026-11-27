@@ -3,7 +3,7 @@ import * as http from "http";
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
-import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, describeAcceptedParameters, findUnknownToolArguments, listAcceptedParameterNames, flagUnknownToolArguments, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, formatToolResultSummary, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached, pruneUnpairedToolMessages } from "./llm-caller";
+import { isProviderSafetyRejection, nativeFetch, ProviderHealthTracker, buildOpenAITools, validateToolParams, describeAcceptedParameters, findUnknownToolArguments, listAcceptedParameterNames, flagUnknownToolArguments, normalizeToolParameters, lookupCachedToolResult, NO_RESULT_CACHE_TOOLS, parseStreamingResponse, tryCallLLM, callLLMOnce, extractClaimedFilePaths, reconcileClaimedAgainstReceipts, extractExecutedShellCommands, truncateToolResult, formatToolResultSummary, resolveToolTimeoutMs, resolveLlmRequestTimeoutMs, needsSyntaxProbe, probeDeliverableSyntax, runScriptSyntaxProbe, judgeCreativeTask, looksLikeWritePathRequest, computeDynamicToolLimitCached, pruneUnpairedToolMessages, getLiveProviderHealthSnapshot, resetLiveProviderCircuit } from "./llm-caller";
 import { getProviderSkipList, resetProviderSkipList } from "./provider-skip-list";
 import { FAILED_TURN_NOTICE } from "./turn-failure-copy";
 import type { LLMCallerDeps } from "./llm-caller";
@@ -4226,4 +4226,200 @@ describe("llm-caller > 出站净化与 4xx 终态处置", () => {
     expect(recordSuccess).not.toHaveBeenCalled();
     expect(recordFailure).toHaveBeenCalled();
   }, 60_000);
+});
+
+// ═══════════════════════════════════════════════════════════
+// ★ v36：403 不得把健康 provider 拉黑（hermes `_ABORT_FALLBACK`）
+// 事故：magpie 一次**空响应体** 403 被判 auth → skip list 300s，同 session
+// 后续 6 次请求全部跳过健康 provider（日志实证：`in skip list (reason: auth,
+// expires in 300s)` ×6）。同一份错误还会经 deps.recordProviderFailure 喂
+// providerStats 与 ModelFailoverManager（failureThreshold=5 会开熔断）。
+// 三处都必须在「凭证没被判失效」时豁免——本测试把三处一起钉死。
+// ═══════════════════════════════════════════════════════════
+describe("v36 — 403 换人但不熔断（skip list / providerStats / 熔断器三处同免）", () => {
+  function provider(id: string, port: number) {
+    return {
+      id, name: id, provider: "openai", model: "m",
+      baseURL: `http://127.0.0.1:${port}/v1`,
+      apiKey: "sk-test", enabled: true, order: 0, timeout: 5000, maxTokens: 4096, temperature: 0.3,
+    } as unknown as LLMCallerDeps["providers"][number];
+  }
+
+  function deps(providers: LLMCallerDeps["providers"], recordFailure: (id: string, e: string, t?: string) => void): LLMCallerDeps {
+    return {
+      config: { maxTokens: 4096 } as LLMCallerDeps["config"],
+      providers,
+      persona: { name: "t", style: "s", formatConstraints: "" } as LLMCallerDeps["persona"],
+      registeredTools: new Map(),
+      conversationHistory: new Map(),
+      maxHistoryLength: 200,
+      providerStats: new Map(),
+      pluginManager: null,
+      registry: { resolveService: () => null } as unknown as LLMCallerDeps["registry"],
+      sessionManager: null,
+      pendingOperations: new Map(),
+      toolResultCache: new Map(),
+      sessionDataDir: os.tmpdir(),
+      sessionPersistenceEnabled: false,
+      autoCompactionEnabled: false,
+      compactionTokenThreshold: 0,
+      compactionManager: null,
+      lifecycleManager: null,
+      memoryHub: null,
+      recordProviderSuccess: vi.fn(),
+      recordProviderFailure: recordFailure,
+      getEventLedger: () => null,
+    } as unknown as LLMCallerDeps;
+  }
+
+  /** p1 恒定返回给定状态码；p2 正常答复。返回两侧调用计数与端口。 */
+  async function twoProviders(status: number, body: string, p1Name: string, p2Name: string) {
+    let p1Calls = 0;
+    const p1 = http.createServer((_req, res) => {
+      p1Calls++;
+      res.statusCode = status;
+      res.setHeader("Content-Type", "application/json");
+      res.end(body);
+    });
+    await new Promise<void>((r) => p1.listen(0, r));
+    const port1 = (p1.address() as { port: number }).port;
+
+    let p2Calls = 0;
+    const p2 = http.createServer((_req, res) => {
+      p2Calls++;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        choices: [{ message: { role: "assistant", content: "ANSWER-FROM-P2" }, finish_reason: "stop" }],
+        usage: { total_tokens: 5, prompt_tokens: 3 },
+      }));
+    });
+    await new Promise<void>((r) => p2.listen(0, r));
+    const port2 = (p2.address() as { port: number }).port;
+
+    return {
+      providers: [provider(p1Name, port1), provider(p2Name, port2)],
+      calls: () => ({ p1Calls, p2Calls }),
+      close: () => { p1.close(); p2.close(); },
+    };
+  }
+
+  it("裸 403：换人成功，skip list / providerStats / 熔断器三处都不记账", async () => {
+    isolateSkipList();
+    const p1 = `waf403-p1-${RUN_TAG}`;
+    const p2 = `waf403-p2-${RUN_TAG}`;
+    const { providers, calls, close } = await twoProviders(403, "{}", p1, p2);
+    const recordFailure = vi.fn();
+    const sessionId = `v36-403-${RUN_TAG}`;
+
+    const res = await tryCallLLM(deps(providers, recordFailure), {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId,
+      pendingPermissions: [],
+    });
+    close();
+
+    // 换人确实发生，且答复来自 p2
+    expect(calls().p1Calls).toBeGreaterThan(0);
+    expect(calls().p2Calls).toBeGreaterThan(0);
+    expect(res!.reply).toContain("ANSWER-FROM-P2");
+    // ① 持久化 skip list：不得有 p1 条目（事故里正是它 300s 内挡掉 6 次）
+    expect(getProviderSkipList().shouldSkip(sessionId, p1)).toBeUndefined();
+    // ② deps 记账出口（providerStats + ModelFailoverManager 的唯一入口）
+    expect(recordFailure).not.toHaveBeenCalled();
+    // ③ 进程级 ProviderHealthTracker：连记录都不该建
+    expect(getLiveProviderHealthSnapshot(p1)).toBeNull();
+  });
+
+  it("连续两次裸 403 仍不熔断（同 session 第二轮 p1 必须照常被尝试）", async () => {
+    isolateSkipList();
+    const p1 = `waf403x-p1-${RUN_TAG}`;
+    const p2 = `waf403x-p2-${RUN_TAG}`;
+    const { providers, calls, close } = await twoProviders(403, "Forbidden", p1, p2);
+    const recordFailure = vi.fn();
+    const sessionId = `v36-403x-${RUN_TAG}`;
+
+    for (let i = 0; i < 2; i++) {
+      const res = await tryCallLLM(deps(providers, recordFailure), {
+        message: `round ${i}`,
+        systemPrompt: "SYS",
+        installedSkills: [],
+        providers,
+        startTime: Date.now(),
+        sessionId,
+        pendingPermissions: [],
+      });
+      expect(res!.reply).toContain("ANSWER-FROM-P2");
+    }
+    close();
+
+    // 两轮各调一次 p1：没有被 skip list / 熔断器提前挡掉
+    expect(calls().p1Calls).toBe(2);
+    expect(getProviderSkipList().shouldSkip(sessionId, p1)).toBeUndefined();
+    expect(getLiveProviderHealthSnapshot(p1)?.tripped ?? false).toBe(false);
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("WAF/CDN 挑战页 403 同口径（upstream_blocked 也不 bench）", async () => {
+    isolateSkipList();
+    const p1 = `wafcdn-p1-${RUN_TAG}`;
+    const p2 = `wafcdn-p2-${RUN_TAG}`;
+    const { providers, calls, close } = await twoProviders(
+      403,
+      "<html><title>Attention Required! | Cloudflare</title></html>",
+      p1,
+      p2,
+    );
+    const recordFailure = vi.fn();
+    const sessionId = `v36-cdn-${RUN_TAG}`;
+
+    const res = await tryCallLLM(deps(providers, recordFailure), {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId,
+      pendingPermissions: [],
+    });
+    close();
+
+    expect(res!.reply).toContain("ANSWER-FROM-P2");
+    expect(calls().p2Calls).toBeGreaterThan(0);
+    expect(getProviderSkipList().shouldSkip(sessionId, p1)).toBeUndefined();
+    expect(recordFailure).not.toHaveBeenCalled();
+  });
+
+  it("对照：401 仍如实拉黑（skip list 有条目 + deps 记账被调用）", async () => {
+    isolateSkipList();
+    const p1 = `auth401-p1-${RUN_TAG}`;
+    const p2 = `auth401-p2-${RUN_TAG}`;
+    const { providers, close } = await twoProviders(
+      401,
+      JSON.stringify({ error: { message: "invalid api key" } }),
+      p1,
+      p2,
+    );
+    const recordFailure = vi.fn();
+    const sessionId = `v36-401-${RUN_TAG}`;
+
+    const res = await tryCallLLM(deps(providers, recordFailure), {
+      message: "hi",
+      systemPrompt: "SYS",
+      installedSkills: [],
+      providers,
+      startTime: Date.now(),
+      sessionId,
+      pendingPermissions: [],
+    });
+    close();
+
+    // 401 是确定的凭证失败：照常换人，但 p1 必须被记账/拉黑
+    expect(res!.reply).toContain("ANSWER-FROM-P2");
+    expect(getProviderSkipList().shouldSkip(sessionId, p1)?.reason).toBe("auth");
+    expect(recordFailure).toHaveBeenCalled();
+  });
 });
